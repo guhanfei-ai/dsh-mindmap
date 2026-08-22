@@ -1,0 +1,66 @@
+# dsh-mindmap
+
+[English](./README.md)
+
+一个 DeepSeek Harness 插件：把工作目录里的普通 Markdown 文件变成一颗**实时脑图**。聊天框是编辑它的助手——你聊一句、AI 改一步 `.md`、右侧悬浮面板实时跟着变。
+
+> 项目状态：pre-1.0。0.1.0 功能集（见 [CHANGELOG](./CHANGELOG.md)）已实现并有单元测试覆盖，但开发环境之外的跨版本兼容性尚未认证。
+
+## 核心思想
+
+- 打开一个 Markdown 文档，它就是一颗脑图；
+- 聊天框不是主角，而是「旁边帮你编辑这颗脑图的助手」；
+- 人聊一句、AI 改一步（改 markdown）、脑图实时跟着变；
+- 脑图 = markdown，天然可 diff、可分享、可进 git。
+
+## 功能
+
+- **四个工具**（`mindmap_create` / `mindmap_open` / `mindmap_get` / `mindmap_update`）——会话工作目录里的普通 `.md` 文件；根节点标题 = 文件名，双向同步（`renameRoot` 触发文件重命名，撞名报错不覆盖）。
+- **零通道实时面板**——面板直接消费会话快照里的 `mindmap_*` 工具结果，AI 每改一步面板即渲染一次。
+- **右侧悬浮面板**——会话头部「思维脑图」按钮开合；AI 打开/创建脑图时也会自动展开。打开时**聊天区向左让位**（布局推挤，互不遮挡）；宽度可拖（280px ~ 80% 视口）并持久化。
+- **常驻目录树 tab**——工作目录结构懒加载树（插件自建只读路由）；空白处/目录右键新建脑图；左键点 `.md` 秒开 tab 并自动交给 AI 打开，随后直接对话继续编辑。
+- **单脑图模式**——面板只有「目录」和「脑图」两个 tab，打开新脑图替换旧的那颗。
+- **「所见即所编」焦点同步**——可见脑图与 AI 工作文档不一致时，面板自动让 AI 打开它，聊天焦点始终跟随你的眼睛。
+- **MarkGrove 同款映射与连线**——标题层级挂树、列表缩进（空项 = 占位节点）、代码块叶节点、段落挂节点说明、稳定结构 ID、节点间直角折线。
+- **PNG 导出**——面板右上角「导出图片」一键导出当前脑图。
+- **安全**——`mindmap_update` 默认免原生审批（文件受 git 管控），留 `requireApproval` 开关作后悔药；客户端**没有任何写文件通道**，一切编辑都经 AI 工具。
+
+## 环境要求
+
+| 组件 | 基线 |
+| --- | --- |
+| Node.js | 20.11 及以上 |
+| DeepSeek Harness | 实测于 `0.1.1-rc.2` |
+
+## 安装
+
+开发（link 安装，实时源码）：
+
+```bash
+dsh plugin --profile web add link:/path/to/dsh-mindmap
+```
+
+发布 tag（发布后）：
+
+```bash
+dsh plugin --profile <profile> add <pkg>#v<version>
+```
+
+## 工具
+
+| 工具 | 说明 |
+| --- | --- |
+| `mindmap_create(name)` | 在工作目录创建 `<name>.md` 并显示到面板（已存在则报错）。 |
+| `mindmap_open(path)` | 把已有 `.md` 作为脑图打开到面板。 |
+| `mindmap_get(path)` | 读取脑图文档的当前 Markdown 内容。 |
+| `mindmap_update(path, content, renameRoot?)` | 写入完整的新 Markdown；可选重命名根节点（重命名文件，撞名拒绝）。 |
+
+## 开发
+
+```bash
+npm run verify   # 语法检查 + node --test
+```
+
+## License
+
+尚未确定——再分发前请先联系作者。

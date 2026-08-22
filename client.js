@@ -1,11 +1,12 @@
 // dsh-mindmap —— 浏览器半边（ModuleLoader 单文件模块，无外部依赖）。
 //
 // 职责：
-// - 「思维脑图」折叠按钮：挂 conversation.session.header.actions（list 槽，追加式），
-//   点击切换右侧 details 脑图面板的开/合（ctx.layout.openDetails/closeDetails）。
-// - details 面板：以 priority:-1 顶替官方 DetailsPanel（003 实测结论：single 槽
-//   必须显式更低 priority 才能合法顶替，lowest renders；工具详情共存不可行，
-//   作者已拍板接受让位）。
+// - 「思维脑图」按钮：挂 conversation.session.header.actions（list 槽，追加式），
+//   点击切换右侧悬浮脑图面板的开/合；面板宿主层（fixed）与按钮同槽位渲染，
+//   会话能力（useSession/sessionId/inputActions）经 props 直给面板组件。
+// - 脑图面板：014 起注册在 shell.overlay（list 槽、root scope、点击穿透层），
+//   右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，localStorage 持久化）；
+//   details 槽已归还官方（原生「工具详情」栏恢复，003 的顶替方案退役）。
 // - 实时数据通路：消费会话快照（useSession → nodes）里 mindmap_* 工具的
 //   ToolResultNode，重放出各文档的最新内容并渲染（002/003：无自定义事件通道，
 //   工具调用本身就是事件流）。
@@ -24,7 +25,7 @@ window.__ModuleLoader__.load({
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
 
-		const inject = ["slots", "layout"];
+		const inject = ["slots"];
 
 		// host 半边四个工具名（见 index.js）；面板只认这些工具的结果。
 		const TOOL_NAMES = new Set(["mindmap_create", "mindmap_open", "mindmap_get", "mindmap_update"]);
@@ -86,6 +87,10 @@ window.__ModuleLoader__.load({
 			};
 			const headingStack = [];
 			let listStack = [];
+			// 根标题回声标记：记录文档常以文件名作首行 H1（如 "# 002-spike结论.md"），
+			// 而根节点标题就是文件名——首个 H1 与根标题一致（或仅多 .md 后缀）时
+			// 并入根节点，避免标题显示两次。
+			let firstHeadingSeen = false;
 			const lines = String(markdown ?? "").split(/\r?\n/);
 
 			const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
@@ -152,6 +157,12 @@ window.__ModuleLoader__.load({
 					listStack = [];
 					const level = heading[1].length;
 					const text = heading[2].trim() || "（无标题）";
+					// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
+					if (!firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
+						firstHeadingSeen = true;
+						continue;
+					}
+					firstHeadingSeen = true;
 					while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
 					const basePath = parentRec() ? parentRec().path : "";
 					const node = {
@@ -441,7 +452,10 @@ window.__ModuleLoader__.load({
 		//#region React 组件
 		const S = {
 			mButton: { display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 8px", height: "22px", background: "var(--dsw-alias-fill-tsp-secondary)", color: "var(--dsw-alias-label-secondary)", border: "none", borderRadius: "6px", cursor: "pointer", font: "inherit", fontSize: "12px", whiteSpace: "nowrap" },
-			root: { height: "100%", display: "flex", flexDirection: "column", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", fontSize: "13px", minWidth: 0 },
+			// 014 overlay 外壳：右缘贴边全高悬浮面板，点击穿透层里自 opt-in pointer-events。
+			panelHost: { position: "fixed", top: 0, right: 0, bottom: 0, left: 0, pointerEvents: "none", zIndex: 40 },
+			overlayRoot: { position: "absolute", top: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", fontSize: "13px", minWidth: 0, borderLeft: "1px solid var(--dsw-alias-border-l2)", boxShadow: "-8px 0 24px rgba(16,24,40,0.10)", pointerEvents: "auto" },
+			overlayHandle: { position: "absolute", left: -4, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 1 },
 			header: { display: "flex", flexDirection: "column", gap: "6px", padding: "12px 14px 0", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)" },
 			headerTop: { display: "flex", alignItems: "center", gap: "10px", flex: "none" },
 			tabRow: { display: "flex", alignItems: "flex-end", gap: "10px", marginTop: "auto", overflowX: "auto", overflowY: "hidden", minWidth: 0, flex: "none" },
@@ -483,7 +497,10 @@ window.__ModuleLoader__.load({
 			treeMenu: { position: "fixed", zIndex: 60, minWidth: "210px", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", padding: "6px", boxShadow: "var(--dsw-shadow-lv2)" },
 			treeMenuItem: { display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", border: "none", background: "none", cursor: "pointer", padding: "7px 12px", borderRadius: "8px", font: "inherit", fontSize: "13px", color: "var(--dsw-alias-label-primary)" },
 			row: { display: "flex", alignItems: "center", minWidth: 0 },
-			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "24px", minWidth: 0 },
+			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "40px", minWidth: 0 },
+			// 面板树连线层：正交折线（MarkGrove 的 orthogonalPath 风格），
+			// 覆盖整行、点击穿透、置于节点盒之下。
+			edgeLayer: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" },
 			box: { padding: "6px 12px", borderRadius: "10px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "0 0 auto", boxShadow: "0 1px 2px rgba(16,24,40,0.04)" },
 			rootBox: { fontWeight: 700, fontSize: "14px", border: "1px solid var(--dsw-alias-border-l2-darkmode-thin, #b9c0cc)", background: "var(--dsw-alias-bg-module-platform, #eef2ff)" },
 			headingBox: { fontWeight: 600 },
@@ -491,41 +508,55 @@ window.__ModuleLoader__.load({
 			codeBox: { fontFamily: "Menlo, monospace", fontSize: "12px" },
 		};
 
-		/** 「思维脑图」按钮：读取 AppFrame 的 data-details-collapsed 属性判断当前态再切换。 */
-		function MindmapButton(props) {
-			const layout = props.mindmapFace.layout;
-			return (0, react_jsx_runtime.jsxs)("button", {
-				type: "button",
-				title: "脑图面板：展开 / 收起",
-				style: S.mButton,
-				onClick: () => {
-					const collapsed = document.querySelector("[data-details-collapsed]") !== null;
-					if (collapsed) layout.openDetails();
-					else layout.closeDetails();
-				},
-				children: [
-					(0, react_jsx_runtime.jsx)("svg", {
-						width: 14,
-						height: 14,
-						viewBox: "0 0 14 14",
-						fill: "none",
-						stroke: "currentColor",
-						strokeWidth: 1.4,
-						strokeLinecap: "round",
-						strokeLinejoin: "round",
-						"aria-hidden": "true",
-						style: { opacity: 0.7, flex: "none" },
-						children: [
-							(0, react_jsx_runtime.jsx)("circle", { cx: 2.5, cy: 7, r: 1.7 }),
-							(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 3.5, r: 1.7 }),
-							(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 10.5, r: 1.7 }),
-							(0, react_jsx_runtime.jsx)("path", { d: "M4.1 6.2 L9.9 4.2" }),
-							(0, react_jsx_runtime.jsx)("path", { d: "M4.1 7.8 L9.9 9.8" }),
-						],
-					}),
-					"思维脑图",
-				],
-			});
+		/**
+		 * 「思维脑图」槽位组件（014）：同一槽位渲染 M 按钮 + 悬浮面板宿主层。
+		 * session scope 的 useSession/sessionId/inputActions 直给，经 props 传给
+		 * MindmapDetailsPanel（无桥、无 useSyncExternalStore——shell.overlay 跨槽
+		 * 方案实测未渲染，弃用后顺手把桥也删了）。
+		 */
+		function MindmapSlot(props) {
+			const { useSession, sessionId, inputActions, mindmapFace } = props;
+			const nodes = useSession ? useSession((s) => (s && s.nodes) || EMPTY_NODES) : EMPTY_NODES;
+			const [open, setOpen] = react.useState(false);
+			return (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [
+				(0, react_jsx_runtime.jsxs)("button", {
+					type: "button",
+					title: "脑图面板：展开 / 收起",
+					style: S.mButton,
+					onClick: () => setOpen((v) => !v),
+					children: [
+						(0, react_jsx_runtime.jsx)("svg", {
+							width: 14,
+							height: 14,
+							viewBox: "0 0 14 14",
+							fill: "none",
+							stroke: "currentColor",
+							strokeWidth: 1.4,
+							strokeLinecap: "round",
+							strokeLinejoin: "round",
+							"aria-hidden": "true",
+							style: { opacity: 0.7, flex: "none" },
+							children: [
+								(0, react_jsx_runtime.jsx)("circle", { cx: 2.5, cy: 7, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 3.5, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 10.5, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 6.2 L9.9 4.2" }),
+								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 7.8 L9.9 9.8" }),
+							],
+						}),
+						"思维脑图",
+					],
+				}),
+				(0, react_jsx_runtime.jsx)(MindmapDetailsPanel, {
+					open,
+					sessionId,
+					inputActions,
+					nodes,
+					mindmapFace,
+					onOpen: () => setOpen(true),
+					onClose: () => setOpen(false),
+				}),
+			] });
 		}
 
 		function NodeBox(props) {
@@ -547,28 +578,130 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsx)("div", { style, title, children: node.kind === "placeholder" ? "待填写" : node.topic });
 		}
 
-		/** 左→右递归树：节点盒 + 右侧子节点列。 */
+		/** 左→右递归树：节点盒 + 右侧子节点列 + 正交折线连线层（MarkGrove 风格）。 */
 		function TreeRow(props) {
 			const { node } = props;
-			return (0, react_jsx_runtime.jsxs)("div", { style: S.row, children: [
-				(0, react_jsx_runtime.jsx)(NodeBox, { node }),
+			const rowRef = react.useRef(null);
+			const boxWrapRef = react.useRef(null);
+			const childRefs = react.useRef([]);
+			const [edges, setEdges] = react.useState([]);
+			const prevEdgesRef = react.useRef("");
+
+			// 测量父盒右缘与各子节点包裹块的几何位置，画直角折线
+			// （M x1 y1 H midX V y2 H x2）；序列化比对防 setState 循环。
+			react.useLayoutEffect(() => {
+				const rowEl = rowRef.current;
+				const boxEl = boxWrapRef.current;
+				if (!rowEl || !boxEl) return;
+				const measure = () => {
+					const rowRect = rowEl.getBoundingClientRect();
+					const boxRect = boxEl.getBoundingClientRect();
+					const next = [];
+					for (const ref of childRefs.current) {
+						if (!ref) continue;
+						const c = ref.getBoundingClientRect();
+						const x1 = boxRect.right - rowRect.left;
+						const y1 = boxRect.top - rowRect.top + boxRect.height / 2;
+						const x2 = c.left - rowRect.left;
+						const y2 = c.top - rowRect.top + c.height / 2;
+						const midX = (x1 + x2) / 2;
+						next.push(`M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`);
+					}
+					const key = next.join("|");
+					if (prevEdgesRef.current === key) return;
+					prevEdgesRef.current = key;
+					setEdges(next);
+				};
+				measure();
+				let observer = null;
+				if (typeof ResizeObserver !== "undefined") {
+					observer = new ResizeObserver(measure);
+					observer.observe(rowEl);
+					observer.observe(boxEl);
+				}
+				window.addEventListener("resize", measure);
+				return () => {
+					if (observer) observer.disconnect();
+					window.removeEventListener("resize", measure);
+				};
+			});
+
+			return (0, react_jsx_runtime.jsxs)("div", { ref: rowRef, style: { ...S.row, position: "relative" }, children: [
+				edges.length > 0
+					? (0, react_jsx_runtime.jsx)("svg", {
+						style: S.edgeLayer,
+						children: edges.map((d, i) => (0, react_jsx_runtime.jsx)("path", {
+							key: i,
+							d,
+							stroke: "var(--dsw-alias-border-l2)",
+							strokeWidth: 1.5,
+							fill: "none",
+						}, i)),
+					})
+					: null,
+				(0, react_jsx_runtime.jsx)("div", { ref: boxWrapRef, style: { flex: "0 0 auto" }, children: (0, react_jsx_runtime.jsx)(NodeBox, { node }) }),
 				node.children && node.children.length > 0
-					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child) => (0, react_jsx_runtime.jsx)(TreeRow, { node: child }, child.id)) })
+					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
+						key: child.id,
+						ref: (el) => {
+							childRefs.current[idx] = el;
+						},
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child }),
+					}, child.id)) })
 					: null,
 			] });
 		}
 
 		function MindmapDetailsPanel(props) {
-			// inputActions 是 details 槽的标准注入（runner catalog：session 作用域
-			// 槽组件免费获得）；setDraft 即官方公共面「把指令写进输入草稿」。
-			const { useSession, sessionId, inputActions, mindmapFace } = props;
-			const nodes = useSession ? useSession((s) => (s && s.nodes) || EMPTY_NODES) : EMPTY_NODES;
+			// 014：面板与 M 按钮同槽位（conversation.session.header.actions），
+			// 会话能力（sessionId/inputActions/nodes）与开合回调全部由 MindmapSlot
+			// 经 props 直给（无桥、无 useSyncExternalStore）。
+			const { mindmapFace, open, sessionId, inputActions, nodes, onOpen, onClose } = props;
 			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes]);
 			// 013：本地加载占位文档（左键点 .md 秒建 tab、内容为空），与快照文档
 			// 合并显示；快照优先（AI 结果覆盖占位）。
 			const [localDocs, setLocalDocs] = react.useState({});
 			const merged = react.useMemo(() => mergeDocuments(docs, localDocs), [docs, localDocs]);
-			const panelRootRef = react.useRef(null);
+			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
+			const WIDTH_KEY = "dsh-mindmap.overlay-width";
+			const [panelWidth, setPanelWidth] = react.useState(() => {
+				try {
+					const saved = Number(localStorage.getItem(WIDTH_KEY));
+					if (Number.isFinite(saved) && saved >= 280) return Math.min(saved, Math.round(window.innerWidth * 0.8));
+				} catch {
+					// localStorage 不可用：走默认
+				}
+				return Math.round(window.innerWidth * 0.42);
+			});
+			react.useEffect(() => {
+				if (panelWidth > Math.round(window.innerWidth * 0.8)) {
+					setPanelWidth(Math.round(window.innerWidth * 0.8));
+				}
+			}, []);
+			const dragStateRef = react.useRef(null);
+			function startResize(e) {
+				e.preventDefault();
+				dragStateRef.current = { startX: e.clientX, startWidth: panelWidth, latestWidth: panelWidth };
+				const onMove = (ev) => {
+					if (!dragStateRef.current) return;
+					const max = Math.round(window.innerWidth * 0.8);
+					const next = Math.min(max, Math.max(280, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
+					dragStateRef.current.latestWidth = next;
+					setPanelWidth(next);
+				};
+				const onUp = () => {
+					try {
+						localStorage.setItem(WIDTH_KEY, String(dragStateRef.current ? dragStateRef.current.latestWidth : panelWidth));
+					} catch {
+						// localStorage 不可用：忽略
+					}
+					dragStateRef.current = null;
+					window.removeEventListener("mousemove", onMove);
+					window.removeEventListener("mouseup", onUp);
+				};
+				window.addEventListener("mousemove", onMove);
+				window.addEventListener("mouseup", onUp);
+			}
 			// 013 目录树 tab：常驻第一个 tab（TREE_TAB 哨兵，永不与绝对路径撞名）。
 			const TREE_TAB = "__tree__";
 			// 013 作者拍板「单脑图模式」：面板只有「目录」与「脑图」两个 tab，
@@ -588,12 +721,12 @@ window.__ModuleLoader__.load({
 			// 悬停高亮键：树行用 entry.path / node.path，tab 用 TREE_TAB / 文档路径。
 			const [hoverKey, setHoverKey] = react.useState(null);
 
-			// 008 动态测量聊天区头部高度,实现面板与聊天区底边线像素级对齐;
-			// 测不到时回退 75(007 数值修正版)。
-			// 009 修复:多插件(如 dsh-better-sidebar)会包裹中间列,使 008 的结构链
-			// 取到「包含整个会话区的大容器」(高 ≈ 600),撑大面板;修正为选择器
-			// 优先级反转(主选 wSkVaW_header) + 高度合法性校验 + 失败 reset 回退。
-			const FALLBACK_HEADER_HEIGHT = 75;
+			// 007~010 头线对齐（overlay 版回归）：面板头部高度动态跟随聊天区头部，
+			// 让两者的底部分隔线像素对齐。面板贴视口顶（fixed 宿主层），故
+			// 头部高度 = 聊天头部 rect.bottom - 1 - 面板顶（面板顶 ≈ 视口顶）。
+			// 主选 wSkVaW_header；结构链回退；合法性钳制 [40,200]；失败回退 74（75-1）。
+			const panelRootRef = react.useRef(null);
+			const FALLBACK_HEADER_HEIGHT = 74;
 			const [headerHeight, setHeaderHeight] = react.useState(FALLBACK_HEADER_HEIGHT);
 			react.useLayoutEffect(() => {
 				const HEADER_MIN = 40;
@@ -601,11 +734,10 @@ window.__ModuleLoader__.load({
 				const tryPaths = [
 					() => document.querySelector('[class*="wSkVaW_header"]'),
 					() => {
-						const detailsCol = document.querySelector('[class*="detailsCol"]');
-						if (!detailsCol) return null;
-						const centerCol = detailsCol.previousElementSibling;
-						if (!centerCol) return null;
-						return centerCol.firstElementChild?.firstElementChild || null;
+						const frame = document.querySelector("[data-dsh-frame]");
+						if (!frame) return null;
+						const center = frame.querySelector('[data-pane="conversation"]');
+						return center ? center.firstElementChild : null;
 					},
 				];
 				const measure = () => {
@@ -616,20 +748,15 @@ window.__ModuleLoader__.load({
 						const panelTop = panelRootRef.current
 							? panelRootRef.current.getBoundingClientRect().top
 							: rect.top;
-						// 010 精确对齐：聊天区可见分隔线是 ::after（bottom:1px, height:1px），
-						// 实测其顶缘位于元素底部上方 1px 处；面板线用 border-bottom 贴底，
-						// 故头部高度 = rect.bottom - 1 - panelTop。保留一位小数避免亚像素偏差。
 						const h = rect.bottom - 1 - panelTop;
 						if (h >= HEADER_MIN && h <= HEADER_MAX) {
 							setHeaderHeight(Math.round(h * 10) / 10);
 							return;
 						}
 					}
-					// 全部失败/超范围:reset 到回退值,避免卡在错误高度。
 					setHeaderHeight(FALLBACK_HEADER_HEIGHT);
 				};
 				measure();
-				// observer 锚点用主选(稳定),主选缺失才退化到结构链。
 				const target = tryPaths[0]() || tryPaths[1]();
 				let observer = null;
 				if (target && typeof ResizeObserver !== "undefined") {
@@ -656,7 +783,7 @@ window.__ModuleLoader__.load({
 				[doc && doc.content, doc && doc.rootTitle],
 			);
 
-			// AI 自动打开（001 决策 5）：新到达的 create/open 结果触发 openDetails；
+			// AI 自动打开（001 决策 5）：新到达的 create/open 结果自动展开悬浮面板；
 			// 首次挂载只登记不打开（刷新后面板保持收起，003 实测行为）。
 			const seen = react.useRef(null);
 			react.useEffect(() => {
@@ -672,7 +799,7 @@ window.__ModuleLoader__.load({
 				}
 				seen.current = ids;
 				if (shouldOpen) {
-					mindmapFace.layout.openDetails();
+					onOpen();
 					// 单脑图模式：新打开的脑图顶替旧视图（001 场景 1「一句开脑图」）。
 					setHiddenPath(null);
 					setCurrentPath(null);
@@ -686,6 +813,7 @@ window.__ModuleLoader__.load({
 			const focusPath = docs.order.length > 0 ? docs.order[docs.order.length - 1] : null;
 			const focusSentRef = react.useRef(null);
 			react.useEffect(() => {
+				if (!open) return; // 面板收起时不自动发消息（014 overlay 形态守卫）
 				if (!sessionId) return;
 				if (!active || active === TREE_TAB) return;
 				if (!docs.byPath[active]) return; // 本地占位：它的 open 请求已在途
@@ -700,7 +828,7 @@ window.__ModuleLoader__.load({
 				} catch {
 					// 发送失败：下次 active/focus 变化会再试；也可手动在聊天里说。
 				}
-			}, [active, focusPath, fsTree.cwd, docs]);
+			}, [active, focusPath, fsTree.cwd, docs, open]);
 
 			async function onExport() {
 				if (!tree || !doc || exporting) return;
@@ -1073,11 +1201,27 @@ window.__ModuleLoader__.load({
 			}
 			//#endregion
 
-			return (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: S.root, children: [
-				// 010 对齐聊天区 ::after 分隔线(它在 bottom:1px height:1px,线在元素底边上方 1px);
-				// 面板 border-bottom 贴底,需 height = headerHeight - 1 抵消。
-				// hook 内 HEADER_MIN=40 保证减 1 后 ≥ 39,无需 clamp。
-				// 013 头部改列布局:上行=导出/✕,下行=tab 行(贴底线)。
+			// 014 布局让位：面板打开/拖宽时把宽度写进 CSS 变量，挤窄 #root 推走
+			// 聊天区（better-sidebar 同款）；关闭/卸载时移除变量恢复全宽。
+			react.useLayoutEffect(() => {
+				if (typeof document === "undefined") return;
+				if (open) {
+					document.documentElement.style.setProperty("--dsh-mindmap-width", `${panelWidth}px`);
+				} else {
+					document.documentElement.style.removeProperty("--dsh-mindmap-width");
+				}
+				return () => {
+					document.documentElement.style.removeProperty("--dsh-mindmap-width");
+				};
+			}, [open, panelWidth]);
+
+			if (!open) return null;
+			// 014 overlay 外壳：fixed 宿主层（点击穿透）套右缘贴边全高悬浮面板，
+			// 左缘拖拽调宽（[280, 视口 80%]，localStorage 持久化）；遮盖聊天区是
+			// 该形态的已知代价（作者拍板，见 docs/014）。宿主层挂在 header 槽位里，
+			// better-sidebar 同款「fixed 自举」思路。
+			return (0, react_jsx_runtime.jsx)("div", { style: S.panelHost, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: { ...S.overlayRoot, width: panelWidth }, children: [
+				(0, react_jsx_runtime.jsx)("div", { style: S.overlayHandle, onMouseDown: startResize }),
 				(0, react_jsx_runtime.jsxs)("div", { style: { ...S.header, height: `${headerHeight - 1}px` }, children: [
 					(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 						(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
@@ -1093,7 +1237,7 @@ window.__ModuleLoader__.load({
 							type: "button",
 							style: S.action,
 							title: "收起脑图面板",
-							onClick: () => mindmapFace.layout.closeDetails(),
+							onClick: () => onClose(),
 							children: "✕",
 						}),
 					] }),
@@ -1164,12 +1308,30 @@ window.__ModuleLoader__.load({
 						}),
 					],
 				}) : null,
-			] });
+			] }) });
 		}
 		//#endregion
 
 		function apply(ctx) {
-			const face = { layout: ctx.layout };
+			const face = {};
+
+			// 014「布局让位」CSS（better-sidebar 同款机制）：面板打开时给 #root 挂
+			// margin-right + 宽度挤压，把聊天区推到左边、面板占右侧腾出的空间，
+			// 互不遮挡。用插件自己的变量 --dsh-mindmap-width，避免与它家
+			// --dsh-sidebar-width 冲突（同属性同优先级时后注入者胜，双开插件并存
+			// 属已知边界，见 docs/014）。
+			if (typeof document !== "undefined") {
+				const style = document.createElement("style");
+				style.setAttribute("data-dsh-mindmap", "layout-push");
+				style.textContent = [
+					"#root{",
+					"margin-right:var(--dsh-mindmap-width,0px);",
+					"width:calc(100% - var(--dsh-mindmap-width,0px));",
+					"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
+					"}",
+				].join("");
+				document.head.appendChild(style);
+			}
 
 			// 013 目录树 tab：host 自建只读路由 /mindmap/api/tree（dsh-better-sidebar
 			// 同款机制——官方 host.listDirectory 在 native picker 环境必挂，见 013）。
@@ -1187,21 +1349,18 @@ window.__ModuleLoader__.load({
 				return parsed.value;
 			};
 
-			// details 是 single 槽且被官方 DetailsPanel 占据（priority 0）；
-			// 必须显式 -1 才能合法顶替（lowest renders，003 实测）。
-			ctx.slots.inject("details", () => ctx.slots.register({
-				name: "details",
-				priority: -1,
-				inject: () => ({ mindmapFace: face }),
-			}, MindmapDetailsPanel));
-
-			// header 动作行是 list 槽，追加式零冲突（002 静态 + 003 实测①-c）。
+			// 014 overlay 形态（作者拍板，见 docs/014）：面板宿主层（position:fixed）
+			// 与 M 按钮一起渲染在 conversation.session.header.actions 槽位里——
+			// better-sidebar 同款「fixed 宿主层自举」思路（它的宿主层挂在
+			// conversation.chat.turnTail）；session scope 全套 props 直给，无需跨槽。
+			// details 槽已归还官方（原生「工具详情」栏恢复）；shell.overlay 方案
+			// 实测未渲染，已弃用（见 docs/014 排障）。
 			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
 				name: "conversation.session.header.actions",
 				id: "dsh-mindmap",
 				order: 100,
 				inject: () => ({ mindmapFace: face }),
-			}, MindmapButton));
+			}, MindmapSlot));
 		}
 
 		exports.apply = apply;

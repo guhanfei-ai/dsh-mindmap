@@ -52,7 +52,8 @@ const runtime = loadBrowserModule()
 const { parseMarkdownToTree, reduceDocuments, mergeDocuments, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
-  assert.deepEqual(Array.from(runtime.inject), ['slots', 'layout'])
+  // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
+  assert.deepEqual(Array.from(runtime.inject), ['slots'])
 })
 
 test('headings nest by level with H1 children of the root', () => {
@@ -64,6 +65,18 @@ test('headings nest by level with H1 children of the root', () => {
   assert.deepEqual([...tree.children[0].children[0].children.map((n) => n.topic)], ['C'])
   assert.deepEqual([...tree.children[1].children.map((n) => n.topic)], ['E'])
   assert.equal(tree.children[0].data.level, 1)
+})
+
+test('first H1 echoing the root title merges into the root node', () => {
+  // 记录文档常以文件名作首行 H1，与根节点标题重复——并入根节点
+  const tree = parseMarkdownToTree('# doc.md\n## A\n- x', 'doc')
+  assert.deepEqual([...tree.children.map((n) => n.topic)], ['A'])
+  // 不带 .md 后缀的同名 H1 同样并入
+  const bare = parseMarkdownToTree('# doc\n## B', 'doc')
+  assert.deepEqual([...bare.children.map((n) => n.topic)], ['B'])
+  // 不同名的 H1 保留为子节点（映射语义不变）
+  const other = parseMarkdownToTree('# other\n## C', 'doc')
+  assert.deepEqual([...other.children.map((n) => n.topic)], ['other'])
 })
 
 test('lists nest by indentation and empty items become placeholders', () => {
@@ -207,11 +220,9 @@ test('buildExportSvg renders the tree with connectors and placeholder labels', (
   assert.ok(width > 0 && height > 0)
 })
 
-test('apply registers the details occupant at priority -1 and the header M button', () => {
+test('apply registers the header M slot (panel host + button) and takes no other slot', () => {
   const registered = []
   const ctx = {
-    layout: { openDetails() {}, closeDetails() {} },
-    get() { return undefined },
     slots: {
       inject(key, factory) {
         factory()
@@ -223,14 +234,16 @@ test('apply registers the details occupant at priority -1 and the header M butto
     },
   }
   runtime.apply(ctx)
-  const details = registered.find((r) => r.key === 'details')
   const button = registered.find((r) => r.key === 'conversation.session.header.actions')
-  assert.ok(details, 'details registration missing')
   assert.ok(button, 'header actions registration missing')
-  assert.equal(details.options.priority, -1)
-  assert.equal(typeof details.component, 'function')
+  // 014：details 槽归还官方、shell.overlay 方案弃用，均不再注册
+  assert.equal(registered.find((r) => r.key === 'details'), undefined)
+  assert.equal(registered.find((r) => r.key === 'shell.overlay'), undefined)
+  assert.equal(registered.length, 1)
   assert.equal(button.options.id, 'dsh-mindmap')
   assert.equal(typeof button.component, 'function')
+  const face = button.options.inject()
+  assert.equal(typeof face.mindmapFace.listTree, 'function')
 })
 
 test('visibleTreeRows walks only expanded directories in pre-order', () => {
@@ -281,10 +294,9 @@ test('relPathWithin strips the cwd prefix and falls back to the entry name outsi
   assert.equal(relPathWithin('C:\\w', 'C:\\w\\a.md', 'a.md'), 'a.md')
 })
 
-test('apply wires listTree through the mindmapFace', () => {
+test('apply wires listTree through the mindmapFace (header slot inject)', () => {
   const registered = []
   const ctx = {
-    layout: { openDetails() {}, closeDetails() {} },
     slots: {
       inject(key, factory) {
         factory()
@@ -296,8 +308,9 @@ test('apply wires listTree through the mindmapFace', () => {
     },
   }
   runtime.apply(ctx)
-  const details = registered.find((r) => r.key === 'details')
-  const face = details.options.inject()
+  const button = registered.find((r) => r.key === 'conversation.session.header.actions')
+  const face = button.options.inject()
   assert.equal(typeof face.mindmapFace.listTree, 'function')
-  assert.equal(typeof face.mindmapFace.layout.openDetails, 'function')
+  // 014：face 不再携带 layout（details 时代的遗留）
+  assert.equal(face.mindmapFace.layout, undefined)
 })
