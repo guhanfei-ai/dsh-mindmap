@@ -49,7 +49,7 @@ function toolResultNode(name, payload, { isError = false, callId = `call-${Math.
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -166,6 +166,35 @@ test('reduceDocuments replays tool results and follows renames', () => {
   assert.equal(docs.byPath['/w/renamed.md'].rootTitle, 'renamed')
   assert.equal(docs.byPath['/w/renamed.md'].renamedFrom, '/w/plan.md')
   assert.equal(docs.byPath['/w/plan.md'], undefined)
+})
+
+test('reduceDocuments remembers the latest open intent even when an update follows it', () => {
+  const nodes = [
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/a.md', content: '' }, { callId: 'create-a' }),
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/b.md', content: '' }, { callId: 'create-b' }),
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' }, { callId: 'open-a' }),
+    toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/a.md', content: 'a\n- child' }, { callId: 'update-a' }),
+  ]
+  const docs = reduceDocuments(nodes)
+  assert.equal(docs.latestOpeningPath, '/w/a.md')
+  assert.equal(docs.latestOpeningEventKey, 'call:open-a')
+  assert.equal(docs.byPath['/w/a.md'].openingEventKey, 'call:open-a')
+  assert.equal(autoOpenTarget(docs, null), '/w/a.md')
+  assert.equal(autoOpenTarget(docs, new Set(['call:create-a', 'call:create-b'])), '/w/a.md')
+})
+
+test('autoOpenTarget ignores already consumed opens but switches to a repeated open', () => {
+  const first = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' }, { callId: 'open-a-1' }),
+  ])
+  assert.deepEqual([...openingEventKeys(first)], ['call:open-a-1'])
+  assert.equal(autoOpenTarget(first, openingEventKeys(first)), null)
+
+  const repeated = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' }, { callId: 'open-a-1' }),
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' }, { callId: 'open-a-2' }),
+  ])
+  assert.equal(autoOpenTarget(repeated, openingEventKeys(first)), '/w/a.md')
 })
 
 test('mergeDocuments: snapshot wins, locals append, rename drops stale local tabs', () => {

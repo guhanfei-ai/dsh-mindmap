@@ -282,12 +282,14 @@ window.__ModuleLoader__.load({
 		 * 重放会话快照里的 mindmap_* 工具结果，得到每个脑图文档的最新状态。
 		 * nodes: ConversationSnapshot.nodes（ToolResultNode 含 call.name 与渲染后的
 		 * content 文本块——host 的工具结果 JSON 就写在其中）。
-		 * 返回 { order: path[], byPath: { path → {path, rootTitle, content, op, callId} } }。
+		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标。
 		 */
 		function reduceDocuments(nodes) {
 			const byPath = Object.create(null);
 			let order = [];
-			for (const node of nodes ?? []) {
+			let latestOpeningPath = null;
+			let latestOpeningEventKey = null;
+			for (const [nodeIndex, node] of (nodes ?? []).entries()) {
 				if (!node || node.kind !== "tool-result" || node.isError) continue;
 				const name = node.call?.name;
 				if (typeof name !== "string" || !TOOL_NAMES.has(name)) continue;
@@ -298,6 +300,20 @@ window.__ModuleLoader__.load({
 					continue;
 				}
 				if (!parsed || parsed.ok !== true || typeof parsed.path !== "string" || !parsed.path) continue;
+				const op = typeof parsed.op === "string" ? parsed.op : name;
+				// callId 是正常路径下的事件身份；nodeIndex 是无 callId 时的稳定兜底，
+				// 避免同一文档重复 mindmap_open 被误判成同一个事件。
+				const eventKey = node.callId != null && String(node.callId)
+					? `call:${String(node.callId)}`
+					: `node:${nodeIndex}`;
+				const previous = byPath[parsed.path];
+				const openingEventKey = OPENING_OPS.has(op)
+					? eventKey
+					: (previous?.openingEventKey ?? null);
+				if (OPENING_OPS.has(op)) {
+					latestOpeningPath = parsed.path;
+					latestOpeningEventKey = eventKey;
+				}
 				// 根标题改名 = 文件重命名：旧路径键迁移到新路径。
 				const renamedFrom = typeof parsed.renamedFrom === "string" ? parsed.renamedFrom : null;
 				if (renamedFrom && byPath[renamedFrom] && renamedFrom !== parsed.path) {
@@ -309,13 +325,15 @@ window.__ModuleLoader__.load({
 					path: parsed.path,
 					rootTitle: typeof parsed.rootTitle === "string" && parsed.rootTitle ? parsed.rootTitle : stemOf(parsed.path),
 					content: typeof parsed.content === "string" ? parsed.content : "",
-					op: typeof parsed.op === "string" ? parsed.op : name,
+					op,
 					callId: node.callId,
+					eventKey,
+					openingEventKey,
 					// 013：rename 迁移后保留旧路径，供本地直读 tab 清理（mergeDocuments）。
 					renamedFrom: typeof parsed.renamedFrom === "string" ? parsed.renamedFrom : null,
 				};
 			}
-			return { order, byPath };
+			return { order, byPath, latestOpeningPath, latestOpeningEventKey };
 		}
 
 		/**
@@ -337,7 +355,36 @@ window.__ModuleLoader__.load({
 			for (const p of Object.keys(localDocs)) {
 				if (!snapshot.byPath[p] && !dropped.has(p)) order.push(p);
 			}
-			return { order, byPath };
+			return {
+				order,
+				byPath,
+				latestOpeningPath: snapshot.latestOpeningPath ?? null,
+				latestOpeningEventKey: snapshot.latestOpeningEventKey ?? null,
+			};
+		}
+
+		/**
+		 * 找到本次快照需要自动展示的脑图路径。
+		 * seenKeys 为 null 表示首次挂载：恢复历史会话最近一次 create/open；
+		 * 否则只响应尚未消费的打开事件。
+		 */
+		function autoOpenTarget(snapshot, seenKeys) {
+			if (!snapshot || !snapshot.latestOpeningPath || !snapshot.byPath?.[snapshot.latestOpeningPath]) return null;
+			if (seenKeys === null) return snapshot.latestOpeningPath;
+			const latest = snapshot.byPath[snapshot.latestOpeningPath];
+			if (latest.openingEventKey && !seenKeys.has(latest.openingEventKey)) return snapshot.latestOpeningPath;
+			let target = null;
+			for (const p of snapshot.order ?? []) {
+				const doc = snapshot.byPath[p];
+				if (doc?.openingEventKey && !seenKeys.has(doc.openingEventKey)) target = p;
+			}
+			return target;
+		}
+
+		function openingEventKeys(snapshot) {
+			return new Set((snapshot?.order ?? [])
+				.map((p) => snapshot.byPath[p]?.openingEventKey)
+				.filter((key) => key != null));
 		}
 		//#endregion
 
@@ -1028,26 +1075,17 @@ window.__ModuleLoader__.load({
 				[doc && doc.content, doc && doc.rootTitle],
 			);
 
-			// AI 自动打开（001 决策 5）：新到达的 create/open 结果自动展开悬浮面板；
-			// 首次挂载只登记不打开（刷新后面板保持收起，003 实测行为）。
+			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
+			// 无论面板当前是否收起，都展开并切到这次意图对应的文档；首次挂载的
+			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
 			const seen = react.useRef(null);
 			react.useEffect(() => {
-				const ids = new Set(merged.order.map((p) => merged.byPath[p].callId));
-				if (seen.current === null) {
-					seen.current = ids;
-					return;
-				}
-				let shouldOpen = false;
-				for (const p of merged.order) {
-					const d = merged.byPath[p];
-					if (OPENING_OPS.has(d.op) && !seen.current.has(d.callId)) shouldOpen = true;
-				}
-				seen.current = ids;
-				if (shouldOpen) {
+				const targetPath = autoOpenTarget(merged, seen.current);
+				seen.current = openingEventKeys(merged);
+				if (targetPath) {
 					onOpen();
-					// 单脑图模式：新打开的脑图顶替旧视图（001 场景 1「一句开脑图」）。
 					setHiddenPath(null);
-					setCurrentPath(null);
+					setCurrentPath(targetPath);
 					setView("mindmap");
 				}
 			}, [merged]);
@@ -1644,6 +1682,8 @@ window.__ModuleLoader__.load({
 			parseMarkdownToTree,
 			reduceDocuments,
 			mergeDocuments,
+			autoOpenTarget,
+			openingEventKeys,
 			resultTextOfBlocks,
 			stemOf,
 			buildExportSvg,
