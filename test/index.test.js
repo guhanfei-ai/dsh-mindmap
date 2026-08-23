@@ -52,6 +52,32 @@ function createContext(config = {}) {
       fn()
       return () => {}
     },
+    // 015 settings 命名空间注入：模拟 dsh-settings 的注册面（config → base）。
+    inject(names, callback) {
+      if (names && names.includes('settings')) {
+        callback({
+          settings: {
+            register(ns, schema, options = {}) {
+              const base = options.base ?? {}
+              return {
+                get: () => ({
+                  requireApproval: base.requireApproval === true,
+                  defaultPanelWidth: typeof base.defaultPanelWidth === 'number' ? base.defaultPanelWidth : 42,
+                  lineStyle: base.lineStyle === 'curve' ? 'curve' : 'elbow',
+                  cardStyle: base.cardStyle === 'square' ? 'square' : 'rounded',
+                  colorTheme: base.colorTheme ?? 'ocean',
+                }),
+                update: async () => {},
+              }
+            },
+          },
+          effect(fn) {
+            fn()
+            return () => {}
+          },
+        })
+      }
+    },
   }
   apply(ctx, config)
   const byName = (name) => {
@@ -216,9 +242,13 @@ test('buildResult derives rootTitle from the path', () => {
   assert.equal(parsed.ok, true)
 })
 
-test('requireApproval=false (default) registers no pre-execute listener; =true asks only for update', async () => {
+test('requireApproval gates mindmap_update only, and reads the settings namespace at runtime', async () => {
+  // 015：pre-execute 钩子常驻注册；默认（false）直接放行
   const plain = createContext()
-  assert.equal(plain.listeners.has('tools/pre-execute'), false)
+  const plainListener = plain.listeners.get('tools/pre-execute')
+  assert.ok(plainListener)
+  const allow = async () => ({ kind: 'allow' })
+  assert.deepEqual(await plainListener({ name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }, allow), { kind: 'allow' })
 
   const gated = createContext({ requireApproval: true })
   const listener = gated.listeners.get('tools/pre-execute')

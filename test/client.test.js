@@ -49,7 +49,7 @@ function toolResultNode(name, payload, { isError = false, callId = `call-${Math.
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -220,9 +220,10 @@ test('buildExportSvg renders the tree with connectors and placeholder labels', (
   assert.ok(width > 0 && height > 0)
 })
 
-test('apply registers the header M slot (panel host + button) and takes no other slot', () => {
+test('apply registers the header M slot and the settings section, and takes no other slot', () => {
   const registered = []
   const ctx = {
+    get() { return undefined },
     slots: {
       inject(key, factory) {
         factory()
@@ -235,15 +236,23 @@ test('apply registers the header M slot (panel host + button) and takes no other
   }
   runtime.apply(ctx)
   const button = registered.find((r) => r.key === 'conversation.session.header.actions')
+  const settings = registered.find((r) => r.key === 'settings.section')
   assert.ok(button, 'header actions registration missing')
-  // 014：details 槽归还官方、shell.overlay 方案弃用，均不再注册
+  assert.ok(settings, 'settings.section registration missing')
+  // 014/015：details 槽归还官方、shell.overlay 方案弃用，均不再注册
   assert.equal(registered.find((r) => r.key === 'details'), undefined)
   assert.equal(registered.find((r) => r.key === 'shell.overlay'), undefined)
-  assert.equal(registered.length, 1)
+  assert.equal(registered.length, 2)
   assert.equal(button.options.id, 'dsh-mindmap')
   assert.equal(typeof button.component, 'function')
+  // 015 设置面板：左栏导航项
+  assert.equal(settings.options.id, 'dsh-mindmap')
+  assert.equal(settings.options.label, '思维脑图')
+  assert.equal(typeof settings.component, 'function')
   const face = button.options.inject()
   assert.equal(typeof face.mindmapFace.listTree, 'function')
+  assert.equal(typeof face.mindmapFace.readSettings, 'function')
+  assert.equal(typeof face.mindmapFace.updateSettings, 'function')
 })
 
 test('visibleTreeRows walks only expanded directories in pre-order', () => {
@@ -294,9 +303,26 @@ test('relPathWithin strips the cwd prefix and falls back to the entry name outsi
   assert.equal(relPathWithin('C:\\w', 'C:\\w\\a.md', 'a.md'), 'a.md')
 })
 
-test('apply wires listTree through the mindmapFace (header slot inject)', () => {
+test('colorThemeTokens serves three distinct palettes and falls back to ocean', () => {
+  const ocean = colorThemeTokens('ocean')
+  const sunset = colorThemeTokens('sunset')
+  const forest = colorThemeTokens('forest')
+  for (const t of [ocean, sunset, forest]) {
+    assert.equal(typeof t.rootBg, 'string')
+    assert.equal(typeof t.rootBorder, 'string')
+    assert.equal(typeof t.heading, 'string')
+  }
+  assert.notEqual(ocean.heading, sunset.heading)
+  assert.notEqual(sunset.heading, forest.heading)
+  assert.notEqual(ocean.heading, forest.heading)
+  // 未知名回落海洋蓝
+  assert.equal(colorThemeTokens('nope').heading, ocean.heading)
+})
+
+test('apply wires listTree and settings faces through the mindmapFace (header slot inject)', () => {
   const registered = []
   const ctx = {
+    get() { return undefined },
     slots: {
       inject(key, factory) {
         factory()
@@ -313,4 +339,9 @@ test('apply wires listTree through the mindmapFace (header slot inject)', () => 
   assert.equal(typeof face.mindmapFace.listTree, 'function')
   // 014：face 不再携带 layout（details 时代的遗留）
   assert.equal(face.mindmapFace.layout, undefined)
+  // 015：connection 缺失时 readSettings 返回 null、updateSettings 抛错（降级语义）
+  return face.mindmapFace.readSettings().then((v) => {
+    assert.equal(v, null)
+    return assert.rejects(() => face.mindmapFace.updateSettings({ requireApproval: true }), /settings service unavailable/)
+  })
 })

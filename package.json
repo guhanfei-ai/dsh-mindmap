@@ -17,6 +17,9 @@
     "README.zh-CN.md",
     "CHANGELOG.md"
   ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -35,6 +35,39 @@ window.__ModuleLoader__.load({
 
 		const EMPTY_NODES = [];
 
+		// 015 节点颜色主题（三风格：海洋蓝 / 落日橙 / 森林绿）。
+		// 根盒用主题色淡底 + 半透明描边；标题节点文字用主题主色；背景永远跟随全局。
+		const COLOR_THEMES = {
+			ocean: { rootBg: "rgba(59,91,219,0.10)", rootBorder: "rgba(59,91,219,0.45)", heading: "#3b5bdb" },
+			sunset: { rootBg: "rgba(232,110,52,0.10)", rootBorder: "rgba(232,110,52,0.45)", heading: "#d96b2a" },
+			forest: { rootBg: "rgba(42,157,104,0.10)", rootBorder: "rgba(42,157,104,0.45)", heading: "#2a9d68" },
+		};
+		/** 颜色主题名 → 色值令牌（未知名回落海洋蓝）。 */
+		function colorThemeTokens(name) {
+			return COLOR_THEMES[name] || COLOR_THEMES.ocean;
+		}
+
+		// 015 设置变更总线：设置面板保存成功后 bump；脑图面板订阅 stamp 重读主题。
+		// 面板组件常驻不卸载，open 不变时不会自行重读——靠总线驱动
+		// （闭包实现，不依赖 this）。
+		const settingsBus = (() => {
+			let stamp = 0;
+			const listeners = new Set();
+			return {
+				get: () => stamp,
+				bump() {
+					stamp += 1;
+					for (const fn of listeners) fn(stamp);
+				},
+				subscribe(fn) {
+					listeners.add(fn);
+					return () => {
+						listeners.delete(fn);
+					};
+				},
+			};
+		})();
+
 		//#region markdown → 脑图树（零依赖手写解析）
 		/** 规范化节点内容用于稳定 ID：折叠空白、截断到 60 字符（MarkGrove 同款）。 */
 		function normalizeForId(text) {
@@ -496,6 +529,25 @@ window.__ModuleLoader__.load({
 			treeError: { color: "var(--dsw-alias-label-error)", fontSize: "12px", lineHeight: 1.6, margin: "0" },
 			treeMenu: { position: "fixed", zIndex: 60, minWidth: "210px", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", padding: "6px", boxShadow: "var(--dsw-shadow-lv2)" },
 			treeMenuItem: { display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", border: "none", background: "none", cursor: "pointer", padding: "7px 12px", borderRadius: "8px", font: "inherit", fontSize: "13px", color: "var(--dsw-alias-label-primary)" },
+			// 015 设置面板（settings.section 页面内容）。
+			settingsWrap: { display: "flex", flexDirection: "column", gap: "12px", padding: "16px", maxWidth: "480px" },
+			settingsGroup: { display: "flex", flexDirection: "column", gap: "14px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "12px", padding: "14px", background: "var(--dsw-alias-bg-layer-3)" },
+			settingsGroupTitle: { fontSize: "13px", fontWeight: 600, color: "var(--dsw-alias-label-primary)", margin: "4px 0 0" },
+			settingsRow: { display: "flex", alignItems: "center", gap: "12px", fontSize: "13px", color: "var(--dsw-alias-label-primary)" },
+			settingsLabel: { flex: "1 1 auto", minWidth: 0, color: "var(--dsw-alias-label-secondary)" },
+			settingsInput: { width: "72px", padding: "4px 8px", borderRadius: "6px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit", fontSize: "13px" },
+			settingsHint: { color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: 1.6, margin: "0" },
+			settingsNotice: { color: "var(--dsw-alias-state-success-primary, #1a7f37)", fontSize: "12px", margin: "0" },
+			settingsError: { color: "var(--dsw-alias-label-error)", fontSize: "12px", lineHeight: 1.6, margin: "0" },
+			// 分段选择控件（线型/卡片风格）
+			segmentRow: { display: "inline-flex", gap: "4px", padding: "3px", borderRadius: "8px", background: "var(--dsw-alias-bg-base)", border: "1px solid var(--dsw-alias-border-l2)" },
+			segmentBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "12px", padding: "3px 12px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", lineHeight: "18px" },
+			segmentBtnActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", boxShadow: "0 1px 2px rgba(16,24,40,0.08)" },
+			// 颜色主题色板
+			swatchRow: { display: "flex", gap: "6px", flex: "1 1 auto", justifyContent: "flex-end" },
+			swatchBtn: { display: "inline-flex", alignItems: "center", gap: "6px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-base)", cursor: "pointer", font: "inherit", fontSize: "12px", padding: "3px 10px", borderRadius: "8px", color: "var(--dsw-alias-label-secondary)", lineHeight: "18px" },
+			swatchActive: { borderColor: "var(--dsw-alias-state-business-primary)", color: "var(--dsw-alias-label-primary)", boxShadow: "inset 0 0 0 1px var(--dsw-alias-state-business-primary)" },
+			swatchDot: { width: "10px", height: "10px", borderRadius: "50%", flex: "none" },
 			row: { display: "flex", alignItems: "center", minWidth: 0 },
 			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "40px", minWidth: 0 },
 			// 面板树连线层：正交折线（MarkGrove 的 orthogonalPath 风格），
@@ -507,6 +559,155 @@ window.__ModuleLoader__.load({
 			placeholderBox: { padding: "6px 12px", borderRadius: "10px", border: "1px dashed var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-tertiary)", background: "none" },
 			codeBox: { fontFamily: "Menlo, monospace", fontSize: "12px" },
 		};
+
+		/** 015 分段选择控件（线型/卡片风格）。 */
+		function Segmented(props) {
+			const { options, value, onChange, disabled } = props;
+			return (0, react_jsx_runtime.jsx)("div", { style: S.segmentRow, children: options.map((opt) => (0, react_jsx_runtime.jsx)("button", {
+				key: opt.value,
+				type: "button",
+				style: value === opt.value ? { ...S.segmentBtn, ...S.segmentBtnActive } : S.segmentBtn,
+				disabled,
+				onClick: () => onChange(opt.value),
+				children: opt.label,
+			}, opt.value)) });
+		}
+
+		/**
+		 * 015 设置面板（settings.section 页面，root scope）：读写 host 的
+		 * settings namespace "mindmap"。节点主题三件套（线/卡片/颜色）+ 面板宽度；
+		 * requireApproval 按作者要求隐藏（功能保留，经 config/API 仍可设）。
+		 */
+		function SettingsPanel(props) {
+			const { mindmapFace } = props;
+			const [value, setValue] = react.useState(null);
+			const [saving, setSaving] = react.useState(false);
+			const [notice, setNotice] = react.useState("");
+			const [error, setError] = react.useState("");
+
+			react.useEffect(() => {
+				let alive = true;
+				(async () => {
+					try {
+						const v = mindmapFace && typeof mindmapFace.readSettings === "function" ? await mindmapFace.readSettings() : null;
+						if (!alive) return;
+						if (v === null) setError("设置服务不可用：settings namespace 未注册或 connection 缺失");
+						setValue({
+							lineStyle: v && v.lineStyle === "curve" ? "curve" : "elbow",
+							cardStyle: v && v.cardStyle === "square" ? "square" : "rounded",
+							colorTheme: v && COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
+							defaultPanelWidth: v && typeof v.defaultPanelWidth === "number" ? v.defaultPanelWidth : 42,
+						});
+					} catch (err) {
+						if (alive) setError(String(err?.message ?? err));
+					}
+				})();
+				return () => {
+					alive = false;
+				};
+			}, [mindmapFace]);
+
+			async function save(patch) {
+				setSaving(true);
+				setError("");
+				setNotice("");
+				try {
+					if (!mindmapFace || typeof mindmapFace.updateSettings !== "function") throw new Error("settings service unavailable");
+					await mindmapFace.updateSettings(patch);
+					settingsBus.bump(); // 通知脑图面板重读主题（面板常驻，open 不变）
+					setNotice("已保存");
+				} catch (err) {
+					setError(String(err?.message ?? err));
+				} finally {
+					setSaving(false);
+				}
+			}
+
+			if (value === null) {
+				return (0, react_jsx_runtime.jsx)("div", { style: S.settingsWrap, children: error
+					? (0, react_jsx_runtime.jsx)("p", { style: S.settingsError, children: error })
+					: (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "正在读取设置…" }) });
+			}
+
+			const setField = (patch) => {
+				setValue({ ...value, ...patch });
+				save(patch);
+			};
+			const changeWidth = (e) => {
+				const raw = Number(e.target.value);
+				const next = Number.isFinite(raw) ? Math.min(80, Math.max(20, Math.round(raw))) : value.defaultPanelWidth;
+				setValue({ ...value, defaultPanelWidth: next });
+			};
+			const commitWidth = () => {
+				save({ defaultPanelWidth: value.defaultPanelWidth });
+			};
+
+			return (0, react_jsx_runtime.jsxs)("div", { style: S.settingsWrap, children: [
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "节点主题" }),
+				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "线" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: "elbow", label: "折线" }, { value: "curve", label: "曲线" }],
+							value: value.lineStyle,
+							disabled: saving,
+							onChange: (v) => setField({ lineStyle: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "卡片" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: "rounded", label: "圆角" }, { value: "square", label: "直角" }],
+							value: value.cardStyle,
+							disabled: saving,
+							onChange: (v) => setField({ cardStyle: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "颜色" }),
+						(0, react_jsx_runtime.jsx)("div", { style: S.swatchRow, children: [
+							{ value: "ocean", label: "海洋蓝" },
+							{ value: "sunset", label: "落日橙" },
+							{ value: "forest", label: "森林绿" },
+						].map((t) => {
+							const tokens = colorThemeTokens(t.value);
+							return (0, react_jsx_runtime.jsxs)("button", {
+								key: t.value,
+								type: "button",
+								style: value.colorTheme === t.value ? { ...S.swatchBtn, ...S.swatchActive } : S.swatchBtn,
+								disabled: saving,
+								onClick: () => setField({ colorTheme: t.value }),
+								children: [
+									(0, react_jsx_runtime.jsx)("span", { style: { ...S.swatchDot, background: tokens.heading } }),
+									t.label,
+								],
+							}, t.value);
+						}) }),
+					] }),
+				] }),
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "主题改动在脑图面板下次打开时生效；背景色始终跟随全局主题。" }),
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "面板" }),
+				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "默认宽度（%）" }),
+						(0, react_jsx_runtime.jsx)("input", {
+							type: "number",
+							min: 20,
+							max: 80,
+							value: value.defaultPanelWidth,
+							disabled: saving,
+							onChange: changeWidth,
+							onBlur: commitWidth,
+							style: S.settingsInput,
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "范围 20~80。拖拽面板后的宽度会记住（localStorage）；清除本地记忆后回到这里配置的默认值。" }),
+				] }),
+				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,
+				notice ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsNotice, children: notice }) : null,
+				error ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsError, children: error }) : null,
+			] });
+		}
 
 		/**
 		 * 「思维脑图」槽位组件（014）：同一槽位渲染 M 按钮 + 悬浮面板宿主层。
@@ -560,16 +761,19 @@ window.__ModuleLoader__.load({
 		}
 
 		function NodeBox(props) {
-			const { node } = props;
+			const { node, theme } = props;
+			// 015 节点主题：卡片圆角（圆角/直角）+ 颜色主题令牌（根盒/标题用主题色）。
+			const tokens = colorThemeTokens(theme && theme.colorTheme);
+			const radius = theme && theme.cardStyle === "square" ? 0 : 10;
 			const style = node.kind === "root"
-				? { ...S.box, ...S.rootBox }
+				? { ...S.box, ...S.rootBox, borderRadius: radius, borderColor: tokens.rootBorder, background: tokens.rootBg }
 				: node.kind === "heading"
-					? { ...S.box, ...S.headingBox }
+					? { ...S.box, ...S.headingBox, borderRadius: radius, color: tokens.heading }
 					: node.kind === "placeholder"
-						? { ...S.placeholderBox }
+						? { ...S.placeholderBox, borderRadius: radius }
 						: node.kind === "code"
-							? { ...S.box, ...S.codeBox }
-							: S.box;
+							? { ...S.box, ...S.codeBox, borderRadius: radius }
+							: { ...S.box, borderRadius: radius };
 			const title = node.data?.description
 				? `${node.topic}\n\n${node.data.description}`
 				: node.data?.code
@@ -578,21 +782,23 @@ window.__ModuleLoader__.load({
 			return (0, react_jsx_runtime.jsx)("div", { style, title, children: node.kind === "placeholder" ? "待填写" : node.topic });
 		}
 
-		/** 左→右递归树：节点盒 + 右侧子节点列 + 正交折线连线层（MarkGrove 风格）。 */
+		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node } = props;
+			const { node, theme } = props;
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
 			const [edges, setEdges] = react.useState([]);
 			const prevEdgesRef = react.useRef("");
 
-			// 测量父盒右缘与各子节点包裹块的几何位置，画直角折线
-			// （M x1 y1 H midX V y2 H x2）；序列化比对防 setState 循环。
+			// 测量父盒右缘与各子节点包裹块的几何位置，画连线
+			// （折线 = M x1 y1 H midX V y2 H x2；曲线 = 贝塞尔水平切出）；
+			// 序列化比对防 setState 循环。
 			react.useLayoutEffect(() => {
 				const rowEl = rowRef.current;
 				const boxEl = boxWrapRef.current;
 				if (!rowEl || !boxEl) return;
+				const curve = theme && theme.lineStyle === "curve";
 				const measure = () => {
 					const rowRect = rowEl.getBoundingClientRect();
 					const boxRect = boxEl.getBoundingClientRect();
@@ -605,7 +811,9 @@ window.__ModuleLoader__.load({
 						const x2 = c.left - rowRect.left;
 						const y2 = c.top - rowRect.top + c.height / 2;
 						const midX = (x1 + x2) / 2;
-						next.push(`M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`);
+						next.push(curve
+							? `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`
+							: `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`);
 					}
 					const key = next.join("|");
 					if (prevEdgesRef.current === key) return;
@@ -639,14 +847,14 @@ window.__ModuleLoader__.load({
 						}, i)),
 					})
 					: null,
-				(0, react_jsx_runtime.jsx)("div", { ref: boxWrapRef, style: { flex: "0 0 auto" }, children: (0, react_jsx_runtime.jsx)(NodeBox, { node }) }),
+				(0, react_jsx_runtime.jsx)("div", { ref: boxWrapRef, style: { flex: "0 0 auto" }, children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme }) }),
 				node.children && node.children.length > 0
 					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
 						key: child.id,
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme }),
 					}, child.id)) })
 					: null,
 			] });
@@ -678,6 +886,43 @@ window.__ModuleLoader__.load({
 					setPanelWidth(Math.round(window.innerWidth * 0.8));
 				}
 			}, []);
+			// 015 设置面板：没有本地拖拽记忆时，用 settings 里的默认宽度。
+			react.useEffect(() => {
+				let hasLocal = false;
+				try {
+					hasLocal = localStorage.getItem(WIDTH_KEY) !== null;
+				} catch {
+					// 忽略
+				}
+				if (hasLocal) return;
+				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
+				mindmapFace.readSettings().then((v) => {
+					const pct = v && typeof v.defaultPanelWidth === "number" ? Math.min(80, Math.max(20, v.defaultPanelWidth)) : 42;
+					const px = Math.round(window.innerWidth * pct / 100);
+					setPanelWidth((prev) => (Math.abs(prev - px) < 2 ? prev : px));
+				}).catch(() => {
+					// 读设置失败：保持 42% 默认
+				});
+			}, [mindmapFace]);
+
+			// 015 节点主题：面板每次打开、或设置总线 bump（设置页保存）时重读
+			// settings——面板常驻不卸载，光靠 open 变化会漏掉「开着面板改设置」。
+			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
+			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean" });
+			react.useEffect(() => {
+				if (!open) return;
+				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
+				mindmapFace.readSettings().then((v) => {
+					if (!v) return;
+					setTheme({
+						lineStyle: v.lineStyle === "curve" ? "curve" : "elbow",
+						cardStyle: v.cardStyle === "square" ? "square" : "rounded",
+						colorTheme: COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
+					});
+				}).catch(() => {
+					// 读设置失败：保持当前主题
+				});
+			}, [open, settingsStamp, mindmapFace]);
 			const dragStateRef = react.useRef(null);
 			function startResize(e) {
 				e.preventDefault();
@@ -1290,7 +1535,7 @@ window.__ModuleLoader__.load({
 					: (doc && doc.op === "local")
 						? renderLoading()
 						: tree
-							? (0, react_jsx_runtime.jsx)(TreeRow, { node: tree })
+							? (0, react_jsx_runtime.jsx)(TreeRow, { node: tree, theme })
 							: renderTree() }),
 				tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 					style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
@@ -1317,16 +1562,17 @@ window.__ModuleLoader__.load({
 
 			// 014「布局让位」CSS（better-sidebar 同款机制）：面板打开时给 #root 挂
 			// margin-right + 宽度挤压，把聊天区推到左边、面板占右侧腾出的空间，
-			// 互不遮挡。用插件自己的变量 --dsh-mindmap-width，避免与它家
-			// --dsh-sidebar-width 冲突（同属性同优先级时后注入者胜，双开插件并存
-			// 属已知边界，见 docs/014）。
+			// 互不遮挡。015 修复级联冲突：它家（dsh-better-sidebar）同样注入
+			// #root 规则，后注入者胜导致我们的推挤被压掉——我们的规则加
+			// !important 且把双方变量相加（它开面板时聊天同样让位），无论注入
+			// 顺序如何都稳定生效。若它家未来也用 !important，需再评估（见 docs/014）。
 			if (typeof document !== "undefined") {
 				const style = document.createElement("style");
 				style.setAttribute("data-dsh-mindmap", "layout-push");
 				style.textContent = [
 					"#root{",
-					"margin-right:var(--dsh-mindmap-width,0px);",
-					"width:calc(100% - var(--dsh-mindmap-width,0px));",
+					"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
+					"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
 					"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
 					"}",
 				].join("");
@@ -1348,6 +1594,35 @@ window.__ModuleLoader__.load({
 				}
 				return parsed.value;
 			};
+
+			// 015 设置面板：settings namespace（dsh-grafana 同款读写面）。
+			// connection 走 ctx.get 可选查取（动态 ctx 契约）；缺失时设置面板降级提示。
+			const connection = ctx.get("connection");
+			const settingsApi = connection && typeof connection.api === "object" ? connection.api : null;
+			face.readSettings = async () => {
+				if (!settingsApi || typeof settingsApi.settings?.describe !== "function") return null;
+				const res = await settingsApi.settings.describe({});
+				const namespaces = res?.result?.value?.namespaces ?? [];
+				const ns = namespaces.find((n) => n?.ns === "mindmap");
+				return ns?.value ?? null;
+			};
+			face.updateSettings = async (patch) => {
+				if (!settingsApi || typeof settingsApi.settings?.update !== "function") {
+					throw new Error("settings service unavailable");
+				}
+				await settingsApi.settings.update({ ns: "mindmap", patch });
+			};
+
+			// 015 设置面板：settings.section（list 槽、root scope）——设置页左栏
+			// 新增「思维脑图」导航项（better-sidebar 同款入口；dsh-grafana 的
+			// settings.plugin.item 卡片是另一条路，未采用）。
+			ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "dsh-mindmap",
+				order: 100,
+				label: "思维脑图",
+				inject: () => ({ mindmapFace: face }),
+			}, SettingsPanel));
 
 			// 014 overlay 形态（作者拍板，见 docs/014）：面板宿主层（position:fixed）
 			// 与 M 按钮一起渲染在 conversation.session.header.actions 槽位里——
@@ -1375,6 +1650,7 @@ window.__ModuleLoader__.load({
 			createIdFactory,
 			relPathWithin,
 			visibleTreeRows,
+			colorThemeTokens,
 			TOOL_NAMES,
 			OPENING_OPS,
 		});

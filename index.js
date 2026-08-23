@@ -10,15 +10,28 @@
 // - 结果 JSON {ok, op, path, rootTitle, content, renamedFrom?}：content 全文
 //   供模型续编辑，client 用同一份重放面板（工具结果即实时通道，002 第二节）。
 // - requireApproval 配置（决策 6）：默认 false 免审批；置 true 时 mindmap_update
-//   走原生 ask（tools/pre-execute，照 dsh-grafana 的钩子模式）。配置经 bundle
-//   patch 的 config 覆盖传入 apply(ctx, config)。
-// - 无任何 npm 依赖（不用 @deepseek-ai/dsh-tools：link 安装不解析 peer，
-//   见 003 偏差 1），参数 schema 手写 JSON Schema。
+//   走原生 ask（tools/pre-execute，照 dsh-grafana 的钩子模式）。015 起经 settings
+//   namespace 可在设置面板运行时切换（见 SETTINGS_NAMESPACE/Config）。
+// - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
+//   link 开发需先 npm i）。工具参数 schema 仍手写 JSON Schema（003 偏差 1）。
 import { access, opendir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'mindmap'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'sessions']
+
+// 015 设置面板：settings namespace（dsh-grafana 同款模式）。
+// requireApproval 在 pre-execute 时读当前值（运行时切换即时生效）；
+// defaultPanelWidth 供客户端面板取默认宽度（20-80 钳制由客户端执行）。
+export const SETTINGS_NAMESPACE = 'mindmap'
+export const Config = Schema.object({
+  requireApproval: Schema.boolean().default(false).description('Require native DSH approval for every mindmap_update (including renameRoot). Files are git-managed, so it defaults to off. Hidden from the settings panel; still honored at runtime.'),
+  defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).'),
+  lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).'),
+  cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.'),
+  colorTheme: Schema.union(['ocean', 'sunset', 'forest']).default('ocean').description('Node color theme.'),
+})
 
 const MAX_CONTENT_BYTES = 2 * 1024 * 1024
 const MAX_NAME_CHARS = 80
@@ -224,25 +237,38 @@ function defineTool(spec) {
 }
 
 export function apply(ctx, config = {}) {
-  const requireApproval = config.requireApproval === true
+  const entryConfig = { requireApproval: config.requireApproval === true, defaultPanelWidth: 42 }
+
+  // 015 设置面板：settings 服务可用时以命名空间解析值为准
+  // （schema 默认 → 组合层 base → 用户设置层），否则回退入口配置
+  // （dsh-grafana 同款模式；link 环境缺 schemastery 时见 003 偏差 1 的
+  // 依赖说明——发布包正常安装依赖）。
+  let activeConfig = () => entryConfig
+  ctx.inject(['settings'], (sctx) => {
+    const scope = sctx.settings.register(SETTINGS_NAMESPACE, Config, { base: entryConfig })
+    activeConfig = () => scope.get()
+    sctx.effect(() => () => {
+      activeConfig = () => entryConfig
+    })
+  })
+
   ctx.systemPrompt.section({ name: 'tool:mindmap', order: 106, text: GUIDANCE })
 
-  if (requireApproval) {
-    // 后悔药开关（决策 6）：默认免审批打断「人一句、AI 一步」的节奏；开启后
-    // mindmap_update（含 renameRoot）走原生用户审批，读操作不拦。
-    ctx.on('tools/pre-execute', async (exec, next) => {
-      const decision = await next()
-      if (decision.kind !== 'allow') return decision
-      if (exec.name !== 'mindmap_update') return decision
-      const args = exec.arguments ?? {}
-      const renameNote = typeof args.renameRoot === 'string' && args.renameRoot ? `, rename root to "${args.renameRoot}"` : ''
-      const bytes = typeof args.content === 'string' ? byteLength(args.content) : 0
-      return {
-        kind: 'ask',
-        reason: `Write mindmap ${JSON.stringify(String(args.path ?? '?'))} (${bytes} bytes${renameNote}). dsh-mindmap is configured with requireApproval.`,
-      }
-    })
-  }
+  // 后悔药开关（决策 6）：钩子常驻注册，运行时读 activeConfig().requireApproval
+  // ——设置面板切换立即生效；关闭时直接放行（默认 false 免审批）。
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const decision = await next()
+    if (decision.kind !== 'allow') return decision
+    if (!activeConfig().requireApproval) return decision
+    if (exec.name !== 'mindmap_update') return decision
+    const args = exec.arguments ?? {}
+    const renameNote = typeof args.renameRoot === 'string' && args.renameRoot ? `, rename root to "${args.renameRoot}"` : ''
+    const bytes = typeof args.content === 'string' ? byteLength(args.content) : 0
+    return {
+      kind: 'ask',
+      reason: `Write mindmap ${JSON.stringify(String(args.path ?? '?'))} (${bytes} bytes${renameNote}). dsh-mindmap is configured with requireApproval.`,
+    }
+  })
 
   ctx.tools.register(defineTool({
     name: 'mindmap_create',

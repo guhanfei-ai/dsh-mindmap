@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ## [Unreleased]
 
+### Added
+
+- Settings page section「思维脑图」in the left nav (`settings.section`), backed by a host settings namespace (`mindmap`): node theme (line style curve/elbow, card corners rounded/square, three color themes ocean/sunset/forest), default panel width (20-80%). The `requireApproval` switch stays functional (read at tool pre-execute time) but is hidden from the UI by design. Introduces a `@deepseek-ai/schemastery` dependency for the settings schema.
+
 ## [0.1.0] - 2026-08-23
 
 First release of dsh-mindmap: a plain Markdown file in the session working directory becomes a live mindmap.
