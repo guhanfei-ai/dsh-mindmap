@@ -48,6 +48,10 @@ function toolResultNode(name, payload, { isError = false, callId = `call-${Math.
   }
 }
 
+function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
+  return { ...toolResultNode(name, payload, options), subCalls }
+}
+
 const runtime = loadBrowserModule()
 const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens } = runtime.internals
 
@@ -181,6 +185,87 @@ test('reduceDocuments remembers the latest open intent even when an update follo
   assert.equal(docs.byPath['/w/a.md'].openingEventKey, 'call:open-a')
   assert.equal(autoOpenTarget(docs, null), '/w/a.md')
   assert.equal(autoOpenTarget(docs, new Set(['call:create-a', 'call:create-b'])), '/w/a.md')
+})
+
+test('reduceDocuments replays a mindmap result nested in a code tool subCalls list', () => {
+  const docs = reduceDocuments([
+    toolResultWithSubCalls('code', 'ignored parent result', [
+      toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/nested.md', content: '# Nested\n' }, { callId: 'nested-open' }),
+    ], { callId: 'code-parent' }),
+  ])
+  assert.deepEqual([...docs.order], ['/w/nested.md'])
+  assert.equal(docs.byPath['/w/nested.md'].content, '# Nested\n')
+  assert.equal(docs.byPath['/w/nested.md'].eventKey, 'call:nested-open')
+  assert.equal(docs.byPath['/w/nested.md'].openingEventKey, 'call:nested-open')
+  assert.equal(docs.latestOpeningPath, '/w/nested.md')
+})
+
+test('reduceDocuments follows multiple levels of subCalls in event order', () => {
+  const docs = reduceDocuments([
+    toolResultWithSubCalls('code', 'ignored', [
+      toolResultWithSubCalls('bash', 'ignored', [
+        toolResultWithSubCalls('wrapper', 'ignored', [
+          toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/deep.md', content: 'first' }, { callId: 'deep-create' }),
+          toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/deep.md', content: 'latest' }, { callId: 'deep-update' }),
+        ], { callId: 'wrapper-call' }),
+      ], { callId: 'bash-call' }),
+    ], { callId: 'code-call' }),
+  ])
+  assert.deepEqual([...docs.order], ['/w/deep.md'])
+  assert.equal(docs.byPath['/w/deep.md'].content, 'latest')
+  assert.equal(docs.byPath['/w/deep.md'].eventKey, 'call:deep-update')
+  assert.equal(docs.byPath['/w/deep.md'].openingEventKey, 'call:deep-create')
+})
+
+test('reduceDocuments ignores an errored nested mindmap result', () => {
+  const docs = reduceDocuments([
+    toolResultWithSubCalls('code', 'ignored', [
+      toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/error.md', content: 'must not show' }, {
+        callId: 'nested-error',
+        isError: true,
+      }),
+    ]),
+  ])
+  assert.deepEqual([...docs.order], [])
+  assert.equal(docs.byPath['/w/error.md'], undefined)
+  assert.equal(docs.latestOpeningPath, null)
+})
+
+test('reduceDocuments migrates the latest opening path and event across a rename', () => {
+  const docs = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/old.md', content: 'old' }, { callId: 'open-old' }),
+    toolResultNode('mindmap_update', {
+      ok: true,
+      op: 'update',
+      path: '/w/new.md',
+      renamedFrom: '/w/old.md',
+      content: 'new',
+    }, { callId: 'rename-new' }),
+  ])
+  assert.equal(docs.latestOpeningPath, '/w/new.md')
+  assert.equal(docs.latestOpeningEventKey, 'call:open-old')
+  assert.equal(docs.byPath['/w/new.md'].openingEventKey, 'call:open-old')
+  assert.equal(autoOpenTarget(docs, null), '/w/new.md')
+  assert.equal(docs.byPath['/w/old.md'], undefined)
+})
+
+test('repeated nested mindmap_open results expose the newest opening event', () => {
+  const first = reduceDocuments([
+    toolResultWithSubCalls('code', 'ignored', [
+      toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/repeat.md', content: 'v1' }, { callId: 'nested-open-1' }),
+    ]),
+  ])
+  const repeated = reduceDocuments([
+    toolResultWithSubCalls('code', 'ignored', [
+      toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/repeat.md', content: 'v1' }, { callId: 'nested-open-1' }),
+    ]),
+    toolResultWithSubCalls('code', 'ignored', [
+      toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/repeat.md', content: 'v2' }, { callId: 'nested-open-2' }),
+    ]),
+  ])
+  assert.equal(repeated.byPath['/w/repeat.md'].openingEventKey, 'call:nested-open-2')
+  assert.equal(repeated.latestOpeningEventKey, 'call:nested-open-2')
+  assert.equal(autoOpenTarget(repeated, openingEventKeys(first)), '/w/repeat.md')
 })
 
 test('autoOpenTarget ignores already consumed opens but switches to a repeated open', () => {

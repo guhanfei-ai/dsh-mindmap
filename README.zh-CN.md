@@ -58,8 +58,12 @@ dsh plugin --profile <profile> add <pkg>#v<version>
 ## 开发
 
 ```bash
-npm run verify   # 语法检查 + node --test
+npm run build:client  # 从 src/client 片段组装运行时 client.js
+npm run verify        # 重建 + 语法检查 + node --test
+npm pack --dry-run    # 检查将进入 npm 包的文件
 ```
+
+浏览器端实现维护在 `src/client/` 下，构建后仍输出 DeepSeek Harness 要求的单一 `client.js` 入口。请修改源码片段后运行 `npm run build:client`，不要直接手改生成入口。
 
 ## License
 

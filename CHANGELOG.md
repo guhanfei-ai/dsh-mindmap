@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ## [Unreleased]
 
+### Changed
+
+- The browser client is now maintained as focused source fragments under `src/client/` and assembled into the single runtime `client.js` entry by `npm run build:client`.
+- AI create/open/view intent now restores and switches the target mindmap panel smoothly, including repeated opens and open-then-update tool sequences.
+- Added release metadata, a `prepack` verification hook, and an npm package dry-run check to the documented development flow.
+
 ### Added
 
 - Settings page section「思维脑图」in the left nav (`settings.section`), backed by a host settings namespace (`mindmap`): node theme (line style curve/elbow, card corners rounded/square, three color themes ocean/sunset/forest), default panel width (20-80%). The `requireApproval` switch stays functional (read at tool pre-execute time) but is hidden from the UI by design. Introduces a `@deepseek-ai/schemastery` dependency for the settings schema.

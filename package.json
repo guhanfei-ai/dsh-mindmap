@@ -2,12 +2,25 @@
   "name": "dsh-mindmap",
   "version": "0.2.0",
   "description": "Mindmap plugin for DeepSeek Harness: a plain markdown file in the working directory IS the mindmap; the chat edits it step by step and the right-side panel follows live.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guhanfei-ai/dsh-mindmap.git"
+  },
+  "homepage": "https://github.com/guhanfei-ai/dsh-mindmap#readme",
+  "bugs": {
+    "url": "https://github.com/guhanfei-ai/dsh-mindmap/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check test/index.test.js && node --check test/client.test.js",
+    "build:client": "node scripts/build-client.mjs",
+    "check": "npm run build:client && node --check index.js && node --check client.js && node --check scripts/build-client.mjs && node --check test/index.test.js && node --check test/client.test.js",
     "test": "node --test",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "prepack": "npm run verify"
   },
   "files": [
     "index.js",

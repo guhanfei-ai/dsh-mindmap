@@ -281,7 +281,9 @@ window.__ModuleLoader__.load({
 		/**
 		 * 重放会话快照里的 mindmap_* 工具结果，得到每个脑图文档的最新状态。
 		 * nodes: ConversationSnapshot.nodes（ToolResultNode 含 call.name 与渲染后的
-		 * content 文本块——host 的工具结果 JSON 就写在其中）。
+		 * content 文本块——host 的工具结果 JSON 就写在其中）。Code 等工具的结果
+		 * 还可能把真实的 mindmap ToolResultNode 放在 subCalls 中，因此这里按事件
+		 * 顺序递归重放整棵调用树。
 		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标。
 		 */
 		function reduceDocuments(nodes) {
@@ -289,49 +291,85 @@ window.__ModuleLoader__.load({
 			let order = [];
 			let latestOpeningPath = null;
 			let latestOpeningEventKey = null;
-			for (const [nodeIndex, node] of (nodes ?? []).entries()) {
-				if (!node || node.kind !== "tool-result" || node.isError) continue;
-				const name = node.call?.name;
-				if (typeof name !== "string" || !TOOL_NAMES.has(name)) continue;
-				let parsed;
-				try {
-					parsed = JSON.parse(resultTextOfBlocks(node.content));
-				} catch {
-					continue;
+			const visited = new WeakSet();
+			const MAX_SUBCALL_DEPTH = 100;
+
+			function replayNode(node, eventPath, depth) {
+				if (!node || typeof node !== "object" || visited.has(node)) return;
+				visited.add(node);
+
+				if (node.kind === "tool-result" && !node.isError) {
+					const name = node.call?.name;
+					if (typeof name === "string" && TOOL_NAMES.has(name)) {
+						let parsed;
+						try {
+							parsed = JSON.parse(resultTextOfBlocks(node.content));
+						} catch {
+							parsed = null;
+						}
+						if (parsed && parsed.ok === true && typeof parsed.path === "string" && parsed.path) {
+							const op = typeof parsed.op === "string" ? parsed.op : name;
+							// callId 是实际调用的事件身份；eventPath 是无 callId 时按会话
+							// 遍历顺序生成的稳定兜底，避免重复 open 被合并成一个事件。
+							const callId = node.callId != null && String(node.callId)
+								? node.callId
+								: node.call?.callId;
+							const eventKey = callId != null && String(callId)
+								? `call:${String(callId)}`
+								: `node:${eventPath}`;
+							const renamedFrom = typeof parsed.renamedFrom === "string" ? parsed.renamedFrom : null;
+							const previous = byPath[parsed.path];
+							const renamedDocument = renamedFrom && renamedFrom !== parsed.path
+								? byPath[renamedFrom]
+								: null;
+							const inheritedOpeningEventKey = renamedDocument?.openingEventKey
+								?? previous?.openingEventKey
+								?? (renamedFrom && latestOpeningPath === renamedFrom ? latestOpeningEventKey : null);
+
+							// 根节点改名会删除旧路径键；若旧路径正是最近一次打开意图，
+							// 同时迁移路径并保留原 openingEventKey，确保自动切换仍生效。
+							if (renamedFrom && renamedFrom !== parsed.path && latestOpeningPath === renamedFrom) {
+								latestOpeningPath = parsed.path;
+								if (latestOpeningEventKey == null) latestOpeningEventKey = inheritedOpeningEventKey;
+							}
+
+							const openingEventKey = OPENING_OPS.has(op)
+								? eventKey
+								: inheritedOpeningEventKey;
+							if (OPENING_OPS.has(op)) {
+								latestOpeningPath = parsed.path;
+								latestOpeningEventKey = eventKey;
+							}
+							if (renamedFrom && renamedDocument && renamedFrom !== parsed.path) {
+								delete byPath[renamedFrom];
+								order = order.filter((p) => p !== renamedFrom);
+							}
+							if (!byPath[parsed.path]) order.push(parsed.path);
+							byPath[parsed.path] = {
+								path: parsed.path,
+								rootTitle: typeof parsed.rootTitle === "string" && parsed.rootTitle ? parsed.rootTitle : stemOf(parsed.path),
+								content: typeof parsed.content === "string" ? parsed.content : "",
+								op,
+								callId,
+								eventKey,
+								openingEventKey,
+								// 013：rename 迁移后保留旧路径，供本地直读 tab 清理（mergeDocuments）。
+								renamedFrom,
+							};
+						}
+					}
 				}
-				if (!parsed || parsed.ok !== true || typeof parsed.path !== "string" || !parsed.path) continue;
-				const op = typeof parsed.op === "string" ? parsed.op : name;
-				// callId 是正常路径下的事件身份；nodeIndex 是无 callId 时的稳定兜底，
-				// 避免同一文档重复 mindmap_open 被误判成同一个事件。
-				const eventKey = node.callId != null && String(node.callId)
-					? `call:${String(node.callId)}`
-					: `node:${nodeIndex}`;
-				const previous = byPath[parsed.path];
-				const openingEventKey = OPENING_OPS.has(op)
-					? eventKey
-					: (previous?.openingEventKey ?? null);
-				if (OPENING_OPS.has(op)) {
-					latestOpeningPath = parsed.path;
-					latestOpeningEventKey = eventKey;
+
+				// 父级非 mindmap 工具不参与文档解析，但其 subCalls 仍是会话事件，
+				// 必须继续深入；深度上限与 WeakSet 一起防止异常结构卡死。
+				if (depth >= MAX_SUBCALL_DEPTH || !Array.isArray(node.subCalls)) return;
+				for (const [subCallIndex, subCall] of node.subCalls.entries()) {
+					replayNode(subCall, `${eventPath}.${subCallIndex}`, depth + 1);
 				}
-				// 根标题改名 = 文件重命名：旧路径键迁移到新路径。
-				const renamedFrom = typeof parsed.renamedFrom === "string" ? parsed.renamedFrom : null;
-				if (renamedFrom && byPath[renamedFrom] && renamedFrom !== parsed.path) {
-					delete byPath[renamedFrom];
-					order = order.filter((p) => p !== renamedFrom);
-				}
-				if (!byPath[parsed.path]) order.push(parsed.path);
-				byPath[parsed.path] = {
-					path: parsed.path,
-					rootTitle: typeof parsed.rootTitle === "string" && parsed.rootTitle ? parsed.rootTitle : stemOf(parsed.path),
-					content: typeof parsed.content === "string" ? parsed.content : "",
-					op,
-					callId: node.callId,
-					eventKey,
-					openingEventKey,
-					// 013：rename 迁移后保留旧路径，供本地直读 tab 清理（mergeDocuments）。
-					renamedFrom: typeof parsed.renamedFrom === "string" ? parsed.renamedFrom : null,
-				};
+			}
+
+			for (const [nodeIndex, node] of (Array.isArray(nodes) ? nodes : []).entries()) {
+				replayNode(node, String(nodeIndex), 0);
 			}
 			return { order, byPath, latestOpeningPath, latestOpeningEventKey };
 		}

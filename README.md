@@ -58,8 +58,12 @@ dsh plugin --profile <profile> add <pkg>#v<version>
 ## Development
 
 ```bash
-npm run verify   # syntax check + node --test
+npm run build:client  # assemble the runtime client.js from src/client fragments
+npm run verify        # rebuild + syntax check + node --test
+npm pack --dry-run    # inspect the files that will enter the npm package
 ```
+
+The browser implementation is maintained under `src/client/` and assembled into the single `client.js` entry required by DeepSeek Harness. Edit the source fragments, then run `npm run build:client`; do not hand-edit the generated entry.
 
 ## License
 
