@@ -4,7 +4,7 @@
 
 A DeepSeek Harness plugin that turns a plain Markdown file into a live mindmap. The working directory is the document: the chat is the editor, the AI edits the `.md` step by step, and the right-side floating panel re-renders the mindmap in real time.
 
-> Project status: pre-1.0. The 0.1.0 feature set (see [CHANGELOG](./CHANGELOG.md)) is implemented and covered by unit tests, but cross-version compatibility beyond the development environment is not yet certified.
+> Project status: pre-1.0. The current feature set (see [CHANGELOG](./CHANGELOG.md)) is implemented and covered by unit tests, but cross-version compatibility beyond the development environment is not yet certified.
 
 ## The core idea
 
