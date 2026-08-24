@@ -95,6 +95,10 @@
 			relPathWithin,
 			visibleTreeRows,
 			colorThemeTokens,
+			clampZoom,
+			stepZoom,
+			fitZoom,
+			focusZoom,
 			TOOL_NAMES,
 			OPENING_OPS,
 		});

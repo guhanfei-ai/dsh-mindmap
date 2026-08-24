@@ -660,13 +660,15 @@
 						}, shown) : null,
 					] }),
 				] }),
-				(0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
-					? renderTree()
-					: (doc && doc.op === "local")
-						? renderLoading()
-						: tree
-							? (0, react_jsx_runtime.jsx)(TreeRow, { node: tree, theme })
-							: renderTree() }),
+				// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
+				// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+				active === TREE_TAB || (doc && doc.op === "local") || !tree
+					? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
+						? renderTree()
+						: (doc && doc.op === "local")
+							? renderLoading()
+							: renderTree() })
+					: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path }),
 				tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 					style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 					onContextMenu: (e) => e.preventDefault(),

@@ -53,7 +53,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens, clampZoom, stepZoom, fitZoom, focusZoom } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -431,6 +431,61 @@ test('colorThemeTokens serves three distinct palettes and falls back to ocean', 
   assert.notEqual(ocean.heading, forest.heading)
   // 未知名回落海洋蓝
   assert.equal(colorThemeTokens('nope').heading, ocean.heading)
+})
+
+test('clampZoom clamps to [0.25, 3] and guards non-finite or non-positive input', () => {
+  assert.equal(clampZoom(1), 1)
+  assert.equal(clampZoom(0.5), 0.5)
+  assert.equal(clampZoom(0.1), 0.25)
+  assert.equal(clampZoom(5), 3)
+  assert.equal(clampZoom(NaN), 1)
+  assert.equal(clampZoom(Infinity), 1)
+  assert.equal(clampZoom(0), 1)
+  assert.equal(clampZoom(-2), 1)
+})
+
+test('stepZoom steps by 1.2 per level and saturates at the bounds', () => {
+  const up = stepZoom(1, 1)
+  assert.ok(Math.abs(up - 1.2) < 1e-9)
+  // 往返：一级放大再一级缩小回到原值
+  assert.ok(Math.abs(stepZoom(up, -1) - 1) < 1e-9)
+  // 已在下限：再缩小原地踏步
+  assert.equal(stepZoom(0.25, -1), 0.25)
+  // 已在上限：再放大原地踏步
+  assert.equal(stepZoom(3, 1), 3)
+  // 非法基线回退 1 后照常步进
+  assert.ok(Math.abs(stepZoom(NaN, 1) - 1.2) < 1e-9)
+})
+
+test('fitZoom fits without enlarging, clamps giant trees, and guards zero sizes', () => {
+  // 48px 画布余量：水平约束 (800-48)/1000 < (600-48)/500
+  assert.ok(Math.abs(fitZoom(1000, 500, 800, 600) - 0.752) < 1e-9)
+  // 垂直约束
+  assert.ok(Math.abs(fitZoom(500, 1000, 800, 600) - 0.552) < 1e-9)
+  // 小图不放大：上限 1
+  assert.equal(fitZoom(200, 150, 800, 600), 1)
+  // 巨图夹到下限 0.25（保持可读，超出部分滚动浏览）
+  assert.equal(fitZoom(100000, 100000, 800, 600), 0.25)
+  // 零/非法尺寸守卫：返回 1
+  assert.equal(fitZoom(0, 500, 800, 600), 1)
+  assert.equal(fitZoom(500, 0, 800, 600), 1)
+  assert.equal(fitZoom(500, 500, 0, 600), 1)
+  assert.equal(fitZoom(500, 500, 800, 0), 1)
+  assert.equal(fitZoom(NaN, 500, 800, 600), 1)
+})
+
+test('focusZoom fits the subtree and caps zoom-in at focusMax', () => {
+  // 与 fitZoom 同基底，但小子树允许放大到 focusMax（1 = 100%）而非停在更小值
+  assert.ok(Math.abs(focusZoom(1000, 500, 800, 600) - 0.752) < 1e-9)
+  assert.ok(Math.abs(focusZoom(500, 1000, 800, 600) - 0.552) < 1e-9)
+  // 小子树放大上限 100%（与全局适配一致，节点保持设计基准字号）
+  assert.equal(focusZoom(200, 150, 800, 600), 1)
+  // 巨子树夹下限 0.25
+  assert.equal(focusZoom(100000, 100000, 800, 600), 0.25)
+  // 零/非法尺寸守卫：返回 1
+  assert.equal(focusZoom(0, 500, 800, 600), 1)
+  assert.equal(focusZoom(500, 500, 800, 0), 1)
+  assert.equal(focusZoom(NaN, 500, 800, 600), 1)
 })
 
 test('apply wires listTree and settings faces through the mindmapFace (header slot inject)', () => {

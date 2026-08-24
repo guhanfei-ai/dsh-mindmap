@@ -69,12 +69,30 @@
 			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "40px", minWidth: 0 },
 			// 面板树连线层：正交折线（MarkGrove 的 orthogonalPath 风格），
 			// 覆盖整行、点击穿透、置于节点盒之下。
-			edgeLayer: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" },
+			// 016：去掉 CSS width/height 百分比——在 auto-height 的 flex 行内，
+			// 百分比高度解析为 auto 会让 SVG 坐标系塌缩，连线与节点像素错位。
+			// 改为由 TreeRow 在 measure 里同步记下实际像素，作 SVG 属性直传。
+			edgeLayer: { position: "absolute", top: 0, left: 0, display: "block", pointerEvents: "none", overflow: "visible" },
 			box: { padding: "6px 12px", borderRadius: "10px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "0 0 auto", boxShadow: "0 1px 2px rgba(16,24,40,0.04)" },
 			rootBox: { fontWeight: 700, fontSize: "14px", border: "1px solid var(--dsw-alias-border-l2-darkmode-thin, #b9c0cc)", background: "var(--dsw-alias-bg-module-platform, #eef2ff)" },
 			headingBox: { fontWeight: 600 },
 			placeholderBox: { padding: "6px 12px", borderRadius: "10px", border: "1px dashed var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-tertiary)", background: "none" },
 			codeBox: { fontFamily: "Menlo, monospace", fontSize: "12px" },
+			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
+			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
+			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto" },
+			// 居中层：内容小则铺满视口（100%），大则撑到内容尺寸（max-content）；
+			// 子项用 margin:auto——空间充足双向居中，溢出时 margin 归零、从滚动
+			// 原点排布（flexbox 溢出居中裁剪的标准解法，无左/上侧裁剪）。
+			canvasCenter: { display: "flex", width: "100%", height: "100%", minWidth: "max-content", minHeight: "max-content", boxSizing: "border-box", padding: "16px" },
+			// 缩放控制条：绝对定位于 canvasWrap（滚动区外，不随内容滚动）。
+			zoomBar: { position: "absolute", top: "10px", right: "12px", zIndex: 5, display: "inline-flex", alignItems: "center", gap: "2px", padding: "3px", borderRadius: "8px", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", boxShadow: "var(--dsw-shadow-lv2)" },
+			zoomBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "13px", lineHeight: "20px", height: "22px", minWidth: "22px", padding: "0 4px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "none" },
+			zoomBtnHover: { background: "var(--dsw-alias-interactive-bg-hover)", color: "var(--dsw-alias-label-primary)" },
+			zoomBtnDisabled: { opacity: 0.4, cursor: "default" },
+			// 百分比标签：tabular-nums 防数字抖动。
+			zoomLabel: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none" },
+			zoomFitBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "12px", lineHeight: "20px", height: "22px", padding: "0 8px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", flex: "none" },
 		};
 
 

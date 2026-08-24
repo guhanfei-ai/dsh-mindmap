@@ -12,6 +12,7 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
+- Centered mindmap canvas with a floating zoom bar at the canvas top-right (zoom out / percent / zoom in / fit): the tree opens centered in the panel (scrollable, no edge clipping when larger), auto fit-to-view on open (no enlargement beyond 100%, 25% floor for giant trees), 25%–300% step zoom with a stable viewport-center anchor, and smart re-fit on AI edits or panel resize until the user zooms manually. Connector lines use `vector-effect: non-scaling-stroke` so they stay crisp at any zoom level, and natural-size debouncing keeps "fit" from oscillating with scrollbar appearance. Clicking any node focuses it: the node scrolls to the left-center of the canvas and the view zooms until the node and its whole subtree are visible (capped at 100%). Zoom math is exposed as pure functions (`clampZoom` / `stepZoom` / `fitZoom` / `focusZoom`) with unit tests.
 - Settings page section「思维脑图」in the left nav (`settings.section`), backed by a host settings namespace (`mindmap`): node theme (line style curve/elbow, card corners rounded/square, three color themes ocean/sunset/forest), default panel width (20-80%). The `requireApproval` switch stays functional (read at tool pre-execute time) but is hidden from the UI by design. Introduces a `@deepseek-ai/schemastery` dependency for the settings schema.
 
 ## [0.1.0] - 2026-08-23
