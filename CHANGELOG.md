@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Release-specific notes are also published on GitHub Releases.
 
-## [0.4.0] - 2026-08-24
+## [0.4.1] - 2026-08-24
 
 ### Changed
 
