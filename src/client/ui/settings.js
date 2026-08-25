@@ -36,6 +36,8 @@
 							cardStyle: v && v.cardStyle === "square" ? "square" : "rounded",
 							colorTheme: v && COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
 							defaultPanelWidth: v && typeof v.defaultPanelWidth === "number" ? v.defaultPanelWidth : 42,
+							// 018：旧设置/读不到都默认开（!== false 语义）。
+							growthAnimation: !(v && v.growthAnimation === false),
 						});
 					} catch (err) {
 						if (alive) setError(String(err?.message ?? err));
@@ -141,6 +143,17 @@
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "范围 20~80。拖拽面板后的宽度会记住（localStorage）；清除本地记忆后回到这里配置的默认值。" }),
+					// 018 生长动画开关：每次更新后新增/变化节点逐个渐显；关掉即整棵直出。
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "生长动画" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: true, label: "开" }, { value: false, label: "关" }],
+							value: value.growthAnimation,
+							disabled: saving,
+							onChange: (v) => setField({ growthAnimation: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启后，脑图每次更新的新增/变化节点会逐个渐显长出（总时长不超过 2 秒）；关闭则整棵树立刻完整显示。" }),
 				] }),
 				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,
 				notice ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsNotice, children: notice }) : null,

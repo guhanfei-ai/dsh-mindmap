@@ -197,4 +197,54 @@
 		}
 		//#endregion
 
+		//#region 018 生长动画：树 id 收集 + 渐显计划（纯函数，经 internals 供测试）
+		/** 先序收集树的全部节点 id（含根）。 */
+		function collectTreeIds(tree) {
+			const ids = new Set();
+			const walk = (node) => {
+				if (!node) return;
+				ids.add(node.id);
+				for (const child of node.children || []) walk(child);
+			};
+			walk(tree);
+			return ids;
+		}
+
+		/**
+		 * 生长动画计划：广度优先（根→叶）收集「不在 prevIds 中」的节点，逐个错峰渐显。
+		 * prevIds = null（首屏/切文档）= 全部节点含根；无新增/变化节点返回 null。
+		 * 错峰步长按节点数压缩（总时长 = 末节点延迟 + duration ≤ budget，大图不拖沓）。
+		 * 返回 {nodes: Map(id→delayMs), edges: Map(父id→最早新子节点的 delay), totalMs}。
+		 */
+		function planGrowthReveal(tree, prevIds, options) {
+			if (!tree) return null;
+			const { budgetMs = 2000, stepMs = 90, durationMs = 320 } = options || {};
+			const fresh = [];
+			const queue = [tree];
+			for (let i = 0; i < queue.length; i++) {
+				const node = queue[i];
+				if (!prevIds || !prevIds.has(node.id)) fresh.push(node);
+				for (const child of node.children || []) queue.push(child);
+			}
+			if (fresh.length === 0) return null;
+			const step = fresh.length > 1
+				? Math.min(stepMs, Math.floor(Math.max(0, budgetMs - durationMs) / (fresh.length - 1)))
+				: 0;
+			const nodes = new Map();
+			const edges = new Map();
+			fresh.forEach((node, index) => {
+				nodes.set(node.id, index * step);
+			});
+			for (const node of queue) {
+				let earliest = null;
+				for (const child of node.children || []) {
+					const delay = nodes.get(child.id);
+					if (delay !== undefined && (earliest === null || delay < earliest)) earliest = delay;
+				}
+				if (earliest !== null) edges.set(node.id, earliest);
+			}
+			return { nodes, edges, totalMs: (fresh.length - 1) * step + durationMs };
+		}
+		//#endregion
+
 

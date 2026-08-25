@@ -53,7 +53,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens, clampZoom, stepZoom, fitZoom, focusZoom } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -151,6 +151,73 @@ test('duplicate identical siblings get unique ids', () => {
   const tree = parseMarkdownToTree('- dup\n- dup\n- dup', 'doc')
   const ids = tree.children.map((n) => n.id)
   assert.equal(new Set(ids).size, 3)
+})
+
+test('collectTreeIds gathers every node id including the root', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n  - y', 'doc')
+  const ids = collectTreeIds(tree)
+  assert.ok(ids.has('root'))
+  assert.equal(ids.size, 4)
+  assert.equal(collectTreeIds(null).size, 0)
+})
+
+test('planGrowthReveal animates only nodes missing from the previous id set', () => {
+  // 兄弟插拔后稳定 id 不漂移（上方同款断言）→ 旧节点不进计划，只有新增节点渐显。
+  const before = parseMarkdownToTree('# A\n- x\n- y', 'doc')
+  const after = parseMarkdownToTree('# A\n- x\n- NEW\n- y', 'doc')
+  const plan = planGrowthReveal(after, collectTreeIds(before))
+  assert.equal(plan.nodes.size, 1)
+  assert.ok(plan.nodes.has(after.children[0].children[1].id))
+  assert.equal(plan.nodes.get(after.children[0].children[1].id), 0)
+  // 连线浮现挂在其父节点（A）上，延迟 = 最早新子节点。
+  assert.ok(plan.edges.has(after.children[0].id))
+  assert.equal(plan.edges.size, 1)
+  assert.ok(plan.totalMs > 0)
+  // 无新增/变化 → 不出动画计划（旧节点不重播）。
+  assert.equal(planGrowthReveal(after, collectTreeIds(after)), null)
+})
+
+test('planGrowthReveal covers first screen (null prev) and text-edited nodes', () => {
+  // 首屏/切文档：全量节点含根，广度优先（根 → 一层子 → 二层孙）。
+  const first = parseMarkdownToTree('# A\n- x\n  - deep\n# B', 'doc')
+  const full = planGrowthReveal(first, null)
+  assert.equal(full.nodes.size, 5)
+  assert.ok(full.nodes.has('root'))
+  const byDelay = [...full.nodes.entries()].sort((a, b) => a[1] - b[1])
+  assert.equal(byDelay[0][0], 'root')
+  assert.deepEqual([...full.nodes.values()].sort((a, b) => a - b), [0, 90, 180, 270, 360])
+  // 文本修改 = 结构路径/内容变化 → 归入「变化」节点照样渐显。标题改名会
+  // 级联其后代的结构路径（父路径进 id）→ 改名标题连同子树一起渐显。
+  const edited = parseMarkdownToTree('# A 改名\n- x\n  - deep\n# B', 'doc')
+  const diff = planGrowthReveal(edited, collectTreeIds(first))
+  assert.equal(diff.nodes.size, 3)
+  assert.ok(diff.nodes.has(edited.children[0].id))
+  // 未改动的另一支（heading B）不受影响。
+  assert.ok(!diff.nodes.has(edited.children[1].id))
+})
+
+test('planGrowthReveal staggers breadth-first and compresses large batches within budget', () => {
+  // BFS 层级序：同层先于下层（A、B 先于 C），与文档先序（A、C、B）不同。
+  const tree = parseMarkdownToTree('# A\n  - C\n# B'.replace('  - C', '## C'), 'doc')
+  const plan = planGrowthReveal(tree, null)
+  const delayOf = (topic) => {
+    let found = null
+    const walk = (n) => {
+      if (n.topic === topic) found = plan.nodes.get(n.id)
+      n.children.forEach(walk)
+    }
+    walk(tree)
+    return found
+  }
+  assert.ok(delayOf('A') < delayOf('B'))
+  assert.ok(delayOf('B') < delayOf('C'))
+  // 大图：200 节点错峰自动压缩，末节点延迟 + 动画时长 ≤ 2s 预算。
+  const big = parseMarkdownToTree(Array.from({ length: 200 }, (_, i) => `- item ${i}`).join('\n'), 'doc')
+  const bigPlan = planGrowthReveal(big, null)
+  assert.equal(bigPlan.nodes.size, 201)
+  assert.ok(bigPlan.totalMs <= 2000)
+  const step = bigPlan.nodes.get(big.children[1].id)
+  assert.ok(step > 0 && step <= 90)
 })
 
 test('reduceDocuments replays tool results and follows renames', () => {
@@ -472,7 +539,7 @@ test('buildExportSvg renders the tree with connectors and placeholder labels', (
 test('buildExportSvg renders any subtree as its own rooted export', () => {
   // 017 节点右键「复制/导出为图片」：buildExportSvg 以任意节点为根重排——
   // 子树根照常渲染、子树外的兄弟不出现、叶子子树无连线。
-  const tree = parseMarkdownToTree('# A\n- x\n  - deep\n- y', 'doc')
+  const tree = parseMarkdownToTree('# A\n- x\n  - deep\n# Z\n- y', 'doc')
   const sub = buildExportSvg(tree.children[0])
   assert.ok(sub.svg.includes('>A<'))
   assert.ok(sub.svg.includes('>x<'))

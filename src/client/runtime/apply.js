@@ -21,6 +21,22 @@
 				document.head.appendChild(style);
 			}
 
+			// 018 生长动画：新增/变化节点错峰渐显（节点盒 = 淡入 + 左移浮现，
+			// 连线 = 淡入；延迟由内联 animationDelay 提供）。fill mode both 保证
+			// 延迟期间保持隐藏；动画只挂新节点，旧节点不受影响。尊重系统减弱动效。
+			if (typeof document !== "undefined") {
+				const animStyle = document.createElement("style");
+				animStyle.setAttribute("data-dsh-mindmap", "growth-anim");
+				animStyle.textContent = [
+					"@keyframes dsh-mm-node-in{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}",
+					".dsh-mm-reveal{opacity:0;animation:dsh-mm-node-in 320ms ease-out both}",
+					"@keyframes dsh-mm-fade-in{from{opacity:0}to{opacity:1}}",
+					".dsh-mm-edge-reveal{opacity:0;animation:dsh-mm-fade-in 320ms ease-out both}",
+					"@media (prefers-reduced-motion: reduce){.dsh-mm-reveal,.dsh-mm-edge-reveal{animation:none;opacity:1}}",
+				].join("");
+				document.head.appendChild(animStyle);
+			}
+
 			// 013 目录树 tab：host 自建只读路由 /mindmap/api/tree（dsh-better-sidebar
 			// 同款机制——官方 host.listDirectory 在 native picker 环境必挂，见 013）。
 			// 客户端只读目录，仍无任何写文件通道。
@@ -95,6 +111,8 @@
 			stemOf,
 			buildExportSvg,
 			createIdFactory,
+			collectTreeIds,
+			planGrowthReveal,
 			relPathWithin,
 			visibleTreeRows,
 			colorThemeTokens,

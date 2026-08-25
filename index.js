@@ -31,6 +31,7 @@ export const Config = Schema.object({
   lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).'),
   cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.'),
   colorTheme: Schema.union(['ocean', 'sunset', 'forest']).default('ocean').description('Node color theme.'),
+  growthAnimation: Schema.boolean().default(true).description('Progressive growth animation: newly added/changed nodes fade in one by one after each update (total capped at ~2s). Turn off for instant full render.'),
 })
 
 const MAX_CONTENT_BYTES = 2 * 1024 * 1024
@@ -266,6 +267,7 @@ export function apply(ctx, config = {}) {
     lineStyle: config.lineStyle === 'curve' ? 'curve' : 'elbow',
     cardStyle: config.cardStyle === 'square' ? 'square' : 'rounded',
     colorTheme: config.colorTheme === 'sunset' || config.colorTheme === 'forest' ? config.colorTheme : 'ocean',
+    growthAnimation: config.growthAnimation !== false,
   }
 
   // 015 设置面板：settings 服务可用时以命名空间解析值为准

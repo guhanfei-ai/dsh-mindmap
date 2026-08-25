@@ -66,7 +66,7 @@
 			// 015 节点主题：面板每次打开、或设置总线 bump（设置页保存）时重读
 			// settings——面板常驻不卸载，光靠 open 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
-			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean" });
+			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
 			react.useEffect(() => {
 				if (!open) return;
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
@@ -76,6 +76,8 @@
 						lineStyle: v.lineStyle === "curve" ? "curve" : "elbow",
 						cardStyle: v.cardStyle === "square" ? "square" : "rounded",
 						colorTheme: COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
+						// 018 生长动画开关：旧设置/读不到都默认开（!== false 语义）。
+						growthAnimation: v.growthAnimation !== false,
 					});
 				}).catch(() => {
 					// 读设置失败：保持当前主题
@@ -185,6 +187,28 @@
 				() => (doc ? parseMarkdownToTree(doc.content, doc.rootTitle) : null),
 				[doc && doc.content, doc && doc.rootTitle],
 			);
+
+			// 018 生长动画调度：新树与上一版（同 path）的稳定 id 集做 diff，只对新增/
+			// 变化节点出渐显计划（planGrowthReveal 广度优先错峰、总时长 ≤ 2s）；播完定时清空，
+			// 节点转静态渲染——之后切 tab/重挂载不重播；连续更新时 cleanup 清旧定时器、
+			// 新计划直接替换，不堆积。跨文档/首屏（prev path 不同或无旧集）= 全量生长。
+			const prevIdsRef = react.useRef({ path: null, ids: null });
+			const [reveal, setReveal] = react.useState(null);
+			react.useEffect(() => {
+				const path = doc ? doc.path : null;
+				const prev = prevIdsRef.current;
+				const prevIds = prev.path === path ? prev.ids : null;
+				prevIdsRef.current = { path, ids: tree ? collectTreeIds(tree) : null };
+				if (!tree || !theme.growthAnimation) {
+					setReveal(null);
+					return;
+				}
+				const plan = planGrowthReveal(tree, prevIds);
+				setReveal(plan);
+				if (!plan) return;
+				const timer = setTimeout(() => setReveal(null), plan.totalMs + 50);
+				return () => clearTimeout(timer);
+			}, [tree, doc && doc.path, theme.growthAnimation]);
 
 			// 016 看门狗：当前显示本地占位（等待 AI 打开结果）时计时；doc 被快照
 			// 结果覆盖 / 切走 / 重开（openMindmap 重建占位 → 新 doc 引用）时自动
@@ -742,7 +766,7 @@
 						: (doc && doc.op === "local")
 							? renderLoading()
 							: renderTree() })
-					: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path }),
+					: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal }),
 				tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 					style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 					onContextMenu: (e) => e.preventDefault(),

@@ -66,6 +66,7 @@ function createContext(config = {}) {
                   lineStyle: base.lineStyle === 'curve' ? 'curve' : 'elbow',
                   cardStyle: base.cardStyle === 'square' ? 'square' : 'rounded',
                   colorTheme: base.colorTheme ?? 'ocean',
+                  growthAnimation: base.growthAnimation !== false,
                 }),
                 update: async () => {},
               }

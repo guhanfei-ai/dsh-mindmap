@@ -51,7 +51,7 @@
 		}
 
 		function NodeBox(props) {
-			const { node, theme } = props;
+			const { node, theme, revealDelay } = props;
 			// 015 节点主题：卡片圆角（圆角/直角）+ 颜色主题令牌（根盒/标题用主题色）。
 			const tokens = colorThemeTokens(theme && theme.colorTheme);
 			const radius = theme && theme.cardStyle === "square" ? 0 : 10;
@@ -64,17 +64,27 @@
 						: node.kind === "code"
 							? { ...S.box, ...S.codeBox, borderRadius: radius }
 							: { ...S.box, borderRadius: radius };
+			// 018 生长动画：动画挂在内层节点盒（外层被连线测量，不能带 transform）。
+			if (revealDelay !== undefined) style.animationDelay = `${revealDelay}ms`;
 			const title = node.data?.description
 				? `${node.topic}\n\n${node.data.description}`
 				: node.data?.code
 					? `${node.topic}\n\n${node.data.code}`
 					: node.topic;
-			return (0, react_jsx_runtime.jsx)("div", { style, title, children: node.kind === "placeholder" ? "待填写" : node.topic });
+			return (0, react_jsx_runtime.jsx)("div", {
+				style,
+				title,
+				className: revealDelay !== undefined ? "dsh-mm-reveal" : undefined,
+				children: node.kind === "placeholder" ? "待填写" : node.topic,
+			});
 		}
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu } = props;
+			const { node, theme, onNodeContextMenu, reveal } = props;
+			// 018 生长动画：本节点渐显延迟（新节点盒）与本行连线渐显延迟（有新子节点）。
+			const revealDelay = reveal && reveal.nodes ? reveal.nodes.get(node.id) : undefined;
+			const edgeRevealDelay = reveal && reveal.edges ? reveal.edges.get(node.id) : undefined;
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
@@ -151,7 +161,9 @@
 						height: layout.h,
 						viewBox: `0 0 ${layout.w} ${layout.h}`,
 						preserveAspectRatio: "none",
-						style: S.edgeLayer,
+						style: edgeRevealDelay !== undefined ? { ...S.edgeLayer, animationDelay: `${edgeRevealDelay}ms` } : S.edgeLayer,
+						// 018：新子节点出现时连线同步浮现（延迟 = 最早新子节点的错峰）。
+						className: edgeRevealDelay !== undefined ? "dsh-mm-edge-reveal" : undefined,
 						children: layout.edges.map((d, i) => (0, react_jsx_runtime.jsx)("path", {
 							key: i,
 							d,
@@ -176,7 +188,7 @@
 						e.stopPropagation();
 						onNodeContextMenu(e, node);
 					} : undefined,
-					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme }),
+					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay }),
 				}),
 				node.children && node.children.length > 0
 					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
@@ -184,7 +196,7 @@
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal }),
 					}, child.id)) })
 					: null,
 				] });
@@ -234,7 +246,7 @@
 				* 修正 scroll，视图不跳变（内容回到视口内时浏览器会自动钳制回 0）。
 				*/
 				function MindmapCanvas(props) {
-							const { node, theme, fitKey } = props;
+							const { node, theme, fitKey, reveal } = props;
 							const scrollRef = react.useRef(null);
 							const contentRef = react.useRef(null);
 							const zoomRef = react.useRef(1);
@@ -485,7 +497,7 @@
 					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children:
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children:
 							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children:
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu })
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal })
 							})
 						})
 					}),
