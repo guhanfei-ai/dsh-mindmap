@@ -285,16 +285,17 @@
 					setNodeMenu({ x: e.clientX, y: e.clientY, node: target });
 				}
 
-				// 017 菜单动作：copy = PNG 写系统剪贴板（可粘贴到聊天/文档）；
-				// export = PNG 下载为文件。范围 = 该节点及其全部子孙
-				//（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
+				// 017 菜单动作：text = 节点全文写剪贴板（020）；copy = PNG 写系统剪贴板
+				// （可粘贴到聊天/文档）；export = PNG 下载为文件。图片范围 = 该节点
+				// 及其全部子孙（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
 				async function onNodeMenuAction(mode) {
 					const target = nodeMenu && nodeMenu.node;
 					if (!target || nodeMenuBusy) return;
 					setNodeMenuBusy(mode);
 					setNodeMenuError("");
 					try {
-						if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
+						if (mode === "text") await copyPlainText(nodeFullText(target));
+						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
 						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
 					} catch (error) {
@@ -355,8 +356,8 @@
 							children: "适配",
 						}),
 					] }),
-					// 017 节点右键菜单：标题行（节点主题）+ 复制/导出两动作 + 错误行。
-					// 复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
+					// 017 节点右键菜单：标题行（节点主题）+ 复制全文/复制为图片/导出为
+					// 图片三动作 + 错误行。复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
 					nodeMenu ? (0, react_jsx_runtime.jsxs)("div", {
 						ref: nodeMenuRef,
 						style: { ...S.treeMenu, left: nodeMenu.x, top: nodeMenu.y },
@@ -366,6 +367,14 @@
 								style: S.nodeMenuHeader,
 								title: nodeMenu.node.topic || "待填写",
 								children: truncateForExport(nodeMenu.node.topic, 18) || "待填写",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								disabled: Boolean(nodeMenuBusy),
+								title: "把该节点自身内容的完整文本复制到剪贴板（截断块/代码块/表格块均取全文）",
+								onClick: () => onNodeMenuAction("text"),
+								children: nodeMenuBusy === "text" ? "复制中…" : "复制全文",
 							}),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",

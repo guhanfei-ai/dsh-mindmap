@@ -122,6 +122,7 @@
 			hasInlineFormat,
 			isTableSeparator,
 			parseTableRow,
+			nodeFullText,
 			renderInline,
 			stripInlineForExport,
 			wrapExportText,

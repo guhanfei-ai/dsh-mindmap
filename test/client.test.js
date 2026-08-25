@@ -58,7 +58,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, renderInline, stripInlineForExport, wrapExportText, COLOR_THEMES } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, COLOR_THEMES } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -172,6 +172,20 @@ test('tables become table nodes keeping every cell (019 block concept)', () => {
   assert.deepEqual([...parseTableRow('| a | b |')], ['a', 'b'])
   assert.equal(isTableSeparator('| --- | :---: |'), true)
   assert.equal(isTableSeparator('| a | b |'), false)
+})
+
+test('nodeFullText returns the complete own content per kind (020 copy full text)', () => {
+  const tree = parseMarkdownToTree('para words\n\n```js\nconst a = 1\nconst b = 2\n```\n\n| h1 | h2 |\n| --- | --- |\n| a | b |\n\n> q1\n> q2', 'doc')
+  const [text, code, table, quote] = tree.children
+  // 散文块取原文（data.raw）。
+  assert.equal(nodeFullText(text), 'para words')
+  // 代码块取围栏全文，不是盒内摘要。
+  assert.equal(nodeFullText(code), 'const a = 1\nconst b = 2')
+  // 表格块按 Markdown 源码形态输出完整网格。
+  assert.equal(nodeFullText(table), '| h1 | h2 |\n| --- | --- |\n| a | b |')
+  // 引用块取整块引用源码。
+  assert.equal(nodeFullText(quote), 'q1\nq2')
+  assert.equal(nodeFullText(null), '')
 })
 
 test('node ids stay stable when siblings are inserted or removed', () => {

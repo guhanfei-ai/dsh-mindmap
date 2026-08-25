@@ -219,6 +219,26 @@
 		}
 
 		/**
+		 * 020 复制全文：纯文本写系统剪贴板。优先 Clipboard API；老环境回退
+		 * 临时 textarea + execCommand（宿主 webview 权限不齐时的保底）。
+		 */
+		async function copyPlainText(text) {
+			if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+				await navigator.clipboard.writeText(String(text ?? ""));
+				return;
+			}
+			const ta = document.createElement("textarea");
+			ta.value = String(text ?? "");
+			ta.style.position = "fixed";
+			ta.style.opacity = "0";
+			document.body.appendChild(ta);
+			ta.select();
+			const ok = document.execCommand && document.execCommand("copy");
+			ta.remove();
+			if (!ok) throw new Error("当前环境不支持复制文本");
+		}
+
+		/**
 		 * 浏览器侧复制（017 节点右键菜单）：tree 渲染成 PNG 写入系统剪贴板，
 		 * 可直接粘贴到聊天 / 文档 / 微信等。ClipboardItem 携带 Blob Promise——
 		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全

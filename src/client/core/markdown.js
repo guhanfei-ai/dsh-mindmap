@@ -54,6 +54,24 @@
 		function parseTableRow(line) {
 			return String(line ?? "").trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 		}
+
+		/**
+		 * 020 复制全文（右键菜单）：单节点自身内容的完整文本。代码块取围栏全文；
+		 * 表格块按 Markdown 源码形态输出完整网格；其余块取原文（data.raw 优先，
+		 * 引用块 raw = 整块引用源码；无 raw 时回退 topic）。
+		 */
+		function nodeFullText(node) {
+			if (!node) return "";
+			const data = node.data || {};
+			if (node.kind === "code") return data.code || node.topic || "";
+			if (node.kind === "table" && Array.isArray(data.rows) && data.rows.length > 0) {
+				// data.rows 不含分隔行（解析时剔除）；复制时补回，粘回 Markdown 仍是合法表格。
+				const lines = data.rows.map((row) => `| ${row.join(" | ")} |`);
+				if (data.rows.length > 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
+				return lines.join("\n");
+			}
+			return data.raw || node.topic || "";
+		}
 		//#endregion
 		
 		/**
