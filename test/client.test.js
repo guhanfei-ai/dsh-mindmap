@@ -469,6 +469,22 @@ test('buildExportSvg renders the tree with connectors and placeholder labels', (
   assert.ok(width > 0 && height > 0)
 })
 
+test('buildExportSvg renders any subtree as its own rooted export', () => {
+  // 017 节点右键「复制/导出为图片」：buildExportSvg 以任意节点为根重排——
+  // 子树根照常渲染、子树外的兄弟不出现、叶子子树无连线。
+  const tree = parseMarkdownToTree('# A\n- x\n  - deep\n- y', 'doc')
+  const sub = buildExportSvg(tree.children[0])
+  assert.ok(sub.svg.includes('>A<'))
+  assert.ok(sub.svg.includes('>x<'))
+  assert.ok(sub.svg.includes('>deep<'))
+  assert.ok(sub.svg.includes('<path'))
+  assert.ok(!sub.svg.includes('>y<'))
+  assert.ok(sub.width > 0 && sub.height > 0)
+  const leaf = buildExportSvg(tree.children[0].children[0].children[0])
+  assert.ok(leaf.svg.includes('>deep<'))
+  assert.ok(!leaf.svg.includes('<path'))
+})
+
 test('apply registers the header M slot and the settings section, and takes no other slot', () => {
   const registered = []
   const ctx = {

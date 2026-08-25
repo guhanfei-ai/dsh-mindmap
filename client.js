@@ -591,7 +591,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
-		//#region PNG 导出（SVG 序列化 → canvas → 下载）
+		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
 		const EXPORT = { nodeW: 200, nodeH: 30, hGap: 48, vGap: 10, pad: 20, fontSize: 13 };
 
 		function escapeXml(text) {
@@ -664,9 +664,8 @@ window.__ModuleLoader__.load({
 			return { svg: parts.join(""), width, height };
 		}
 
-		/** 浏览器侧导出：SVG → Image → canvas → PNG 下载。 */
-		async function exportPng(tree, rootTitle) {
-			const { svg, width, height } = buildExportSvg(tree);
+		/** SVG → Image → 白底 canvas（下载 / 剪贴板共用，017 抽出）。 */
+		async function renderSvgToCanvas(svg, width, height) {
 			const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 			const img = new Image();
 			await new Promise((resolve, reject) => {
@@ -681,6 +680,13 @@ window.__ModuleLoader__.load({
 			ctx2d.fillStyle = "#ffffff";
 			ctx2d.fillRect(0, 0, canvas.width, canvas.height);
 			ctx2d.drawImage(img, 0, 0);
+			return canvas;
+		}
+
+		/** 浏览器侧导出：SVG → canvas → PNG 下载。tree 可为整树或任意子树（017）。 */
+		async function exportPng(tree, rootTitle) {
+			const { svg, width, height } = buildExportSvg(tree);
+			const canvas = await renderSvgToCanvas(svg, width, height);
 			const dataUrl = canvas.toDataURL("image/png");
 			const a = document.createElement("a");
 			a.href = dataUrl;
@@ -688,6 +694,27 @@ window.__ModuleLoader__.load({
 			document.body.appendChild(a);
 			a.click();
 			a.remove();
+		}
+
+		/**
+		 * 浏览器侧复制（017 节点右键菜单）：tree 渲染成 PNG 写入系统剪贴板，
+		 * 可直接粘贴到聊天 / 文档 / 微信等。ClipboardItem 携带 Blob Promise——
+		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全
+		 * 上下文等）或写入被拒时抛错，由菜单提示改用「导出为图片」。
+		 */
+		async function copyPng(tree) {
+			if (typeof ClipboardItem === "undefined" || !navigator.clipboard || typeof navigator.clipboard.write !== "function") {
+				throw new Error("当前环境不支持复制图片，请改用「导出为图片」");
+			}
+			const { svg, width, height } = buildExportSvg(tree);
+			const blobPromise = renderSvgToCanvas(svg, width, height).then((canvas) => new Promise((resolve, reject) => {
+				canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG 生成失败"))), "image/png");
+			}));
+			try {
+				await navigator.clipboard.write([new ClipboardItem({ "image/png": blobPromise })]);
+			} catch (error) {
+				throw new Error(`复制图片失败：${error?.message ?? error}。可改用「导出为图片」`);
+			}
 		}
 		//#endregion
 
@@ -742,6 +769,10 @@ window.__ModuleLoader__.load({
 			treeError: { color: "var(--dsw-alias-label-error)", fontSize: "12px", lineHeight: 1.6, margin: "0" },
 			treeMenu: { position: "fixed", zIndex: 60, minWidth: "210px", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", padding: "6px", boxShadow: "var(--dsw-shadow-lv2)" },
 			treeMenuItem: { display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", border: "none", background: "none", cursor: "pointer", padding: "7px 12px", borderRadius: "8px", font: "inherit", fontSize: "13px", color: "var(--dsw-alias-label-primary)" },
+			// 017 画布节点右键菜单：标题行（节点主题）+ 错误行 + 菜单项禁用态。
+			nodeMenuHeader: { padding: "4px 12px 6px", fontSize: "12px", color: "var(--dsw-alias-label-tertiary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "220px", boxSizing: "border-box" },
+			nodeMenuError: { color: "var(--dsw-alias-label-error)", fontSize: "12px", lineHeight: 1.5, margin: "0", padding: "2px 12px 4px", wordBreak: "break-word" },
+			treeMenuItemDisabled: { opacity: 0.5, cursor: "default" },
 			// 015 设置面板（settings.section 页面内容）。
 			settingsWrap: { display: "flex", flexDirection: "column", gap: "12px", padding: "16px", maxWidth: "480px" },
 			settingsGroup: { display: "flex", flexDirection: "column", gap: "14px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "12px", padding: "14px", background: "var(--dsw-alias-bg-layer-3)" },
@@ -1021,7 +1052,7 @@ window.__ModuleLoader__.load({
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme } = props;
+			const { node, theme, onNodeContextMenu } = props;
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
@@ -1112,14 +1143,26 @@ window.__ModuleLoader__.load({
 						}, i)),
 					})
 					: null,
-				(0, react_jsx_runtime.jsx)("div", { ref: boxWrapRef, "data-mindmap-node": "", style: { flex: "0 0 auto", cursor: "pointer" }, children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme }) }),
+				(0, react_jsx_runtime.jsx)("div", {
+					ref: boxWrapRef,
+					"data-mindmap-node": "",
+					style: { flex: "0 0 auto", cursor: "pointer" },
+					// 017 节点右键：弹「复制/导出为图片」菜单；stopPropagation 免触
+					// 画布空白拦截（空白处只拦默认菜单、不弹自己的）。
+					onContextMenu: onNodeContextMenu ? (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						onNodeContextMenu(e, node);
+					} : undefined,
+					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme }),
+				}),
 				node.children && node.children.length > 0
 					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
 						key: child.id,
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu }),
 					}, child.id)) })
 					: null,
 				] });
@@ -1193,6 +1236,12 @@ window.__ModuleLoader__.load({
 						const fitStampRef = react.useRef([]);
 							const [zoom, setZoomState] = react.useState(1);
 							const [hover, setHover] = react.useState(null);
+							// 017 节点右键菜单：{x, y, node}；null = 关闭。busy = "copy" |
+							// "export" 表示对应动作进行中（两项都禁用），error 展示失败原因。
+							const [nodeMenu, setNodeMenu] = react.useState(null);
+							const [nodeMenuBusy, setNodeMenuBusy] = react.useState(null);
+							const [nodeMenuError, setNodeMenuError] = react.useState("");
+							const nodeMenuRef = react.useRef(null);
 
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
@@ -1347,6 +1396,58 @@ window.__ModuleLoader__.load({
 					scroller.scrollTop += curY - scroller.clientHeight / 2;
 				}
 
+				// 017 右键菜单开合：点其它地方/失焦/改窗口即关闭（目录树菜单同款）；
+				// 点菜单内部（复制/导出按钮）不关——菜单里要展示「复制中…」与失败
+				// 原因。节点右键经 stopPropagation 不会触发这里的 contextmenu 关闭，
+				// 空白处右键则顺带收掉旧菜单。文档内容变化（树重解析、节点对象
+				// 失效）也关闭，防导出过期子树。
+				react.useEffect(() => {
+					if (!nodeMenu) return;
+					const close = (e) => {
+						if (e && e.type === "click" && nodeMenuRef.current && e.target && nodeMenuRef.current.contains(e.target)) return;
+						setNodeMenu(null);
+					};
+					window.addEventListener("click", close);
+					window.addEventListener("blur", close);
+					window.addEventListener("resize", close);
+					window.addEventListener("contextmenu", close);
+					return () => {
+						window.removeEventListener("click", close);
+						window.removeEventListener("blur", close);
+						window.removeEventListener("resize", close);
+						window.removeEventListener("contextmenu", close);
+					};
+				}, [nodeMenu]);
+				react.useEffect(() => {
+					setNodeMenu(null);
+				}, [node]);
+
+				// 017 右键节点：记录菜单锚点与目标子树（清掉上次的忙碌/错误态）。
+				function onNodeContextMenu(e, target) {
+					setNodeMenuBusy(null);
+					setNodeMenuError("");
+					setNodeMenu({ x: e.clientX, y: e.clientY, node: target });
+				}
+
+				// 017 菜单动作：copy = PNG 写系统剪贴板（可粘贴到聊天/文档）；
+				// export = PNG 下载为文件。范围 = 该节点及其全部子孙
+				//（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
+				async function onNodeMenuAction(mode) {
+					const target = nodeMenu && nodeMenu.node;
+					if (!target || nodeMenuBusy) return;
+					setNodeMenuBusy(mode);
+					setNodeMenuError("");
+					try {
+						if (mode === "copy") await copyPng(target);
+						else await exportPng(target, target.topic);
+						setNodeMenu(null);
+					} catch (error) {
+						setNodeMenuError(String(error?.message ?? error));
+					} finally {
+						setNodeMenuBusy(null);
+					}
+				}
+
 				// 边界反馈：到达上下限时对应按钮置灰（fit 值与边界精确相等时也命中）。
 				const atMin = zoom <= ZOOM.min;
 				const atMax = zoom >= ZOOM.max;
@@ -1354,11 +1455,15 @@ window.__ModuleLoader__.load({
 					? { ...S.zoomBtn, ...S.zoomBtnDisabled }
 					: (hover === key ? { ...S.zoomBtn, ...S.zoomBtnHover } : S.zoomBtn));
 
-				return (0, react_jsx_runtime.jsxs)("div", { style: S.canvasWrap, children: [
+				return (0, react_jsx_runtime.jsxs)("div", {
+					style: S.canvasWrap,
+					// 017 空白处/缩放条右键只拦浏览器默认菜单（节点右键已 stopPropagation）。
+					onContextMenu: (e) => e.preventDefault(),
+					children: [
 					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children:
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children:
 							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children:
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme })
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu })
 							})
 						})
 					}),
@@ -1394,6 +1499,37 @@ window.__ModuleLoader__.load({
 							children: "适配",
 						}),
 					] }),
+					// 017 节点右键菜单：标题行（节点主题）+ 复制/导出两动作 + 错误行。
+					// 复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
+					nodeMenu ? (0, react_jsx_runtime.jsxs)("div", {
+						ref: nodeMenuRef,
+						style: { ...S.treeMenu, left: nodeMenu.x, top: nodeMenu.y },
+						onContextMenu: (e) => e.preventDefault(),
+						children: [
+							(0, react_jsx_runtime.jsx)("div", {
+								style: S.nodeMenuHeader,
+								title: nodeMenu.node.topic || "待填写",
+								children: truncateForExport(nodeMenu.node.topic, 18) || "待填写",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								disabled: Boolean(nodeMenuBusy),
+								title: "把该节点及其全部子孙渲染为 PNG 并复制到剪贴板",
+								onClick: () => onNodeMenuAction("copy"),
+								children: nodeMenuBusy === "copy" ? "复制中…" : "复制为图片",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								disabled: Boolean(nodeMenuBusy),
+								title: "把该节点及其全部子孙渲染为 PNG 并下载为文件",
+								onClick: () => onNodeMenuAction("export"),
+								children: nodeMenuBusy === "export" ? "导出中…" : "导出为图片",
+							}),
+							nodeMenuError ? (0, react_jsx_runtime.jsx)("p", { style: S.nodeMenuError, children: nodeMenuError }) : null,
+						],
+					}) : null,
 				] });
 				}
 				//#endregion

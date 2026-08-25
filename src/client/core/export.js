@@ -1,5 +1,5 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
-		//#region PNG 导出（SVG 序列化 → canvas → 下载）
+		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
 		const EXPORT = { nodeW: 200, nodeH: 30, hGap: 48, vGap: 10, pad: 20, fontSize: 13 };
 
 		function escapeXml(text) {
@@ -72,9 +72,8 @@
 			return { svg: parts.join(""), width, height };
 		}
 
-		/** 浏览器侧导出：SVG → Image → canvas → PNG 下载。 */
-		async function exportPng(tree, rootTitle) {
-			const { svg, width, height } = buildExportSvg(tree);
+		/** SVG → Image → 白底 canvas（下载 / 剪贴板共用，017 抽出）。 */
+		async function renderSvgToCanvas(svg, width, height) {
 			const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 			const img = new Image();
 			await new Promise((resolve, reject) => {
@@ -89,6 +88,13 @@
 			ctx2d.fillStyle = "#ffffff";
 			ctx2d.fillRect(0, 0, canvas.width, canvas.height);
 			ctx2d.drawImage(img, 0, 0);
+			return canvas;
+		}
+
+		/** 浏览器侧导出：SVG → canvas → PNG 下载。tree 可为整树或任意子树（017）。 */
+		async function exportPng(tree, rootTitle) {
+			const { svg, width, height } = buildExportSvg(tree);
+			const canvas = await renderSvgToCanvas(svg, width, height);
 			const dataUrl = canvas.toDataURL("image/png");
 			const a = document.createElement("a");
 			a.href = dataUrl;
@@ -96,6 +102,27 @@
 			document.body.appendChild(a);
 			a.click();
 			a.remove();
+		}
+
+		/**
+		 * 浏览器侧复制（017 节点右键菜单）：tree 渲染成 PNG 写入系统剪贴板，
+		 * 可直接粘贴到聊天 / 文档 / 微信等。ClipboardItem 携带 Blob Promise——
+		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全
+		 * 上下文等）或写入被拒时抛错，由菜单提示改用「导出为图片」。
+		 */
+		async function copyPng(tree) {
+			if (typeof ClipboardItem === "undefined" || !navigator.clipboard || typeof navigator.clipboard.write !== "function") {
+				throw new Error("当前环境不支持复制图片，请改用「导出为图片」");
+			}
+			const { svg, width, height } = buildExportSvg(tree);
+			const blobPromise = renderSvgToCanvas(svg, width, height).then((canvas) => new Promise((resolve, reject) => {
+				canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG 生成失败"))), "image/png");
+			}));
+			try {
+				await navigator.clipboard.write([new ClipboardItem({ "image/png": blobPromise })]);
+			} catch (error) {
+				throw new Error(`复制图片失败：${error?.message ?? error}。可改用「导出为图片」`);
+			}
 		}
 		//#endregion
 
