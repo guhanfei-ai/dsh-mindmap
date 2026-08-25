@@ -21,6 +21,8 @@
 			const OPEN_TIMEOUT_MS = 30000;
 			const [openTimedOut, setOpenTimedOut] = react.useState(false);
 			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
+			// 窗口尺寸变化时持续钳制——只在挂载时压一次的话，窗口先放大→拖宽
+			// 面板→再缩小会让面板保持旧像素宽，聊天区被挤没。
 			const WIDTH_KEY = "dsh-mindmap.overlay-width";
 			const [panelWidth, setPanelWidth] = react.useState(() => {
 				try {
@@ -32,9 +34,15 @@
 				return Math.round(window.innerWidth * 0.42);
 			});
 			react.useEffect(() => {
-				if (panelWidth > Math.round(window.innerWidth * 0.8)) {
-					setPanelWidth(Math.round(window.innerWidth * 0.8));
-				}
+				const clamp = () => {
+					setPanelWidth((prev) => {
+						const max = Math.round(window.innerWidth * 0.8);
+						return prev > max ? max : prev;
+					});
+				};
+				clamp();
+				window.addEventListener("resize", clamp);
+				return () => window.removeEventListener("resize", clamp);
 			}, []);
 			// 015 设置面板：没有本地拖拽记忆时，用 settings 里的默认宽度。
 			react.useEffect(() => {
@@ -343,6 +351,7 @@
 
 			// 拉取一层目录（path 缺省 = 会话 cwd 根）。host 路由 /mindmap/api/tree
 			// 只读；返回 {path, cwd, entries:[{name,path,isDir,hidden}], truncated}。
+			// 返回 true/false 供调用方决定是否标记展开（失败时不要把目录标成已展开）。
 			async function loadTree(path) {
 				const key = path === undefined || path === null ? "" : path;
 				setFsTree((prev) => ({ ...prev, loading: { ...prev.loading, [key]: true }, error: null }));
@@ -369,8 +378,10 @@
 							loading: { ...prev.loading, [key]: false },
 						};
 					});
+					return true;
 				} catch (error) {
 					setFsTree((prev) => ({ ...prev, loading: { ...prev.loading, [key]: false }, error: String(error?.message ?? error) }));
+					return false;
 				}
 			}
 
@@ -383,7 +394,11 @@
 					});
 					return;
 				}
-				if (!fsTree.nodes[entry.path]) await loadTree(entry.path);
+				// 加载失败不标记展开：箭头/子项状态与真实数据保持一致。
+				if (!fsTree.nodes[entry.path]) {
+					const ok = await loadTree(entry.path);
+					if (!ok) return;
+				}
 				setFsTree((prev) => ({ ...prev, expanded: { ...prev.expanded, [entry.path]: true } }));
 			}
 

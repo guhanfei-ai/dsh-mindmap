@@ -150,6 +150,17 @@ test('mindmap_open reads content and requires the file to exist', async () => {
   await assert.rejects(byName('mindmap_open').execute({ path: 'missing.md' }, execution(cwd)), /ENOENT/)
 })
 
+test('filenames starting with .. stay inside the cwd and open fine', async () => {
+  // 回归：`..` 前缀曾被误判为越界（只看了字符串前缀，没带分隔符）
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  await writeFile(join(cwd, '..notes.md'), '# A\n', 'utf8')
+  const result = parseResult(await byName('mindmap_open').execute({ path: '..notes.md' }, execution(cwd)))
+  assert.equal(result.path, join(cwd, '..notes.md'))
+  assert.equal(result.rootTitle, '..notes')
+  await assert.rejects(byName('mindmap_open').execute({ path: '../escape.md' }, execution(cwd)), /stay inside/)
+})
+
 test('mindmap_get returns the current content', async () => {
   const cwd = await tmpWorkspace()
   const { byName } = createContext()
@@ -206,6 +217,19 @@ test('mindmap_update pure rename without content keeps file bytes', async () => 
   assert.equal(result.op, 'update')
   assert.equal(result.content, '# x\n- y\n')
   assert.deepEqual(await readdir(cwd), ['renamed.md'])
+})
+
+test('mindmap_update renameRoot supports case-only renames', async () => {
+  // 回归：大小写不敏感 FS（macOS/Windows）上 pathExists(target) 命中自己，
+  // 曾被误报 already exists；sameFile 判定放行后 Plan → plan 可正常改名。
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  await writeFile(join(cwd, 'Plan.md'), '# keep\n', 'utf8')
+  const result = parseResult(await byName('mindmap_update').execute({ path: 'Plan.md', renameRoot: 'plan' }, execution(cwd)))
+  assert.equal(result.renamedFrom, join(cwd, 'Plan.md'))
+  assert.equal(result.path, join(cwd, 'plan.md'))
+  assert.deepEqual(await readdir(cwd), ['plan.md'])
+  assert.equal(await readFile(join(cwd, 'plan.md'), 'utf8'), '# keep\n')
 })
 
 test('mindmap_update rejects missing file, missing args and oversized content', async () => {

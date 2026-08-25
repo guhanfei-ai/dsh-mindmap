@@ -14,8 +14,8 @@
 //   namespace 可在设置面板运行时切换（见 SETTINGS_NAMESPACE/Config）。
 // - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
 //   link 开发需先 npm i）。工具参数 schema 仍手写 JSON Schema（003 偏差 1）。
-import { access, opendir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { access, opendir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'mindmap'
@@ -105,6 +105,12 @@ function sessionCwdOf(sessions, sessionId) {
   return typeof cwd === 'string' && cwd ? cwd : null
 }
 
+/** 相对路径是否越出 base（`..` 本身或以 `..` + 分隔符开头；不能只看 `..` 前缀——
+ *  `..notes.md` 这类文件名会被误判）。 */
+function escapesBase(rel) {
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+}
+
 /** 请求路径校验：缺省 = 根 cwd；显式路径必须绝对且落在 cwd 内。 */
 function resolveTreePath(cwd, input) {
   if (!cwd) throw httpError(400, 'no-cwd', 'session has no working directory')
@@ -113,7 +119,7 @@ function resolveTreePath(cwd, input) {
   if (!isAbsolute(p)) throw httpError(400, 'bad-request', `path must be absolute: ${JSON.stringify(p)}`)
   const resolved = resolvePath(p)
   const rel = relative(cwd, resolved)
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  if (escapesBase(rel)) {
     throw httpError(400, 'bad-request', `path must stay inside the session working directory (${cwd})`)
   }
   return resolved
@@ -206,7 +212,7 @@ function resolveMindmapPath(cwd, input) {
   }
   const resolved = resolvePath(cwd, p)
   const rel = relative(cwd, resolved)
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+  if (rel === '' || escapesBase(rel)) {
     throw new Error(`mindmap path must stay inside the session working directory (${cwd}).`)
   }
   return resolved
@@ -216,6 +222,20 @@ async function pathExists(p) {
   try {
     await access(p)
     return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 两个路径是否指向同一个文件（dev + inode 比较）。大小写不敏感 FS（macOS/
+ * Windows）上仅大小写不同的路径命中同一文件——case-only 改名时据此区分
+ * 「目标就是自己」（放行）与「真有另一个同名文件」（碰撞报错）。
+ */
+async function sameFile(a, b) {
+  try {
+    const [sa, sb] = await Promise.all([stat(a), stat(b)])
+    return sa.dev === sb.dev && sa.ino === sb.ino
   } catch {
     return false
   }
@@ -238,7 +258,15 @@ function defineTool(spec) {
 }
 
 export function apply(ctx, config = {}) {
-  const entryConfig = { requireApproval: config.requireApproval === true, defaultPanelWidth: 42 }
+  // 入口配置作为 settings 组合层的 base：视觉三件套与默认宽度在这里
+  // 透传（带 schema 同款默认值），用户设置层仍可在设置面板覆盖。
+  const entryConfig = {
+    requireApproval: config.requireApproval === true,
+    defaultPanelWidth: typeof config.defaultPanelWidth === 'number' ? config.defaultPanelWidth : 42,
+    lineStyle: config.lineStyle === 'curve' ? 'curve' : 'elbow',
+    cardStyle: config.cardStyle === 'square' ? 'square' : 'rounded',
+    colorTheme: config.colorTheme === 'sunset' || config.colorTheme === 'forest' ? config.colorTheme : 'ocean',
+  }
 
   // 015 设置面板：settings 服务可用时以命名空间解析值为准
   // （schema 默认 → 组合层 base → 用户设置层），否则回退入口配置
@@ -288,8 +316,15 @@ export function apply(ctx, config = {}) {
       if (!cwd) throw new Error('The session has no working directory; cannot create a mindmap.')
       const stem = sanitizeStem(args?.name)
       const path = resolveMindmapPath(cwd, `${stem}.md`)
-      if (await pathExists(path)) throw new Error(`Mindmap already exists: ${JSON.stringify(path)}. Open it with mindmap_open instead.`)
-      await writeFile(path, '', 'utf8')
+      // wx = 不存在才创建：原子拒绝已存在（含并发竞态）与同名目录，无 TOCTOU 窗口。
+      try {
+        await writeFile(path, '', { encoding: 'utf8', flag: 'wx' })
+      } catch (error) {
+        if (error && (error.code === 'EEXIST' || error.code === 'EISDIR')) {
+          throw new Error(`Mindmap already exists: ${JSON.stringify(path)}. Open it with mindmap_open instead.`)
+        }
+        throw error
+      }
       return buildResult('create', path, { content: '', created: true })
     },
   }))
@@ -366,7 +401,9 @@ export function apply(ctx, config = {}) {
         // cwd 缺失的绝对路径场景同样成立）。
         const target = resolvePath(dirname(path), `${stem}.md`)
         if (target !== path) {
-          if (await pathExists(target)) {
+          // case-only 改名（如 Plan → plan）在大小写不敏感 FS 上 pathExists(target)
+          // 命中的就是自己——用 sameFile 放行；真碰撞（不同文件）才报错。
+          if (await pathExists(target) && !(await sameFile(path, target))) {
             throw new Error(`Cannot rename root: ${JSON.stringify(target)} already exists. Pick another name.`)
           }
           await rename(path, target)
@@ -398,7 +435,7 @@ export function apply(ctx, config = {}) {
       }
       try {
         const method = new URL(req.url ?? '/', 'http://dsh.internal').pathname.slice('/mindmap/api/'.length)
-        if (method !== 'tree' || method.includes('/')) {
+        if (method !== 'tree') {
           sendJson(res, 404, { ok: false, error: { code: 'not-found', message: `unknown mindmap API method ${JSON.stringify(method)}` } })
           return
         }
