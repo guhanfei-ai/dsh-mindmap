@@ -115,6 +115,9 @@
 					states: { hovered, selected: selectedId === node.id },
 				}),
 			};
+			// 020 表格块不参与散文 320px 宽上限：完整网格需要更宽书写面，
+			// 单独放到 680；超出部分盒内横滚（003 §8 结构类保留形态）。
+			if (node.kind === "table") style.maxWidth = 680;
 			// 018 生长动画：动画挂在内层节点盒（外层被连线测量，不能带 transform）。
 			if (revealDelay !== undefined) style.animationDelay = `${revealDelay}ms`;
 

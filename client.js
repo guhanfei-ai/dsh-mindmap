@@ -290,6 +290,24 @@ window.__ModuleLoader__.load({
 		function parseTableRow(line) {
 			return String(line ?? "").trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 		}
+
+		/**
+		 * 020 复制全文（右键菜单）：单节点自身内容的完整文本。代码块取围栏全文；
+		 * 表格块按 Markdown 源码形态输出完整网格；其余块取原文（data.raw 优先，
+		 * 引用块 raw = 整块引用源码；无 raw 时回退 topic）。
+		 */
+		function nodeFullText(node) {
+			if (!node) return "";
+			const data = node.data || {};
+			if (node.kind === "code") return data.code || node.topic || "";
+			if (node.kind === "table" && Array.isArray(data.rows) && data.rows.length > 0) {
+				// data.rows 不含分隔行（解析时剔除）；复制时补回，粘回 Markdown 仍是合法表格。
+				const lines = data.rows.map((row) => `| ${row.join(" | ")} |`);
+				if (data.rows.length > 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
+				return lines.join("\n");
+			}
+			return data.raw || node.topic || "";
+		}
 		//#endregion
 		
 		/**
@@ -1118,6 +1136,26 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 020 复制全文：纯文本写系统剪贴板。优先 Clipboard API；老环境回退
+		 * 临时 textarea + execCommand（宿主 webview 权限不齐时的保底）。
+		 */
+		async function copyPlainText(text) {
+			if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+				await navigator.clipboard.writeText(String(text ?? ""));
+				return;
+			}
+			const ta = document.createElement("textarea");
+			ta.value = String(text ?? "");
+			ta.style.position = "fixed";
+			ta.style.opacity = "0";
+			document.body.appendChild(ta);
+			ta.select();
+			const ok = document.execCommand && document.execCommand("copy");
+			ta.remove();
+			if (!ok) throw new Error("当前环境不支持复制文本");
+		}
+
+		/**
 		 * 浏览器侧复制（017 节点右键菜单）：tree 渲染成 PNG 写入系统剪贴板，
 		 * 可直接粘贴到聊天 / 文档 / 微信等。ClipboardItem 携带 Blob Promise——
 		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全
@@ -1243,7 +1281,7 @@ window.__ModuleLoader__.load({
 			// 参与截断，超宽时盒内横向滚动，网格与单元格完整保留。
 			tableWrap: { fontSize: "12px", lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
 			tableGrid: { borderCollapse: "collapse" },
-			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", maxWidth: "200px" },
+			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", minWidth: "64px", maxWidth: "240px" },
 			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
 			// 019 大一统可点击链接：任何块里的任何 URL 完整呈现、永不缩减。
 			inlineLink: { color: "var(--dsw-alias-state-business-primary)", textDecoration: "underline", textUnderlineOffset: "2px", overflowWrap: "anywhere", cursor: "pointer" },
@@ -1601,6 +1639,9 @@ window.__ModuleLoader__.load({
 					states: { hovered, selected: selectedId === node.id },
 				}),
 			};
+			// 020 表格块不参与散文 320px 宽上限：完整网格需要更宽书写面，
+			// 单独放到 680；超出部分盒内横滚（003 §8 结构类保留形态）。
+			if (node.kind === "table") style.maxWidth = 680;
 			// 018 生长动画：动画挂在内层节点盒（外层被连线测量，不能带 transform）。
 			if (revealDelay !== undefined) style.animationDelay = `${revealDelay}ms`;
 
@@ -2049,16 +2090,17 @@ window.__ModuleLoader__.load({
 					setNodeMenu({ x: e.clientX, y: e.clientY, node: target });
 				}
 
-				// 017 菜单动作：copy = PNG 写系统剪贴板（可粘贴到聊天/文档）；
-				// export = PNG 下载为文件。范围 = 该节点及其全部子孙
-				//（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
+				// 017 菜单动作：text = 节点全文写剪贴板（020）；copy = PNG 写系统剪贴板
+				// （可粘贴到聊天/文档）；export = PNG 下载为文件。图片范围 = 该节点
+				// 及其全部子孙（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
 				async function onNodeMenuAction(mode) {
 					const target = nodeMenu && nodeMenu.node;
 					if (!target || nodeMenuBusy) return;
 					setNodeMenuBusy(mode);
 					setNodeMenuError("");
 					try {
-						if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
+						if (mode === "text") await copyPlainText(nodeFullText(target));
+						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
 						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
 					} catch (error) {
@@ -2119,8 +2161,8 @@ window.__ModuleLoader__.load({
 							children: "适配",
 						}),
 					] }),
-					// 017 节点右键菜单：标题行（节点主题）+ 复制/导出两动作 + 错误行。
-					// 复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
+					// 017 节点右键菜单：标题行（节点主题）+ 复制全文/复制为图片/导出为
+					// 图片三动作 + 错误行。复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
 					nodeMenu ? (0, react_jsx_runtime.jsxs)("div", {
 						ref: nodeMenuRef,
 						style: { ...S.treeMenu, left: nodeMenu.x, top: nodeMenu.y },
@@ -2130,6 +2172,14 @@ window.__ModuleLoader__.load({
 								style: S.nodeMenuHeader,
 								title: nodeMenu.node.topic || "待填写",
 								children: truncateForExport(nodeMenu.node.topic, 18) || "待填写",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								disabled: Boolean(nodeMenuBusy),
+								title: "把该节点自身内容的完整文本复制到剪贴板（截断块/代码块/表格块均取全文）",
+								onClick: () => onNodeMenuAction("text"),
+								children: nodeMenuBusy === "text" ? "复制中…" : "复制全文",
 							}),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
@@ -3091,6 +3141,7 @@ window.__ModuleLoader__.load({
 			hasInlineFormat,
 			isTableSeparator,
 			parseTableRow,
+			nodeFullText,
 			renderInline,
 			stripInlineForExport,
 			wrapExportText,

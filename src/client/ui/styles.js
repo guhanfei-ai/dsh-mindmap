@@ -103,7 +103,7 @@
 			// 参与截断，超宽时盒内横向滚动，网格与单元格完整保留。
 			tableWrap: { fontSize: "12px", lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
 			tableGrid: { borderCollapse: "collapse" },
-			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", maxWidth: "200px" },
+			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", minWidth: "64px", maxWidth: "240px" },
 			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
 			// 019 大一统可点击链接：任何块里的任何 URL 完整呈现、永不缩减。
 			inlineLink: { color: "var(--dsw-alias-state-business-primary)", textDecoration: "underline", textUnderlineOffset: "2px", overflowWrap: "anywhere", cursor: "pointer" },
