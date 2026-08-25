@@ -1222,16 +1222,24 @@ window.__ModuleLoader__.load({
 			// 改为由 TreeRow 在 measure 里同步记下实际像素，作 SVG 属性直传。
 			edgeLayer: { position: "absolute", top: 0, left: 0, display: "block", pointerEvents: "none", overflow: "visible" },
 			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
-			// 颜色/圆角/阴影由 resolveNodeStyle 生成。全量换行：盒内换行、盒高随内容
-			// 生长，废除单行 ellipsis；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
-			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box" },
+			// 颜色/圆角/阴影由 resolveNodeStyle 生成。020 长度治理：320px 宽上限
+			// 强制盒内折行（废除横条）；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box", maxWidth: 320 },
+			// 020 长度治理：散文类块（text/md/list/quote）折行后仍超 6 行即截断+
+			// 省略号，全文走悬停浮层（复用代码浮层通道，缩减≠阉割）。仅散文类套用。
+			boxClamp: { display: "-webkit-box", WebkitLineClamp: 6, WebkitBoxOrient: "vertical", overflow: "hidden" },
 			// 019 代码块悬停浮层：看全文的浮起面板（position:fixed 不进测量链，
 			// 不影响行测量；等宽全文、可滚动、移开即收）。
 			codePanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontFamily: "Menlo, monospace", fontSize: "12px", lineHeight: 1.6, whiteSpace: "pre", boxSizing: "border-box" },
 			codePanelLang: { margin: "0 0 6px", fontSize: "11px", color: "var(--dsw-alias-label-tertiary)", fontFamily: "inherit" },
 			codePanelCode: { margin: "0", fontFamily: "inherit", fontSize: "inherit", whiteSpace: "pre" },
-			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。
-			tableWrap: { fontSize: "12px", lineHeight: 1.5 },
+			// 020 散文类全文浮层：与代码浮层共用定位/翻转/宽限逻辑，换等宽为等线、
+			// pre 为 pre-wrap（正文不是代码）。
+			textPanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontSize: "12px", lineHeight: 1.6, boxSizing: "border-box" },
+			textPanelBody: { margin: "0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。020：表格不
+			// 参与截断，超宽时盒内横向滚动，网格与单元格完整保留。
+			tableWrap: { fontSize: "12px", lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
 			tableGrid: { borderCollapse: "collapse" },
 			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", maxWidth: "200px" },
 			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
@@ -1568,9 +1576,23 @@ window.__ModuleLoader__.load({
 			const { node, theme, revealDelay, selectedId, onCodePanel } = props;
 			const [hovered, setHovered] = react.useState(false);
 			const boxRef = react.useRef(null);
+			// 020 长度治理：散文类块（text/md/list/quote）套 6 行截断；clamped = 实测
+			// 真的溢出了（scrollHeight>clientHeight），悬停浮层看全文（复用代码浮层）。
+			const isProse = node.kind === "text" || node.kind === "md" || node.kind === "list" || node.kind === "quote";
+			const [clamped, setClamped] = react.useState(false);
+			react.useLayoutEffect(() => {
+				const el = boxRef.current;
+				if (!el || !isProse) {
+					if (clamped) setClamped(false);
+					return;
+				}
+				const overflow = el.scrollHeight > el.clientHeight + 1;
+				if (overflow !== clamped) setClamped(overflow);
+			}, [node.topic, node.kind]);
 			// 019 皮肤层：颜色/圆角/阴影/状态全部由 resolveNodeStyle 纯函数生成。
 			const style = {
 				...S.box,
+				...(isProse ? S.boxClamp : null),
 				...resolveNodeStyle(node, {
 					colorTheme: theme && theme.colorTheme,
 					cardStyle: theme && theme.cardStyle,
@@ -1582,14 +1604,14 @@ window.__ModuleLoader__.load({
 
 			function handleEnter() {
 				setHovered(true);
-				// 019 代码块：盒内紧凑摘要，悬停浮起面板看全文（003 §5.3）。
-				if (node.kind === "code" && onCodePanel && boxRef.current) {
+				// 019 代码块 / 020 截断散文块：盒内紧凑，悬停浮起面板看全文（003 §5.3）。
+				if ((node.kind === "code" || clamped) && onCodePanel && boxRef.current) {
 					onCodePanel({ node, anchor: boxRef.current.getBoundingClientRect() });
 				}
 			}
 			function handleLeave() {
 				setHovered(false);
-				if (node.kind === "code" && onCodePanel) onCodePanel(null);
+				if ((node.kind === "code" || clamped) && onCodePanel) onCodePanel(null);
 			}
 
 			const children = node.kind === "placeholder"
@@ -1597,7 +1619,8 @@ window.__ModuleLoader__.load({
 				: node.kind === "table"
 					? renderTableBlock(node)
 					: renderInline(node.topic, node.id);
-			const title = node.kind === "code" ? `${node.topic}\n\n（悬停看全文）` : node.topic;
+			// 截断块的全文走浮层，原生 title 气泡会与之重复，故截断时不挂 title。
+			const title = node.kind === "code" ? `${node.topic}\n\n（悬停看全文）` : clamped ? undefined : node.topic;
 			return (0, react_jsx_runtime.jsx)("div", {
 				ref: boxRef,
 				style,
@@ -2125,22 +2148,29 @@ window.__ModuleLoader__.load({
 							nodeMenuError ? (0, react_jsx_runtime.jsx)("p", { style: S.nodeMenuError, children: nodeMenuError }) : null,
 						],
 					}) : null,
-					// 019 代码块悬停浮层：position:fixed 挂在画布外层（不进 zoom 内容，
-					// 不影响行测量）；默认贴节点盒右侧，右缘放不下时翻到左侧；可滚动全文。
+					// 019 代码块 / 020 截断散文块 悬停浮层：position:fixed 挂在画布外层
+					// （不进 zoom 内容，不影响行测量）。恒贴节点盒右侧——溢出视口右缘
+					// 也不翻左（翻左会盖住左侧内容、位置跳）：用户点节点自动聚焦，
+					// 节点进视口后再悬停即看全（020 作者拍板）。可滚动全文；代码走等宽
+					// pre，散文走等线 pre-wrap 且行内链接可点。
 					codePanel ? (() => {
-						const panelW = 440;
 						const panelH = 340;
 						const anchor = codePanel.anchor || { left: 0, right: 0, top: 0 };
-						const left = anchor.right + 8 + panelW > window.innerWidth
-							? Math.max(8, anchor.left - panelW - 8)
-							: anchor.right + 8;
+						const left = anchor.right + 8;
 						const top = Math.min(anchor.top, Math.max(8, window.innerHeight - panelH - 8));
+						const pnode = codePanel.node;
+						const isCode = pnode.kind === "code";
+						const label = isCode
+							? ((pnode.data && pnode.data.lang) || "code")
+							: `${({ text: "文本块", md: "Markdown 块", list: "列表块", quote: "引用块" })[pnode.kind] || pnode.kind} · 全文`;
 						return (0, react_jsx_runtime.jsxs)("div", {
-							style: { ...S.codePanel, left, top },
+							style: { ...(isCode ? S.codePanel : S.textPanel), left, top },
 							onMouseLeave: () => handleCodePanel(null),
 							children: [
-								(0, react_jsx_runtime.jsx)("p", { style: S.codePanelLang, children: (codePanel.node.data && codePanel.node.data.lang) || "code" }),
-								(0, react_jsx_runtime.jsx)("pre", { style: S.codePanelCode, children: (codePanel.node.data && codePanel.node.data.code) || "" }),
+								(0, react_jsx_runtime.jsx)("p", { style: S.codePanelLang, children: label }),
+								isCode
+									? (0, react_jsx_runtime.jsx)("pre", { style: S.codePanelCode, children: (pnode.data && pnode.data.code) || "" })
+									: (0, react_jsx_runtime.jsx)("div", { style: S.textPanelBody, children: renderInline(pnode.topic, `panel-${pnode.id}`) }),
 							],
 						});
 					})() : null,

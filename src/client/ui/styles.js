@@ -82,16 +82,24 @@
 			// 改为由 TreeRow 在 measure 里同步记下实际像素，作 SVG 属性直传。
 			edgeLayer: { position: "absolute", top: 0, left: 0, display: "block", pointerEvents: "none", overflow: "visible" },
 			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
-			// 颜色/圆角/阴影由 resolveNodeStyle 生成。全量换行：盒内换行、盒高随内容
-			// 生长，废除单行 ellipsis；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
-			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box" },
+			// 颜色/圆角/阴影由 resolveNodeStyle 生成。020 长度治理：320px 宽上限
+			// 强制盒内折行（废除横条）；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box", maxWidth: 320 },
+			// 020 长度治理：散文类块（text/md/list/quote）折行后仍超 6 行即截断+
+			// 省略号，全文走悬停浮层（复用代码浮层通道，缩减≠阉割）。仅散文类套用。
+			boxClamp: { display: "-webkit-box", WebkitLineClamp: 6, WebkitBoxOrient: "vertical", overflow: "hidden" },
 			// 019 代码块悬停浮层：看全文的浮起面板（position:fixed 不进测量链，
 			// 不影响行测量；等宽全文、可滚动、移开即收）。
 			codePanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontFamily: "Menlo, monospace", fontSize: "12px", lineHeight: 1.6, whiteSpace: "pre", boxSizing: "border-box" },
 			codePanelLang: { margin: "0 0 6px", fontSize: "11px", color: "var(--dsw-alias-label-tertiary)", fontFamily: "inherit" },
 			codePanelCode: { margin: "0", fontFamily: "inherit", fontSize: "inherit", whiteSpace: "pre" },
-			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。
-			tableWrap: { fontSize: "12px", lineHeight: 1.5 },
+			// 020 散文类全文浮层：与代码浮层共用定位/翻转/宽限逻辑，换等宽为等线、
+			// pre 为 pre-wrap（正文不是代码）。
+			textPanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontSize: "12px", lineHeight: 1.6, boxSizing: "border-box" },
+			textPanelBody: { margin: "0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
+			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。020：表格不
+			// 参与截断，超宽时盒内横向滚动，网格与单元格完整保留。
+			tableWrap: { fontSize: "12px", lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
 			tableGrid: { borderCollapse: "collapse" },
 			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", maxWidth: "200px" },
 			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },

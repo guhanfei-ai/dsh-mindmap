@@ -386,22 +386,29 @@
 							nodeMenuError ? (0, react_jsx_runtime.jsx)("p", { style: S.nodeMenuError, children: nodeMenuError }) : null,
 						],
 					}) : null,
-					// 019 代码块悬停浮层：position:fixed 挂在画布外层（不进 zoom 内容，
-					// 不影响行测量）；默认贴节点盒右侧，右缘放不下时翻到左侧；可滚动全文。
+					// 019 代码块 / 020 截断散文块 悬停浮层：position:fixed 挂在画布外层
+					// （不进 zoom 内容，不影响行测量）。恒贴节点盒右侧——溢出视口右缘
+					// 也不翻左（翻左会盖住左侧内容、位置跳）：用户点节点自动聚焦，
+					// 节点进视口后再悬停即看全（020 作者拍板）。可滚动全文；代码走等宽
+					// pre，散文走等线 pre-wrap 且行内链接可点。
 					codePanel ? (() => {
-						const panelW = 440;
 						const panelH = 340;
 						const anchor = codePanel.anchor || { left: 0, right: 0, top: 0 };
-						const left = anchor.right + 8 + panelW > window.innerWidth
-							? Math.max(8, anchor.left - panelW - 8)
-							: anchor.right + 8;
+						const left = anchor.right + 8;
 						const top = Math.min(anchor.top, Math.max(8, window.innerHeight - panelH - 8));
+						const pnode = codePanel.node;
+						const isCode = pnode.kind === "code";
+						const label = isCode
+							? ((pnode.data && pnode.data.lang) || "code")
+							: `${({ text: "文本块", md: "Markdown 块", list: "列表块", quote: "引用块" })[pnode.kind] || pnode.kind} · 全文`;
 						return (0, react_jsx_runtime.jsxs)("div", {
-							style: { ...S.codePanel, left, top },
+							style: { ...(isCode ? S.codePanel : S.textPanel), left, top },
 							onMouseLeave: () => handleCodePanel(null),
 							children: [
-								(0, react_jsx_runtime.jsx)("p", { style: S.codePanelLang, children: (codePanel.node.data && codePanel.node.data.lang) || "code" }),
-								(0, react_jsx_runtime.jsx)("pre", { style: S.codePanelCode, children: (codePanel.node.data && codePanel.node.data.code) || "" }),
+								(0, react_jsx_runtime.jsx)("p", { style: S.codePanelLang, children: label }),
+								isCode
+									? (0, react_jsx_runtime.jsx)("pre", { style: S.codePanelCode, children: (pnode.data && pnode.data.code) || "" })
+									: (0, react_jsx_runtime.jsx)("div", { style: S.textPanelBody, children: renderInline(pnode.topic, `panel-${pnode.id}`) }),
 							],
 						});
 					})() : null,

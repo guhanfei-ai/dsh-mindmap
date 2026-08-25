@@ -92,9 +92,23 @@
 			const { node, theme, revealDelay, selectedId, onCodePanel } = props;
 			const [hovered, setHovered] = react.useState(false);
 			const boxRef = react.useRef(null);
+			// 020 长度治理：散文类块（text/md/list/quote）套 6 行截断；clamped = 实测
+			// 真的溢出了（scrollHeight>clientHeight），悬停浮层看全文（复用代码浮层）。
+			const isProse = node.kind === "text" || node.kind === "md" || node.kind === "list" || node.kind === "quote";
+			const [clamped, setClamped] = react.useState(false);
+			react.useLayoutEffect(() => {
+				const el = boxRef.current;
+				if (!el || !isProse) {
+					if (clamped) setClamped(false);
+					return;
+				}
+				const overflow = el.scrollHeight > el.clientHeight + 1;
+				if (overflow !== clamped) setClamped(overflow);
+			}, [node.topic, node.kind]);
 			// 019 皮肤层：颜色/圆角/阴影/状态全部由 resolveNodeStyle 纯函数生成。
 			const style = {
 				...S.box,
+				...(isProse ? S.boxClamp : null),
 				...resolveNodeStyle(node, {
 					colorTheme: theme && theme.colorTheme,
 					cardStyle: theme && theme.cardStyle,
@@ -106,14 +120,14 @@
 
 			function handleEnter() {
 				setHovered(true);
-				// 019 代码块：盒内紧凑摘要，悬停浮起面板看全文（003 §5.3）。
-				if (node.kind === "code" && onCodePanel && boxRef.current) {
+				// 019 代码块 / 020 截断散文块：盒内紧凑，悬停浮起面板看全文（003 §5.3）。
+				if ((node.kind === "code" || clamped) && onCodePanel && boxRef.current) {
 					onCodePanel({ node, anchor: boxRef.current.getBoundingClientRect() });
 				}
 			}
 			function handleLeave() {
 				setHovered(false);
-				if (node.kind === "code" && onCodePanel) onCodePanel(null);
+				if ((node.kind === "code" || clamped) && onCodePanel) onCodePanel(null);
 			}
 
 			const children = node.kind === "placeholder"
@@ -121,7 +135,8 @@
 				: node.kind === "table"
 					? renderTableBlock(node)
 					: renderInline(node.topic, node.id);
-			const title = node.kind === "code" ? `${node.topic}\n\n（悬停看全文）` : node.topic;
+			// 截断块的全文走浮层，原生 title 气泡会与之重复，故截断时不挂 title。
+			const title = node.kind === "code" ? `${node.topic}\n\n（悬停看全文）` : clamped ? undefined : node.topic;
 			return (0, react_jsx_runtime.jsx)("div", {
 				ref: boxRef,
 				style,
