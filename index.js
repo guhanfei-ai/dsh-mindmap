@@ -54,7 +54,8 @@ Markdown mapping (the panel's parser): headings nest by level (H1 are root child
 
 Behavior rules:
 - When the user asks to create a mindmap, call mindmap_create. When the user asks to open, view, show, or switch to an existing mindmap, call mindmap_open (do not use mindmap_get alone). Both operations bring that document to the visible mindmap panel automatically.
-- Always mindmap_get before editing, then send the complete updated document to mindmap_update. One tool call per step so the panel follows along live.
+- Always mindmap_get before editing, then send the complete updated document to mindmap_update. Every call must carry the FULL document, never a fragment.
+- Update step by step: whenever the request involves several parts, call mindmap_update as soon as each part is ready — several small updates beat one giant update at the end. The panel plays a growth animation on newly added/changed nodes, so step-by-step updates make the tree visibly grow while you work. Do not call mindmap_update twice in a row with identical content.
 - Never delete the whole document or restructure it without an explicit user request. Make the smallest change that answers the request.
 - When the user steps away or pauses (e.g. "我去买咖啡"), stop all mindmap edits immediately and wait — never continue autonomously.
 - Never run any git command for these files. The user commits themselves.
@@ -371,7 +372,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(defineTool({
     name: 'mindmap_update',
-    description: 'Write the FULL updated markdown of a mindmap document. Call mindmap_get first, then send the complete new content so the panel updates in one step. Optionally renameRoot to change the root title (renames the file; fails on name collision).',
+    description: 'Write the FULL updated markdown of a mindmap document. Call mindmap_get first, then send the complete new content. When the edit has several parts, call once per finished part (always full content) so the panel grows the new nodes step by step. Optionally renameRoot to change the root title (renames the file; fails on name collision).',
     parameters: {
       type: 'object',
       properties: {

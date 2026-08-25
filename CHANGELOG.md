@@ -6,6 +6,7 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
+- Step-by-step update convention for the AI (system prompt + `mindmap_update` tool description): when an edit has several parts, call `mindmap_update` as soon as each part is ready instead of one giant update at the end — each call still carries the FULL document, and the panel's growth animation makes the tree visibly grow while the AI works. The former "panel updates in one step" wording is removed as it pointed the other way.
 - Progressive growth animation for the mindmap panel: after every update, newly added/changed nodes fade in one by one (breadth-first from root to leaves, staggered up to 90ms apart) instead of the whole tree popping in at once. Diffing rides on the existing stable structural node IDs, so unchanged nodes never flicker or replay; the total duration is compressed to stay within ~2s for large documents; connector lines fade in together with their new children. The layout is computed in full up front, so the animation is compositor-only (opacity/transform) with no reflow cost. A new `growthAnimation` setting (settings panel「面板」→「生长动画」, default on) turns it off entirely, and `prefers-reduced-motion` is respected. The `mindmap_update` contract is unchanged (still full markdown).
 
 ### Fixed

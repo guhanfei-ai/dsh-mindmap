@@ -107,6 +107,9 @@ test('apply registers the four tools and the GUIDANCE section', () => {
   assert.equal(sections[0].name, 'tool:mindmap')
   assert.ok(sections[0].text.includes('Never run any git command'))
   assert.ok(sections[0].text.includes('steps away or pauses'))
+  // 019 分步更新约定：配合面板生长动画，每完成一小块就 update 一次（永远全量）。
+  assert.ok(sections[0].text.includes('Update step by step'))
+  assert.ok(sections[0].text.includes('never a fragment'))
 })
 
 test('mindmap_create writes an empty file and reports root title', async () => {
