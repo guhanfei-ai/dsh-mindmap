@@ -12,11 +12,18 @@ const SOURCE_FILES = [
   'src/client/core/export.js',
   'src/client/ui/styles.js',
   'src/client/ui/settings.js',
+  'src/client/ui/slot.js',
   'src/client/ui/render.js',
+  'src/client/ui/canvas.js',
   'src/client/ui/panel.js',
+  'src/client/ui/treetab.js',
+  'src/client/ui/panelbody.js',
   'src/client/runtime/apply.js',
   'src/client/runtime/close.js',
 ]
+
+// 同一逻辑块的物理拆分（函数体跨文件续写），拼接时不额外插空行。
+const PHYSICAL_SPLITS = new Set(['src/client/runtime/close.js'])
 
 const fragments = []
 for (const relative of SOURCE_FILES) {
@@ -26,9 +33,9 @@ for (const relative of SOURCE_FILES) {
 
 const output = `${fragments.map((fragment, index) => {
   if (index === 0) return fragment
-  // 07→08 与 10→11 是同一逻辑块的物理拆分，不额外插入空行；其余
-  // 片段按职责边界保留可读的空行。
-  const separator = index === 8 || index === 11 ? '\n' : '\n\n'
+  // PHYSICAL_SPLITS 里的片段是上一片段的直接续写，不额外插空行；
+  // 其余片段按职责边界保留可读的空行。
+  const separator = PHYSICAL_SPLITS.has(SOURCE_FILES[index]) ? '\n' : '\n\n'
   return `${separator}${fragment}`
 }).join('').replace(/\s+$/, '')}\n`
 if (!output.includes('window.__ModuleLoader__.load({')) {

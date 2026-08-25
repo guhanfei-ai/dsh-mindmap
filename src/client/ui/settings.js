@@ -160,12 +160,3 @@
 				error ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsError, children: error }) : null,
 			] });
 		}
-
-		/**
-		 * 「思维脑图」槽位组件（014）：同一槽位渲染 M 按钮 + 悬浮面板宿主层。
-		 * session scope 的 useSession/sessionId/inputActions 直给，经 props 传给
-		 * MindmapDetailsPanel（无桥、无 useSyncExternalStore——shell.overlay 跨槽
-		 * 方案实测未渲染，弃用后顺手把桥也删了）。
-		 */
-
-
