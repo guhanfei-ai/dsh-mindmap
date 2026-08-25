@@ -25,6 +25,10 @@
 			// 013：tab 秒建后的加载态（内容要等 AI 工具结果才渲染）。
 			loadingWrap: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px", height: "100%", minHeight: 0 },
 			loadingText: { color: "var(--dsw-alias-label-secondary)", fontSize: "13px", margin: "0" },
+			// 016 加载态三态：错误/超时标记与文案、重试按钮（沿用面板语义色变量）。
+			loadingErrorText: { color: "var(--dsw-alias-label-error)", fontSize: "13px", lineHeight: 1.6, margin: "0", textAlign: "center", wordBreak: "break-word", maxWidth: "90%" },
+			loadingFailMark: { flex: "none", fontSize: "22px", lineHeight: 1, color: "var(--dsw-alias-label-error)" },
+			retryBtn: { flex: "none", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", cursor: "pointer", font: "inherit", fontSize: "13px", padding: "6px 18px", borderRadius: "8px", lineHeight: "20px" },
 			// 013 目录树 tab：树容器/行样式。视觉自成一套：emoji 图标 + M 徽标 +
 			// 悬停高亮 + 激活指示条，不做 VSCode 式 chevron/线框。
 			// 树容器 -2px 负边距抵消 body 16px 内距：树左缘 = 头部「目录」tab 左缘（14px）。

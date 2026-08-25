@@ -2,6 +2,11 @@
 		function MindmapSlot(props) {
 			const { useSession, sessionId, inputActions, mindmapFace } = props;
 			const nodes = useSession ? useSession((s) => (s && s.nodes) || EMPTY_NODES) : EMPTY_NODES;
+			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
+			// 不变）时，nodes prop 不换、memo 命中缓存、auto-open effect 永不
+			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
+			// 值比较天然绕过引用相等短路；useSession 不可用时回退空串。
+			const nodesVersion = useSession ? useSession((s) => nodesFingerprint((s && s.nodes) || EMPTY_NODES)) : "";
 			const [open, setOpen] = react.useState(false);
 			return (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [
 				(0, react_jsx_runtime.jsxs)("button", {
@@ -37,6 +42,7 @@
 					sessionId,
 					inputActions,
 					nodes,
+					nodesVersion,
 					mindmapFace,
 					onOpen: () => setOpen(true),
 					onClose: () => setOpen(false),

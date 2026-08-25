@@ -278,6 +278,52 @@ window.__ModuleLoader__.load({
 			return base.replace(/\.md$/i, "");
 		}
 
+		// 016 起 reduceDocuments 与 nodesFingerprint 共用（从函数体提升到模块层）。
+		const MAX_SUBCALL_DEPTH = 100;
+
+		/**
+		 * 会话节点的结构指纹（016 可靠性加固）：数组长度 + 逐节点结构身份
+		 * （kind / callId / call.name / isError / subCalls 数，递归子树，深度
+		 * 上限与 reduceDocuments 一致）。只含结构身份、不含 content 文本——
+		 * 流式 token 增长不改变指纹，只有新工具结果节点出现才变。
+		 * 用作 useSession 的第二 selector 返回值：字符串按值比较，天然绕过
+		 * 「store 原地改数组、引用不变」的相等短路，驱动面板重算快照。
+		 */
+		function nodesFingerprint(nodes) {
+			if (!Array.isArray(nodes)) return "[]";
+			const parts = [String(nodes.length)];
+			const visit = (node, depth) => {
+				if (!node || typeof node !== "object") {
+					parts.push("·");
+					return;
+				}
+				parts.push(
+					String(node.kind ?? ""),
+					String(node.callId ?? ""),
+					String(node.call?.name ?? ""),
+					node.isError ? "E" : "-",
+				);
+				const subCalls = Array.isArray(node.subCalls) ? node.subCalls : null;
+				parts.push(String(subCalls ? subCalls.length : 0));
+				if (subCalls && subCalls.length > 0 && depth < MAX_SUBCALL_DEPTH) {
+					for (const subCall of subCalls) visit(subCall, depth + 1);
+				}
+			};
+			for (const node of nodes) visit(node, 0);
+			return parts.join("|");
+		}
+
+		/** 工具错误消息提取（016）：JSON 信封的 error/message 字段优先，回落原始文本。 */
+		function extractErrorMessage(parsed, text) {
+			if (parsed && typeof parsed === "object") {
+				if (typeof parsed.error?.message === "string" && parsed.error.message) return parsed.error.message;
+				if (typeof parsed.error === "string" && parsed.error) return parsed.error;
+				if (typeof parsed.message === "string" && parsed.message) return parsed.message;
+			}
+			const raw = String(text ?? "").trim();
+			return raw || "mindmap tool failed";
+		}
+
 		/**
 		 * 重放会话快照里的 mindmap_* 工具结果，得到每个脑图文档的最新状态。
 		 * nodes: ConversationSnapshot.nodes（ToolResultNode 含 call.name 与渲染后的
@@ -291,32 +337,37 @@ window.__ModuleLoader__.load({
 			let order = [];
 			let latestOpeningPath = null;
 			let latestOpeningEventKey = null;
+			// 016 错误捕获（S2 成因）：isError / ok!==true 的 mindmap_* 结果不进
+			// 文档集（语义不变），但记录为错误信号——errorByPath（可归因路径的
+			// 最近错误）+ latestError（最近一次 mindmap 错误，含无路径归因的）。
+			const errorByPath = Object.create(null);
+			let latestError = null;
 			const visited = new WeakSet();
-			const MAX_SUBCALL_DEPTH = 100;
 
 			function replayNode(node, eventPath, depth) {
 				if (!node || typeof node !== "object" || visited.has(node)) return;
 				visited.add(node);
 
-				if (node.kind === "tool-result" && !node.isError) {
+				if (node.kind === "tool-result") {
 					const name = node.call?.name;
 					if (typeof name === "string" && TOOL_NAMES.has(name)) {
+						const text = resultTextOfBlocks(node.content);
 						let parsed;
 						try {
-							parsed = JSON.parse(resultTextOfBlocks(node.content));
+							parsed = JSON.parse(text);
 						} catch {
 							parsed = null;
 						}
-						if (parsed && parsed.ok === true && typeof parsed.path === "string" && parsed.path) {
+						// callId 是实际调用的事件身份；eventPath 是无 callId 时按会话
+						// 遍历顺序生成的稳定兜底，避免重复 open 被合并成一个事件。
+						const callId = node.callId != null && String(node.callId)
+							? node.callId
+							: node.call?.callId;
+						const eventKey = callId != null && String(callId)
+							? `call:${String(callId)}`
+							: `node:${eventPath}`;
+						if (!node.isError && parsed && parsed.ok === true && typeof parsed.path === "string" && parsed.path) {
 							const op = typeof parsed.op === "string" ? parsed.op : name;
-							// callId 是实际调用的事件身份；eventPath 是无 callId 时按会话
-							// 遍历顺序生成的稳定兜底，避免重复 open 被合并成一个事件。
-							const callId = node.callId != null && String(node.callId)
-								? node.callId
-								: node.call?.callId;
-							const eventKey = callId != null && String(callId)
-								? `call:${String(callId)}`
-								: `node:${eventPath}`;
 							const renamedFrom = typeof parsed.renamedFrom === "string" ? parsed.renamedFrom : null;
 							const previous = byPath[parsed.path];
 							const renamedDocument = renamedFrom && renamedFrom !== parsed.path
@@ -356,6 +407,25 @@ window.__ModuleLoader__.load({
 								// 013：rename 迁移后保留旧路径，供本地直读 tab 清理（mergeDocuments）。
 								renamedFrom,
 							};
+							// 016：成功结果清除同路径历史错误（含 rename 旧路径）。
+							delete errorByPath[parsed.path];
+							if (renamedFrom && renamedFrom !== parsed.path) delete errorByPath[renamedFrom];
+						} else if (node.isError || (parsed && typeof parsed === "object" && parsed.ok !== true)) {
+							// 016 错误捕获：host 工具抛错时结果通常是纯文本（无 JSON 信封），
+							// 有信封但 ok!==true 的同样收集。可归因路径的进 errorByPath；
+							// latestError 恒记录最近一次——无路径错误由面板用「点击时刻
+							// 基线」（errorEventKeys）归因到在途的打开请求。
+							const errPath = parsed && typeof parsed === "object" && typeof parsed.path === "string" && parsed.path
+								? parsed.path
+								: null;
+							const entry = {
+								op: parsed && typeof parsed.op === "string" ? parsed.op : name,
+								message: extractErrorMessage(parsed, text),
+								callId,
+								eventKey,
+							};
+							if (errPath) errorByPath[errPath] = entry;
+							latestError = entry;
 						}
 					}
 				}
@@ -371,33 +441,48 @@ window.__ModuleLoader__.load({
 			for (const [nodeIndex, node] of (Array.isArray(nodes) ? nodes : []).entries()) {
 				replayNode(node, String(nodeIndex), 0);
 			}
-			return { order, byPath, latestOpeningPath, latestOpeningEventKey };
+			return { order, byPath, latestOpeningPath, latestOpeningEventKey, errorByPath, latestError };
 		}
 
 		/**
 		 * 快照文档集（AI 工具结果）与本地直读文档集（read 路由即时打开）合并：
 		 * - 快照优先（同 path 覆盖本地占位）；
 		 * - 本地文档追加在快照 order 之后；
-		 * - 快照里有 renamedFrom 指向某本地路径时，丢弃该本地条目（文件已改名）。
+		 * - 快照里有 renamedFrom 指向某本地路径时，丢弃该本地条目（文件已改名）；
+		 * - 016 大小写 fallback（S5 成因）：本地占位（op:"local"）与快照文档仅
+		 *   大小写不一致时（macOS 大小写不敏感 FS 上，AI 回传的规范 path 与树
+		 *   点击 key 不同），丢弃占位键、保留快照规范 path——加载态随之解除，
+		 *   既有 auto-open / 焦点同步机制照常接管。
+		 * 错误信号（errorByPath / latestError）原样透传，容缺（旧快照无此字段）。
 		 */
 		function mergeDocuments(snapshot, localDocs) {
-			const byPath = { ...localDocs, ...snapshot.byPath };
+			const snapByPath = (snapshot && snapshot.byPath) || {};
+			const byPath = { ...localDocs, ...snapByPath };
 			const dropped = new Set();
-			for (const doc of Object.values(snapshot.byPath)) {
+			for (const doc of Object.values(snapByPath)) {
 				if (typeof doc.renamedFrom === "string" && doc.renamedFrom && localDocs[doc.renamedFrom]) {
 					dropped.add(doc.renamedFrom);
 				}
 			}
-			for (const p of dropped) delete byPath[p];
-			const order = [...snapshot.order];
+			const snapPaths = Object.keys(snapByPath);
 			for (const p of Object.keys(localDocs)) {
-				if (!snapshot.byPath[p] && !dropped.has(p)) order.push(p);
+				if (snapByPath[p] || dropped.has(p)) continue;
+				if (!localDocs[p] || localDocs[p].op !== "local") continue;
+				const lower = p.toLowerCase();
+				if (snapPaths.some((sp) => sp.toLowerCase() === lower)) dropped.add(p);
+			}
+			for (const p of dropped) delete byPath[p];
+			const order = [...(snapshot?.order ?? [])];
+			for (const p of Object.keys(localDocs)) {
+				if (!snapByPath[p] && !dropped.has(p)) order.push(p);
 			}
 			return {
 				order,
 				byPath,
-				latestOpeningPath: snapshot.latestOpeningPath ?? null,
-				latestOpeningEventKey: snapshot.latestOpeningEventKey ?? null,
+				latestOpeningPath: snapshot?.latestOpeningPath ?? null,
+				latestOpeningEventKey: snapshot?.latestOpeningEventKey ?? null,
+				errorByPath: snapshot?.errorByPath ?? {},
+				latestError: snapshot?.latestError ?? null,
 			};
 		}
 
@@ -423,6 +508,45 @@ window.__ModuleLoader__.load({
 			return new Set((snapshot?.order ?? [])
 				.map((p) => snapshot.byPath[p]?.openingEventKey)
 				.filter((key) => key != null));
+		}
+
+		/**
+		 * 找到可归因到某文档路径的错误（016 加载态恢复）：优先 errorByPath
+		 * 精确匹配，其次小写全路径匹配（S5 同源）；sinceKeys（openMindmap
+		 * 点击时刻的错误基线，见 errorEventKeys）提供时只认其后新出现的错误，
+		 * 且无新路径错误时回落 latestError（无路径归因的最近错误）。
+		 */
+		function matchDocError(snapshot, path, sinceKeys) {
+			if (!snapshot || typeof path !== "string" || !path) return null;
+			const errors = snapshot.errorByPath ?? {};
+			let matched = errors[path] ?? null;
+			if (!matched) {
+				const lower = path.toLowerCase();
+				for (const key of Object.keys(errors)) {
+					if (key.toLowerCase() === lower) {
+						matched = errors[key];
+						break;
+					}
+				}
+			}
+			if (sinceKeys) {
+				if (matched && sinceKeys.has(matched.eventKey)) matched = null;
+				const latest = snapshot.latestError ?? null;
+				if (!matched && latest && !sinceKeys.has(latest.eventKey)) matched = latest;
+			}
+			return matched;
+		}
+
+		/** 当前快照的全部错误事件键（errorByPath + latestError），作「点击时刻基线」。 */
+		function errorEventKeys(snapshot) {
+			const keys = new Set();
+			if (!snapshot) return keys;
+			for (const entry of Object.values(snapshot.errorByPath ?? {})) {
+				if (entry && entry.eventKey != null) keys.add(entry.eventKey);
+			}
+			const latest = snapshot.latestError;
+			if (latest && latest.eventKey != null) keys.add(latest.eventKey);
+			return keys;
 		}
 		//#endregion
 
@@ -593,6 +717,10 @@ window.__ModuleLoader__.load({
 			// 013：tab 秒建后的加载态（内容要等 AI 工具结果才渲染）。
 			loadingWrap: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px", height: "100%", minHeight: 0 },
 			loadingText: { color: "var(--dsw-alias-label-secondary)", fontSize: "13px", margin: "0" },
+			// 016 加载态三态：错误/超时标记与文案、重试按钮（沿用面板语义色变量）。
+			loadingErrorText: { color: "var(--dsw-alias-label-error)", fontSize: "13px", lineHeight: 1.6, margin: "0", textAlign: "center", wordBreak: "break-word", maxWidth: "90%" },
+			loadingFailMark: { flex: "none", fontSize: "22px", lineHeight: 1, color: "var(--dsw-alias-label-error)" },
+			retryBtn: { flex: "none", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", cursor: "pointer", font: "inherit", fontSize: "13px", padding: "6px 18px", borderRadius: "8px", lineHeight: "20px" },
 			// 013 目录树 tab：树容器/行样式。视觉自成一套：emoji 图标 + M 徽标 +
 			// 悬停高亮 + 激活指示条，不做 VSCode 式 chevron/线框。
 			// 树容器 -2px 负边距抵消 body 16px 内距：树左缘 = 头部「目录」tab 左缘（14px）。
@@ -821,6 +949,11 @@ window.__ModuleLoader__.load({
 		function MindmapSlot(props) {
 			const { useSession, sessionId, inputActions, mindmapFace } = props;
 			const nodes = useSession ? useSession((s) => (s && s.nodes) || EMPTY_NODES) : EMPTY_NODES;
+			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
+			// 不变）时，nodes prop 不换、memo 命中缓存、auto-open effect 永不
+			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
+			// 值比较天然绕过引用相等短路；useSession 不可用时回退空串。
+			const nodesVersion = useSession ? useSession((s) => nodesFingerprint((s && s.nodes) || EMPTY_NODES)) : "";
 			const [open, setOpen] = react.useState(false);
 			return (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [
 				(0, react_jsx_runtime.jsxs)("button", {
@@ -856,6 +989,7 @@ window.__ModuleLoader__.load({
 					sessionId,
 					inputActions,
 					nodes,
+					nodesVersion,
 					mindmapFace,
 					onOpen: () => setOpen(true),
 					onClose: () => setOpen(false),
@@ -1268,12 +1402,23 @@ window.__ModuleLoader__.load({
 			// 014：面板与 M 按钮同槽位（conversation.session.header.actions），
 			// 会话能力（sessionId/inputActions/nodes）与开合回调全部由 MindmapSlot
 			// 经 props 直给（无桥、无 useSyncExternalStore）。
-			const { mindmapFace, open, sessionId, inputActions, nodes, onOpen, onClose } = props;
-			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes]);
+			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+			// 016：nodesVersion（结构指纹）作副依赖——nodes 引用不变但内容已变
+			// （新工具结果原地落地）时强制重算；docs 新引用带动 merged →
+			// auto-open effect 重跑（对已消费事件幂等 no-op），面板必达展开。
+			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
 			// 013：本地加载占位文档（左键点 .md 秒建 tab、内容为空），与快照文档
 			// 合并显示；快照优先（AI 结果覆盖占位）。
 			const [localDocs, setLocalDocs] = react.useState({});
 			const merged = react.useMemo(() => mergeDocuments(docs, localDocs), [docs, localDocs]);
+			// 016 加载态恢复（S2/S3 成因）：openMindmap 点击时刻记录错误事件键
+			// 基线——只有其后新出现的错误才归因到该次打开（matchDocError 的
+			// sinceKeys）；重试时基线随新占位重建（当前错误已含其中，不重复弹）。
+			const localErrorBaseRef = react.useRef(null);
+			// 016 看门狗：本地占位约 30s 无结果 → 超时态（提示 + 重试）。
+			// AI 没调工具（S3）或任何未知成因卡住时的兜底恢复路径。
+			const OPEN_TIMEOUT_MS = 30000;
+			const [openTimedOut, setOpenTimedOut] = react.useState(false);
 			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
 			const WIDTH_KEY = "dsh-mindmap.overlay-width";
 			const [panelWidth, setPanelWidth] = react.useState(() => {
@@ -1432,6 +1577,25 @@ window.__ModuleLoader__.load({
 				[doc && doc.content, doc && doc.rootTitle],
 			);
 
+			// 016 看门狗：当前显示本地占位（等待 AI 打开结果）时计时；doc 被快照
+			// 结果覆盖 / 切走 / 重开（openMindmap 重建占位 → 新 doc 引用）时自动
+			// 重置。超时转超时态，渲染重试入口。
+			react.useEffect(() => {
+				if (!doc || doc.op !== "local") {
+					setOpenTimedOut(false);
+					return;
+				}
+				setOpenTimedOut(false);
+				const id = setTimeout(() => setOpenTimedOut(true), OPEN_TIMEOUT_MS);
+				return () => clearTimeout(id);
+			}, [doc]);
+
+			// 016：当前加载占位的归因错误（精确/小写路径匹配优先，点击时刻基线
+			// 之后新出现的 latestError 兜底——host 抛错结果常无路径可归因）。
+			const docError = doc && doc.op === "local" && localErrorBaseRef.current
+				? matchDocError(merged, doc.path, localErrorBaseRef.current)
+				: null;
+
 			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
 			// 无论面板当前是否收起，都展开并切到这次意图对应的文档；首次挂载的
 			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
@@ -1521,6 +1685,9 @@ window.__ModuleLoader__.load({
 			// 就位——AI 工具结果到达后同 path 覆盖占位，节点才渲染；随后用户接着
 			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
 			function openMindmap(entry) {
+				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
+				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
+				localErrorBaseRef.current = errorEventKeys(merged);
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
 				// ① 本地占位：脑图 tab 立即切过去、内容为空（op:"local" 触发加载态）；
 				// 新打开的脑图替换旧的那颗（单脑图模式）。
@@ -1563,6 +1730,14 @@ window.__ModuleLoader__.load({
 					return;
 				}
 				setFilledHint(text);
+			}
+
+			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
+			function retryOpen() {
+				if (!doc || doc.op !== "local") return;
+				// openMindmap 无条件重发指令、重建本地占位（新 doc 引用 → 看门狗
+				// 重启），并重建错误基线（当前错误已含其中，不会重复弹出）。
+				openMindmap({ path: doc.path, name: `${stemOf(doc.path)}.md` });
 			}
 
 			// 拉取一层目录（path 缺省 = 会话 cwd 根）。host 路由 /mindmap/api/tree
@@ -1762,29 +1937,47 @@ window.__ModuleLoader__.load({
 			}, [treeMenu, tabMenu]);
 
 			function renderLoading() {
+				// 016 三态流转：加载中 →（错误 | 超时）——错误优先于超时；失败态
+				// 提供「重试」一键重发打开指令（openMindmap 同款通路 + 降级链）。
+				const failed = Boolean(docError) || openTimedOut;
+				const message = docError
+					? `AI 打开失败：${docError.message}`
+					: openTimedOut
+						? "等待 AI 打开超时（约 30 秒无结果）"
+						: "AI 正在打开脑图…";
 				return (0, react_jsx_runtime.jsxs)("div", { style: S.loadingWrap, children: [
-					(0, react_jsx_runtime.jsxs)("svg", { width: 22, height: 22, viewBox: "0 0 22 22", children: [
-						(0, react_jsx_runtime.jsx)("circle", { cx: 11, cy: 11, r: 8, fill: "none", stroke: "var(--dsw-alias-border-l2)", strokeWidth: 2 }),
-						(0, react_jsx_runtime.jsx)("circle", {
-							cx: 11,
-							cy: 11,
-							r: 8,
-							fill: "none",
-							stroke: "var(--dsw-alias-state-business-primary)",
-							strokeWidth: 2,
-							strokeLinecap: "round",
-							strokeDasharray: "12 38",
-							children: (0, react_jsx_runtime.jsx)("animateTransform", {
-								attributeName: "transform",
-								type: "rotate",
-								from: "0 11 11",
-								to: "360 11 11",
-								dur: "0.9s",
-								repeatCount: "indefinite",
+					failed
+						? (0, react_jsx_runtime.jsx)("span", { style: S.loadingFailMark, children: "⚠" })
+						: (0, react_jsx_runtime.jsxs)("svg", { width: 22, height: 22, viewBox: "0 0 22 22", children: [
+							(0, react_jsx_runtime.jsx)("circle", { cx: 11, cy: 11, r: 8, fill: "none", stroke: "var(--dsw-alias-border-l2)", strokeWidth: 2 }),
+							(0, react_jsx_runtime.jsx)("circle", {
+								cx: 11,
+								cy: 11,
+								r: 8,
+								fill: "none",
+								stroke: "var(--dsw-alias-state-business-primary)",
+								strokeWidth: 2,
+								strokeLinecap: "round",
+								strokeDasharray: "12 38",
+								children: (0, react_jsx_runtime.jsx)("animateTransform", {
+									attributeName: "transform",
+									type: "rotate",
+									from: "0 11 11",
+									to: "360 11 11",
+									dur: "0.9s",
+									repeatCount: "indefinite",
+								}),
 							}),
-						}),
-					] }),
-					(0, react_jsx_runtime.jsx)("p", { style: S.loadingText, children: "AI 正在打开脑图…" }),
+						] }),
+					(0, react_jsx_runtime.jsx)("p", { style: failed ? S.loadingErrorText : S.loadingText, children: message }),
+					failed
+						? (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							style: S.retryBtn,
+							onClick: retryOpen,
+							children: "重试打开",
+						})
+						: null,
 					(0, react_jsx_runtime.jsx)("p", { style: S.emptyHint, children: "若长时间未打开，可直接在聊天里说「打开 <文件名>」" }),
 				] });
 			}
@@ -2043,6 +2236,9 @@ window.__ModuleLoader__.load({
 			mergeDocuments,
 			autoOpenTarget,
 			openingEventKeys,
+			nodesFingerprint,
+			matchDocError,
+			errorEventKeys,
 			resultTextOfBlocks,
 			stemOf,
 			buildExportSvg,

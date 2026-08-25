@@ -53,7 +53,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens, clampZoom, stepZoom, fitZoom, focusZoom } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens, clampZoom, stepZoom, fitZoom, focusZoom } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -303,6 +303,141 @@ test('mergeDocuments: snapshot wins, locals append, rename drops stale local tab
   // renamedFrom 指向的本地旧名条目被丢弃
   assert.equal(merged.byPath['/w/old.md'], undefined)
   assert.equal(merged.byPath['/w/b.md'].content, '本地')
+})
+
+test('nodesFingerprint changes when a node is appended in place (same array reference)', () => {
+  // 016 故障 B 根因：store 原地改数组（引用不变、长度/结构已变）——
+  // 引用比较短路失效，指纹按值比较必须感知。
+  const nodes = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' })]
+  const before = nodesFingerprint(nodes)
+  nodes.push(toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/a.md', content: 'b' }))
+  const after = nodesFingerprint(nodes)
+  assert.notEqual(after, before)
+  // 同内容重复计算稳定（selector 值比较语义，不引发多余重渲染）
+  assert.equal(nodesFingerprint(nodes), after)
+  // 非数组输入
+  assert.equal(nodesFingerprint(null), '[]')
+  assert.equal(nodesFingerprint(undefined), '[]')
+})
+
+test('nodesFingerprint tracks structure identity only, ignoring content text', () => {
+  // content 文本变化（流式 token 增长）不改变指纹——避免每个 token 都重算快照
+  const a = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'x'.repeat(100) }, { callId: 'c1' })]
+  const b = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'y'.repeat(50) }, { callId: 'c1' })]
+  assert.equal(nodesFingerprint(a), nodesFingerprint(b))
+  // 结构身份差异会变指纹：callId
+  const otherCall = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'x' }, { callId: 'c2' })]
+  assert.notEqual(nodesFingerprint(a), nodesFingerprint(otherCall))
+  // 结构身份差异会变指纹：isError
+  const errored = [toolResultNode('mindmap_open', 'oops', { isError: true, callId: 'c1' })]
+  assert.notEqual(nodesFingerprint(a), nodesFingerprint(errored))
+  // 结构身份差异会变指纹：subCalls 数量（嵌套调用树）
+  const nested = [toolResultWithSubCalls('code', 'ignored', [
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/n.md', content: '' }, { callId: 'c1' }),
+  ], { callId: 'c9' })]
+  const nestedMore = [toolResultWithSubCalls('code', 'ignored', [
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/n.md', content: '' }, { callId: 'c1' }),
+    toolResultNode('mindmap_get', { ok: true, op: 'get', path: '/w/n.md', content: '' }, { callId: 'c2' }),
+  ], { callId: 'c9' })]
+  assert.notEqual(nodesFingerprint(nested), nodesFingerprint(nestedMore))
+})
+
+test('reduceDocuments collects errored mindmap results as error signals without polluting docs', () => {
+  // S2 成因：host 工具抛错 → isError 纯文本结果。不进文档集（语义不变），
+  // 但记为 latestError（无路径归因，message 取原文）。
+  const docs = reduceDocuments([
+    toolResultNode('mindmap_open', 'Mindmap not found: "/w/a.md".', { isError: true, callId: 'err-1' }),
+  ])
+  assert.deepEqual([...docs.order], [])
+  assert.equal(docs.byPath['/w/a.md'], undefined)
+  assert.equal(docs.latestError.message, 'Mindmap not found: "/w/a.md".')
+  assert.equal(docs.latestError.op, 'mindmap_open')
+  assert.equal(docs.latestError.eventKey, 'call:err-1')
+  assert.equal(Object.keys(docs.errorByPath).length, 0)
+})
+
+test('reduceDocuments attributes path-carrying failures to errorByPath and success clears them', () => {
+  // 有 JSON 信封但 ok!==true：可归因路径的进 errorByPath
+  const failed = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: false, op: 'open', path: '/w/a.md', error: { message: 'not found' } }, { callId: 'err-1' }),
+  ])
+  assert.equal(failed.errorByPath['/w/a.md'].message, 'not found')
+  assert.equal(failed.errorByPath['/w/a.md'].eventKey, 'call:err-1')
+  assert.equal(failed.byPath['/w/a.md'], undefined)
+  assert.equal(failed.latestError.eventKey, 'call:err-1')
+
+  // 成功结果清除同路径历史错误；latestError 保留最近一次失败（日志语义，
+  // 面板按「点击时刻基线」过滤旧错误）
+  const recovered = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: false, op: 'open', path: '/w/a.md', error: { message: 'not found' } }, { callId: 'err-1' }),
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: '# A\n' }, { callId: 'ok-1' }),
+  ])
+  assert.equal(recovered.errorByPath['/w/a.md'], undefined)
+  assert.equal(recovered.byPath['/w/a.md'].content, '# A\n')
+  assert.equal(recovered.latestError.eventKey, 'call:err-1')
+})
+
+test('mergeDocuments drops a local placeholder that matches a snapshot doc case-insensitively', () => {
+  // S5 成因：macOS 大小写不敏感 FS 上，AI 回传的规范 path（/w/Docs/Plan.md）
+  // 与树点击 key（/w/docs/plan.md）仅大小写不同——占位被丢弃、保留规范 path，
+  // 加载态随之解除（auto-open / 焦点同步照常接管）。
+  const snapshot = {
+    order: ['/w/Docs/Plan.md'],
+    byPath: {
+      '/w/Docs/Plan.md': { path: '/w/Docs/Plan.md', rootTitle: 'Plan', content: '# A\n', op: 'open', callId: 'c1', renamedFrom: null },
+    },
+    latestOpeningPath: '/w/Docs/Plan.md',
+    latestOpeningEventKey: 'call:c1',
+  }
+  const merged = mergeDocuments(snapshot, {
+    '/w/docs/plan.md': { path: '/w/docs/plan.md', rootTitle: 'plan', content: '', op: 'local', callId: null, renamedFrom: null },
+  })
+  assert.equal(merged.byPath['/w/docs/plan.md'], undefined)
+  assert.equal(merged.byPath['/w/Docs/Plan.md'].content, '# A\n')
+  assert.deepEqual([...merged.order], ['/w/Docs/Plan.md'])
+  // 错误信号透传 + 容缺（旧快照无错误字段）。errorByPath 是 vm 域对象，
+  // deepEqual 会因跨 realm 原型不等而失败（012 同款坑）——断言键数。
+  assert.equal(Object.keys(merged.errorByPath).length, 0)
+  assert.equal(merged.latestError, null)
+
+  // 小写不碰撞的其它本地占位不受影响
+  const distinct = mergeDocuments(snapshot, {
+    '/w/docs/other.md': { path: '/w/docs/other.md', rootTitle: 'other', content: '', op: 'local', callId: null, renamedFrom: null },
+  })
+  assert.equal(distinct.byPath['/w/docs/other.md'].op, 'local')
+  assert.deepEqual([...distinct.order], ['/w/Docs/Plan.md', '/w/docs/other.md'])
+})
+
+test('matchDocError matches exact and case-insensitive paths and honors the since baseline', () => {
+  const base = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: false, op: 'open', path: '/w/Docs/Plan.md', error: { message: 'not found' } }, { callId: 'err-1' }),
+    toolResultNode('mindmap_update', 'write failed', { isError: true, callId: 'err-2' }),
+  ])
+  // 精确匹配
+  assert.equal(matchDocError(base, '/w/Docs/Plan.md').eventKey, 'call:err-1')
+  // 小写 fallback（本地占位路径与快照规范 path 仅大小写不同）
+  assert.equal(matchDocError(base, '/w/docs/plan.md').eventKey, 'call:err-1')
+  // 无匹配路径 → null（无基线时不回落 latestError）
+  assert.equal(matchDocError(base, '/w/none.md'), null)
+
+  // 基线（openMindmap 点击时刻 errorEventKeys）过滤旧错误：不归因
+  const since = errorEventKeys(base)
+  assert.ok(since.has('call:err-1'))
+  assert.ok(since.has('call:err-2'))
+  assert.equal(matchDocError(base, '/w/Docs/Plan.md', since), null)
+
+  // 基线之后新出现的 latestError（无路径归因）兜底命中——host 抛错的
+  // 纯文本结果没有 path，靠这条路径归因到在途的打开请求
+  const next = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: false, op: 'open', path: '/w/Docs/Plan.md', error: { message: 'not found' } }, { callId: 'err-1' }),
+    toolResultNode('mindmap_update', 'write failed', { isError: true, callId: 'err-2' }),
+    toolResultNode('mindmap_open', 'read timeout', { isError: true, callId: 'err-3' }),
+  ])
+  assert.equal(matchDocError(next, '/w/Docs/Plan.md', since).eventKey, 'call:err-3')
+
+  // 容缺：空快照 / 旧结构
+  assert.equal(matchDocError({}, '/w/a.md'), null)
+  assert.deepEqual([...errorEventKeys(null)], [])
 })
 
 test('reduceDocuments ignores error results and derives rootTitle from the path', () => {

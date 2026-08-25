@@ -3,12 +3,23 @@
 			// 014：面板与 M 按钮同槽位（conversation.session.header.actions），
 			// 会话能力（sessionId/inputActions/nodes）与开合回调全部由 MindmapSlot
 			// 经 props 直给（无桥、无 useSyncExternalStore）。
-			const { mindmapFace, open, sessionId, inputActions, nodes, onOpen, onClose } = props;
-			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes]);
+			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+			// 016：nodesVersion（结构指纹）作副依赖——nodes 引用不变但内容已变
+			// （新工具结果原地落地）时强制重算；docs 新引用带动 merged →
+			// auto-open effect 重跑（对已消费事件幂等 no-op），面板必达展开。
+			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
 			// 013：本地加载占位文档（左键点 .md 秒建 tab、内容为空），与快照文档
 			// 合并显示；快照优先（AI 结果覆盖占位）。
 			const [localDocs, setLocalDocs] = react.useState({});
 			const merged = react.useMemo(() => mergeDocuments(docs, localDocs), [docs, localDocs]);
+			// 016 加载态恢复（S2/S3 成因）：openMindmap 点击时刻记录错误事件键
+			// 基线——只有其后新出现的错误才归因到该次打开（matchDocError 的
+			// sinceKeys）；重试时基线随新占位重建（当前错误已含其中，不重复弹）。
+			const localErrorBaseRef = react.useRef(null);
+			// 016 看门狗：本地占位约 30s 无结果 → 超时态（提示 + 重试）。
+			// AI 没调工具（S3）或任何未知成因卡住时的兜底恢复路径。
+			const OPEN_TIMEOUT_MS = 30000;
+			const [openTimedOut, setOpenTimedOut] = react.useState(false);
 			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
 			const WIDTH_KEY = "dsh-mindmap.overlay-width";
 			const [panelWidth, setPanelWidth] = react.useState(() => {
@@ -167,6 +178,25 @@
 				[doc && doc.content, doc && doc.rootTitle],
 			);
 
+			// 016 看门狗：当前显示本地占位（等待 AI 打开结果）时计时；doc 被快照
+			// 结果覆盖 / 切走 / 重开（openMindmap 重建占位 → 新 doc 引用）时自动
+			// 重置。超时转超时态，渲染重试入口。
+			react.useEffect(() => {
+				if (!doc || doc.op !== "local") {
+					setOpenTimedOut(false);
+					return;
+				}
+				setOpenTimedOut(false);
+				const id = setTimeout(() => setOpenTimedOut(true), OPEN_TIMEOUT_MS);
+				return () => clearTimeout(id);
+			}, [doc]);
+
+			// 016：当前加载占位的归因错误（精确/小写路径匹配优先，点击时刻基线
+			// 之后新出现的 latestError 兜底——host 抛错结果常无路径可归因）。
+			const docError = doc && doc.op === "local" && localErrorBaseRef.current
+				? matchDocError(merged, doc.path, localErrorBaseRef.current)
+				: null;
+
 			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
 			// 无论面板当前是否收起，都展开并切到这次意图对应的文档；首次挂载的
 			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
@@ -256,6 +286,9 @@
 			// 就位——AI 工具结果到达后同 path 覆盖占位，节点才渲染；随后用户接着
 			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
 			function openMindmap(entry) {
+				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
+				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
+				localErrorBaseRef.current = errorEventKeys(merged);
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
 				// ① 本地占位：脑图 tab 立即切过去、内容为空（op:"local" 触发加载态）；
 				// 新打开的脑图替换旧的那颗（单脑图模式）。
@@ -298,6 +331,14 @@
 					return;
 				}
 				setFilledHint(text);
+			}
+
+			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
+			function retryOpen() {
+				if (!doc || doc.op !== "local") return;
+				// openMindmap 无条件重发指令、重建本地占位（新 doc 引用 → 看门狗
+				// 重启），并重建错误基线（当前错误已含其中，不会重复弹出）。
+				openMindmap({ path: doc.path, name: `${stemOf(doc.path)}.md` });
 			}
 
 			// 拉取一层目录（path 缺省 = 会话 cwd 根）。host 路由 /mindmap/api/tree
@@ -497,29 +538,47 @@
 			}, [treeMenu, tabMenu]);
 
 			function renderLoading() {
+				// 016 三态流转：加载中 →（错误 | 超时）——错误优先于超时；失败态
+				// 提供「重试」一键重发打开指令（openMindmap 同款通路 + 降级链）。
+				const failed = Boolean(docError) || openTimedOut;
+				const message = docError
+					? `AI 打开失败：${docError.message}`
+					: openTimedOut
+						? "等待 AI 打开超时（约 30 秒无结果）"
+						: "AI 正在打开脑图…";
 				return (0, react_jsx_runtime.jsxs)("div", { style: S.loadingWrap, children: [
-					(0, react_jsx_runtime.jsxs)("svg", { width: 22, height: 22, viewBox: "0 0 22 22", children: [
-						(0, react_jsx_runtime.jsx)("circle", { cx: 11, cy: 11, r: 8, fill: "none", stroke: "var(--dsw-alias-border-l2)", strokeWidth: 2 }),
-						(0, react_jsx_runtime.jsx)("circle", {
-							cx: 11,
-							cy: 11,
-							r: 8,
-							fill: "none",
-							stroke: "var(--dsw-alias-state-business-primary)",
-							strokeWidth: 2,
-							strokeLinecap: "round",
-							strokeDasharray: "12 38",
-							children: (0, react_jsx_runtime.jsx)("animateTransform", {
-								attributeName: "transform",
-								type: "rotate",
-								from: "0 11 11",
-								to: "360 11 11",
-								dur: "0.9s",
-								repeatCount: "indefinite",
+					failed
+						? (0, react_jsx_runtime.jsx)("span", { style: S.loadingFailMark, children: "⚠" })
+						: (0, react_jsx_runtime.jsxs)("svg", { width: 22, height: 22, viewBox: "0 0 22 22", children: [
+							(0, react_jsx_runtime.jsx)("circle", { cx: 11, cy: 11, r: 8, fill: "none", stroke: "var(--dsw-alias-border-l2)", strokeWidth: 2 }),
+							(0, react_jsx_runtime.jsx)("circle", {
+								cx: 11,
+								cy: 11,
+								r: 8,
+								fill: "none",
+								stroke: "var(--dsw-alias-state-business-primary)",
+								strokeWidth: 2,
+								strokeLinecap: "round",
+								strokeDasharray: "12 38",
+								children: (0, react_jsx_runtime.jsx)("animateTransform", {
+									attributeName: "transform",
+									type: "rotate",
+									from: "0 11 11",
+									to: "360 11 11",
+									dur: "0.9s",
+									repeatCount: "indefinite",
+								}),
 							}),
-						}),
-					] }),
-					(0, react_jsx_runtime.jsx)("p", { style: S.loadingText, children: "AI 正在打开脑图…" }),
+						] }),
+					(0, react_jsx_runtime.jsx)("p", { style: failed ? S.loadingErrorText : S.loadingText, children: message }),
+					failed
+						? (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							style: S.retryBtn,
+							onClick: retryOpen,
+							children: "重试打开",
+						})
+						: null,
 					(0, react_jsx_runtime.jsx)("p", { style: S.emptyHint, children: "若长时间未打开，可直接在聊天里说「打开 <文件名>」" }),
 				] });
 			}

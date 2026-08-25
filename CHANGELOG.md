@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Release-specific notes are also published on GitHub Releases.
 
+## [Unreleased]
+
+### Fixed
+
+- The panel now reliably auto-opens when the AI completes `mindmap_open` / `mindmap_create`. A structural fingerprint of the session nodes (`nodesFingerprint`) feeds a second `useSession` selector; its value comparison bypasses the reference-equality short-circuit that starved the auto-open effect whenever the host store mutated the nodes array in place.
+- The "AI 正在打开脑图…" loading state is no longer a dead end. Snapshot documents whose path differs from the tree-click key only by letter case (macOS case-insensitive filesystem) now merge automatically; errored mindmap tool results (`isError` or `ok !== true`) surface as an inline error; a ~30s watchdog switches to a timeout state. Both failure states offer a one-click retry that re-sends the open request.
+
 ## [0.4.1] - 2026-08-24
 
 ### Changed
