@@ -172,6 +172,17 @@ test('tables become table nodes keeping every cell (019 block concept)', () => {
   assert.deepEqual([...parseTableRow('| a | b |')], ['a', 'b'])
   assert.equal(isTableSeparator('| --- | :---: |'), true)
   assert.equal(isTableSeparator('| a | b |'), false)
+  // GFM 转义：\| 是字面竖线，不切单元格。
+  assert.deepEqual([...parseTableRow('| a \\| b | c |')], ['a | b', 'c'])
+  // GFM 对齐契约：列数钉在表头——少列补空、多列截断（未转义竖线切碎的行网格不参差）。
+  const ragged = parseMarkdownToTree('| x | y |\n| --- | --- |\n| 三栏 [会|脑图|聊天] | ⚠️ |\n| only |', 'doc')
+  const [rt] = ragged.children
+  assert.equal(rt.kind, 'table')
+  assert.deepEqual([...rt.data.rows.map((r) => [...r])], [
+    ['x', 'y'],
+    ['三栏 [会', '脑图'],
+    ['only', ''],
+  ])
 })
 
 test('nodeFullText returns the complete own content per kind (020 copy full text)', () => {

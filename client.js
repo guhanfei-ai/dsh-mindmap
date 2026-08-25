@@ -286,9 +286,14 @@ window.__ModuleLoader__.load({
 			return /^[|:\s-]+$/.test(t) && t.includes("-");
 		}
 		
-		/** 表格行 → 单元格数组（去首尾空段，保留中间空单元格）。 */
+		/** 表格行 → 单元格数组（去首尾空段，保留中间空单元格）。
+		 * 支持 GFM 转义：`\|` 是字面竖线（占位符避位，剥标记后还原），不切单元格。 */
 		function parseTableRow(line) {
-			return String(line ?? "").trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+			return String(line ?? "").trim()
+				.replace(/^\|/, "").replace(/\|$/, "")
+				.replace(/\\\|/g, "\u0000")
+				.split("|")
+				.map((c) => c.replace(/\u0000/g, "|").trim());
 		}
 
 		/**
@@ -471,7 +476,13 @@ window.__ModuleLoader__.load({
 							listStack = [];
 							i = j - 1;
 							const header = parseTableRow(rows[0]);
-							const body = rows.slice(2).map(parseTableRow);
+							// GFM 对齐契约：列数钉死在分隔行（=表头）。少列补空、
+							// 多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
+							const toCols = (cells) => {
+								if (cells.length >= header.length) return cells.slice(0, header.length);
+								return cells.concat(new Array(header.length - cells.length).fill(""));
+							};
+							const body = rows.slice(2).map((row) => toCols(parseTableRow(row)));
 							const tableRows = [header].concat(body);
 							appendNode({
 								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
