@@ -129,10 +129,7 @@
 					});
 				};
 		
-				for (var i = 0; i < lineList.length; i++) {
-					// 注意：循环变量必须用 var。本函数在 vm  sloppy 模式下执行，
-					// for-let 头不为每轮迭代建独立绑定，表格/引用分支里的 `i = j - 1`
-					// 会退化为块级同名变量的赋值，跳过失效（019 测试抓到的坑）。
+				for (let i = 0; i < lineList.length; i++) {
 					const line = lineList[i];
 		
 					// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要（盒内紧凑，

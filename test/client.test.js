@@ -148,12 +148,15 @@ test('blockquotes become quote nodes with the first paragraph promoted (001 §3.
   assert.equal(a.children[0].topic, 'quoted words second line')
   assert.equal(a.children[0].data.raw, 'quoted words\nsecond line')
   // 递归：引用内的标题/段落照同一套块规则解析（首段被提升后不重复）。
+  // 段落的既有语义：挂到最近的未闭合标题下（历史行为是塞进该节点的 description）。
   const nested = parseMarkdownToTree('> intro\n> ## Inner\n> more', 'doc')
   const [q] = nested.children
   assert.equal(q.kind, 'quote')
   assert.equal(q.topic, 'intro')
-  assert.deepEqual([...q.children.map((n) => n.kind)], ['heading', 'text'])
+  assert.deepEqual([...q.children.map((n) => n.kind)], ['heading'])
   assert.equal(q.children[0].topic, 'Inner')
+  assert.deepEqual([...q.children[0].children.map((n) => n.kind)], ['text'])
+  assert.equal(q.children[0].children[0].topic, 'more')
 })
 
 test('tables become table nodes keeping every cell (019 block concept)', () => {
@@ -161,11 +164,12 @@ test('tables become table nodes keeping every cell (019 block concept)', () => {
   const [t] = tree.children
   assert.equal(t.kind, 'table')
   assert.equal(t.topic, '3×2 表格')
-  assert.deepEqual(t.data.rows, [['h1', 'h2'], ['a', 'b'], ['c', 'd']])
+  // vm 里产出的数组原型来自另一个 realm，deepStrictEqual 会拒绝——展开拆进宿主数组。
+  assert.deepEqual([...t.data.rows.map((r) => [...r])], [['h1', 'h2'], ['a', 'b'], ['c', 'd']])
   // 无分隔行的 | 行不是表格，退化为段落。
   const notTable = parseMarkdownToTree('| only | one |', 'doc')
   assert.equal(notTable.children[0].kind, 'text')
-  assert.deepEqual(parseTableRow('| a | b |'), ['a', 'b'])
+  assert.deepEqual([...parseTableRow('| a | b |')], ['a', 'b'])
   assert.equal(isTableSeparator('| --- | :---: |'), true)
   assert.equal(isTableSeparator('| a | b |'), false)
 })
