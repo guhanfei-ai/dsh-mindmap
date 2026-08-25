@@ -1224,10 +1224,12 @@ window.__ModuleLoader__.load({
 			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
 			// 颜色/圆角/阴影由 resolveNodeStyle 生成。020 长度治理：320px 宽上限
 			// 强制盒内折行（废除横条）；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
-			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box", maxWidth: 320 },
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: "20px", fontSize: "13px", boxSizing: "border-box", maxWidth: 320 },
 			// 020 长度治理：散文类块（text/md/list/quote）折行后仍超 6 行即截断+
 			// 省略号，全文走悬停浮层（复用代码浮层通道，缩减≠阉割）。仅散文类套用。
-			boxClamp: { display: "-webkit-box", WebkitLineClamp: 6, WebkitBoxOrient: "vertical", overflow: "hidden" },
+			// 行高必须整数像素（20px）：小数行高会让 line-clamp 裁切边界与行盒
+			// 错位，露出下一行半截字；maxHeight = 6×20 + 上下内距 12 作硬上限双保险。
+			boxClamp: { display: "-webkit-box", WebkitLineClamp: 6, WebkitBoxOrient: "vertical", overflow: "hidden", maxHeight: 132 },
 			// 019 代码块悬停浮层：看全文的浮起面板（position:fixed 不进测量链，
 			// 不影响行测量；等宽全文、可滚动、移开即收）。
 			codePanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontFamily: "Menlo, monospace", fontSize: "12px", lineHeight: 1.6, whiteSpace: "pre", boxSizing: "border-box" },
