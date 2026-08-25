@@ -272,7 +272,7 @@
 				setExporting(true);
 				setExportError("");
 				try {
-					await exportPng(tree, doc.rootTitle);
+					await exportPng(tree, doc.rootTitle, theme && theme.colorTheme);
 				} catch (error) {
 					setExportError(String(error?.message ?? error));
 				} finally {

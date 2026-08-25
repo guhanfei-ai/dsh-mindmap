@@ -33,12 +33,36 @@
 			for (const ch of raw) width += ch === "\t" ? 4 : 1;
 			return width;
 		}
-
+		
+		//#region 019 块概念（骨架/血肉/皮肤 的血肉层，规范源：MarkGrove/_arch/003）
+		/**
+		 * 行内格式检测（003 §3 拆分判据）：粗体/斜体/删除线/行内代码/链接/图片
+		 * 都是行内格式——永不拆子节点，只影响块内渲染；含任一即判为 md 块，
+		 * 否则是 text 块。
+		 */
+		function hasInlineFormat(text) {
+			return /(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(~~[^~]+~~)|(`[^`]+`)|(!?\[[^\]]*\]\([^)]*\))/.test(String(text ?? ""));
+		}
+		
+		/** 表格分隔行：由 | - : 空白组成且至少含一个 -。 */
+		function isTableSeparator(line) {
+			const t = String(line ?? "").trim();
+			return /^[|:\s-]+$/.test(t) && t.includes("-");
+		}
+		
+		/** 表格行 → 单元格数组（去首尾空段，保留中间空单元格）。 */
+		function parseTableRow(line) {
+			return String(line ?? "").trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+		}
+		//#endregion
+		
 		/**
 		 * markdown → 脑图树。根节点 topic = 文档名（rootTitle，由调用方从文件路径
 		 * 推导——001 决策 2：根节点标题 = markdown 文档名）。
-		 * 节点 kind：root / heading / list / placeholder / code。
-		 * 段落不成为节点，附到最近的标题（或根）的 data.description。
+		 * 节点 kind：root / heading / list / placeholder / code / text / md / quote / table。
+		 * 019 块概念：段落升格为节点（含行内格式 → md 块，否则 text 块，原文存
+		 * data.raw）；引用块聚合为 quote 节点（首段提升为自身内容，其余成子节点）；
+		 * 连续 | 行解析为 table 节点（data.rows 全量保留，单元格不拆）。
 		 */
 		function parseMarkdownToTree(markdown, rootTitle) {
 			const idOf = createIdFactory();
@@ -49,139 +73,208 @@
 				children: [],
 				data: {},
 			};
-			const headingStack = [];
-			let listStack = [];
 			// 根标题回声标记：记录文档常以文件名作首行 H1（如 "# 002-spike结论.md"），
 			// 而根节点标题就是文件名——首个 H1 与根标题一致（或仅多 .md 后缀）时
-			// 并入根节点，避免标题显示两次。
+			// 并入根节点，避免标题显示两次。仅文档顶层参与回声（引用内不算）。
 			let firstHeadingSeen = false;
 			const lines = String(markdown ?? "").split(/\r?\n/);
-
-			const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
-			const parentPathOf = () => {
-				if (listStack.length) return listStack[listStack.length - 1].path;
-				const h = parentRec();
-				return h ? h.path : "";
-			};
-			const parentNode = () => {
-				if (listStack.length) return listStack[listStack.length - 1].node;
-				const h = parentRec();
-				return h ? h.node : root;
-			};
-			const appendDescription = (node, text) => {
-				node.data.description = node.data.description ? `${node.data.description}\n${text}` : text;
-			};
-
-			let i = 0;
+		
+			let start = 0;
 			// 跳过 YAML frontmatter（--- ... ---）
 			if (lines.length > 0 && /^\s*---\s*$/.test(lines[0])) {
-				for (i = 1; i < lines.length; i++) {
-					if (/^\s*---\s*$/.test(lines[i])) {
-						i += 1;
+				for (start = 1; start < lines.length; start++) {
+					if (/^\s*---\s*$/.test(lines[start])) {
+						start += 1;
 						break;
 					}
 				}
 			}
-
-			let paraBuffer = [];
-			const flushParagraph = () => {
-				if (paraBuffer.length === 0) return;
-				appendDescription(parentNode(), paraBuffer.join(" "));
-				paraBuffer = [];
-			};
-
-			for (; i < lines.length; i++) {
-				const line = lines[i];
-
-				// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要。
-				if (/^\s*(```|~~~)/.test(line)) {
-					flushParagraph();
-					listStack = [];
-					const lang = line.trim().slice(3).trim();
-					const buf = [];
-					for (i += 1; i < lines.length && !/^\s*(```|~~~)/.test(lines[i]); i++) buf.push(lines[i]);
-					const code = buf.join("\n");
-					const firstLine = (code.split("\n")[0] || "").trim();
-					const summary = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
-					const node = {
-						id: idOf("code", code, parentPathOf()),
-						kind: "code",
-						topic: `[${lang || "code"}] ${summary}`,
-						children: [],
-						data: { lang, code, firstLine: firstLine || undefined },
-					};
-					parentNode().children.push(node);
-					continue;
-				}
-
-				// ATX 标题：按层级入栈挂树（H1 挂根、H2 挂前一个 H1……）。
-				const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
-				if (heading) {
-					flushParagraph();
-					listStack = [];
-					const level = heading[1].length;
-					const text = heading[2].trim() || "（无标题）";
-					// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
-					if (!firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
-						firstHeadingSeen = true;
-						continue;
-					}
-					firstHeadingSeen = true;
-					while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
-					const basePath = parentRec() ? parentRec().path : "";
-					const node = {
-						id: idOf("heading", text, basePath),
-						kind: "heading",
+		
+			/**
+			 * 块级解析循环（标题/列表/代码/引用/表格/段落）。引用块内容递归走本函数，
+			 * echoRoot=false 时不参与根标题回声。节点挂入 container（顶层 = root.children）。
+			 */
+			function parseBlockLines(container, lineList, echoRoot) {
+				const headingStack = [];
+				let listStack = [];
+				const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
+				const parentPathOf = () => {
+					if (listStack.length) return listStack[listStack.length - 1].path;
+					const h = parentRec();
+					return h ? h.path : "";
+				};
+				const parentNode = () => {
+					if (listStack.length) return listStack[listStack.length - 1].node;
+					const h = parentRec();
+					return h ? h.node : null;
+				};
+				const appendNode = (node) => {
+					const p = parentNode();
+					(p ? p.children : container).push(node);
+				};
+		
+				let paraBuffer = [];
+				// 019 段落升格：段落不再塞 description，自己成为 text/md 块节点。
+				const flushParagraph = () => {
+					if (paraBuffer.length === 0) return;
+					const text = paraBuffer.join(" ");
+					paraBuffer = [];
+					const kind = hasInlineFormat(text) ? "md" : "text";
+					appendNode({
+						id: idOf(kind, text, parentPathOf()),
+						kind,
 						topic: text,
 						children: [],
-						data: { level },
-					};
-					parentNode().children.push(node);
-					headingStack.push({ level, node, path: `${basePath}/h${level}-${node.id}` });
-					continue;
+						data: { raw: text },
+					});
+				};
+		
+				for (var i = 0; i < lineList.length; i++) {
+					// 注意：循环变量必须用 var。本函数在 vm  sloppy 模式下执行，
+					// for-let 头不为每轮迭代建独立绑定，表格/引用分支里的 `i = j - 1`
+					// 会退化为块级同名变量的赋值，跳过失效（019 测试抓到的坑）。
+					const line = lineList[i];
+		
+					// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要（盒内紧凑，
+					// 悬停浮层看全文——003 §5.3；data.code 全量保存）。
+					if (/^\s*(```|~~~)/.test(line)) {
+						flushParagraph();
+						listStack = [];
+						const lang = line.trim().slice(3).trim();
+						const buf = [];
+						for (i += 1; i < lineList.length && !/^\s*(```|~~~)/.test(lineList[i]); i++) buf.push(lineList[i]);
+						const code = buf.join("\n");
+						const firstLine = (code.split("\n")[0] || "").trim();
+						const summary = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
+						appendNode({
+							id: idOf("code", code, parentPathOf()),
+							kind: "code",
+							topic: `[${lang || "code"}] ${summary}`,
+							children: [],
+							data: { lang, code, firstLine: firstLine || undefined },
+						});
+						continue;
+					}
+		
+					// ATX 标题：按层级入栈挂树（H1 挂根、H2 挂前一个 H1……）。
+					const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+					if (heading) {
+						flushParagraph();
+						listStack = [];
+						const level = heading[1].length;
+						const text = heading[2].trim() || "（无标题）";
+						// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
+						if (echoRoot && !firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
+							firstHeadingSeen = true;
+							continue;
+						}
+						firstHeadingSeen = true;
+						while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
+						const basePath = parentRec() ? parentRec().path : "";
+						const node = {
+							id: idOf("heading", text, basePath),
+							kind: "heading",
+							topic: text,
+							children: [],
+							data: { level },
+						};
+						appendNode(node);
+						headingStack.push({ level, node, path: `${basePath}/h${level}-${node.id}` });
+						continue;
+					}
+		
+					// 水平分隔线：线性视觉脚手架，跳过。
+					if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+						flushParagraph();
+						continue;
+					}
+		
+					// 列表项：缩进决定层级（约定每级 2 空格，tab=4）；空项=占位节点。
+					const listItem = /^(\s*)([-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
+					const listEmpty = /^(\s*)([-*+]|(\d+)[.)])\s*$/.exec(line);
+					if (listItem || listEmpty) {
+						flushParagraph();
+						const m = listItem || listEmpty;
+						const indent = indentWidth(m[1]);
+						const text = listItem ? m[4].trim() : "";
+						const ordered = m[3] !== undefined;
+						while (listStack.length > 0 && listStack[listStack.length - 1].indent >= indent) listStack.pop();
+						const topic = ordered && listItem ? `${m[3]}. ${text}` : text;
+						const node = text === ""
+							? { id: idOf("list", "", parentPathOf()), kind: "placeholder", topic: "", children: [], data: {} }
+							: { id: idOf("list", topic, parentPathOf()), kind: "list", topic, children: [], data: ordered ? { ordered: true } : {} };
+						appendNode(node);
+						listStack.push({ indent, node, path: `${parentPathOf()}/${node.id}` });
+						continue;
+					}
+		
+					// 019 表格块：连续 | 行且第二行为分隔行 → table 节点（003 §5.5，
+					// data.rows 全量保留，单元格不拆子节点）。不满足分隔行条件的 | 行
+					// 按普通段落处理。
+					if (/^\s*\|/.test(line)) {
+						const rows = [];
+						let j = i;
+						for (; j < lineList.length && /^\s*\|/.test(lineList[j]); j++) rows.push(lineList[j]);
+						if (rows.length >= 2 && isTableSeparator(rows[1])) {
+							flushParagraph();
+							listStack = [];
+							i = j - 1;
+							const header = parseTableRow(rows[0]);
+							const body = rows.slice(2).map(parseTableRow);
+							const tableRows = [header].concat(body);
+							appendNode({
+								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
+								kind: "table",
+								topic: `${tableRows.length}×${header.length} 表格`,
+								children: [],
+								data: { rows: tableRows },
+							});
+							continue;
+						}
+						// 非表格：落入下方段落缓冲。
+					}
+		
+					// 019 引用块：连续 > 行聚合为 quote 节点（003 §5.4）。去 > 前缀后
+						// 递归走同一套块规则；首个 text/md 段提升为自身内容（001 §3.1），
+						// 其余内容成为子节点。
+					if (/^\s*>/.test(line)) {
+						flushParagraph();
+						listStack = [];
+						const inner = [];
+						let j = i;
+						for (; j < lineList.length && /^\s*>/.test(lineList[j]); j++) inner.push(lineList[j].replace(/^\s*>\s?/, ""));
+						i = j - 1;
+						const innerNodes = [];
+						parseBlockLines(innerNodes, inner, false);
+						let topic = "";
+						const promoteIdx = innerNodes.findIndex((n) => n.kind === "text" || n.kind === "md");
+						if (promoteIdx >= 0) {
+							topic = innerNodes[promoteIdx].topic;
+							innerNodes.splice(promoteIdx, 1);
+						}
+						appendNode({
+							id: idOf("quote", topic || inner.join("\n"), parentPathOf()),
+							kind: "quote",
+							topic: topic || "（引用）",
+							children: innerNodes,
+							data: { raw: inner.join("\n") },
+						});
+						continue;
+					}
+		
+					if (!line.trim()) {
+						flushParagraph();
+						continue;
+					}
+		
+					paraBuffer.push(line.trim());
 				}
-
-				// 水平分隔线：线性视觉脚手架，跳过。
-				if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-					flushParagraph();
-					continue;
-				}
-
-				// 列表项：缩进决定层级（约定每级 2 空格，tab=4）；空项=占位节点。
-				const listItem = /^(\s*)([-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
-				const listEmpty = /^(\s*)([-*+]|(\d+)[.)])\s*$/.exec(line);
-				if (listItem || listEmpty) {
-					flushParagraph();
-					const m = listItem || listEmpty;
-					const indent = indentWidth(m[1]);
-					const text = listItem ? m[4].trim() : "";
-					const ordered = m[3] !== undefined;
-					while (listStack.length > 0 && listStack[listStack.length - 1].indent >= indent) listStack.pop();
-					const topic = ordered && listItem ? `${m[3]}. ${text}` : text;
-					const node = text === ""
-						? { id: idOf("list", "", parentPathOf()), kind: "placeholder", topic: "", children: [], data: {} }
-						: { id: idOf("list", topic, parentPathOf()), kind: "list", topic, children: [], data: ordered ? { ordered: true } : {} };
-					parentNode().children.push(node);
-					listStack.push({ indent, node, path: `${parentPathOf()}/${node.id}` });
-					continue;
-				}
-
-				// 引用块：v0 不映射，跳过。
-				if (/^\s*>/.test(line)) {
-					flushParagraph();
-					continue;
-				}
-
-				if (!line.trim()) {
-					flushParagraph();
-					continue;
-				}
-
-				paraBuffer.push(line.trim());
+				flushParagraph();
 			}
-			flushParagraph();
-
-			// 病理内容的兜底去重（MarkGrove 同款）：重复 id 追加序号。
+		
+			parseBlockLines(root.children, lines.slice(start), true);
+		
+			// 病理内容的兕底去重（MarkGrove 同款）：重复 id 追加序号。
 			const seen = new Set();
 			const dedupe = (node) => {
 				if (seen.has(node.id)) {

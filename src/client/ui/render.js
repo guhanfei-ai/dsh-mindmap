@@ -1,39 +1,148 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
+		//#region 019 血肉渲染：行内格式 + 大一统链接 + 表格块（规范源：003）
+		// 行内格式统一扫描序：图片/链接 → 行内代码 → 粗体 → 删除线 → 斜体 → 裸链接。
+		// 先命中先生效，裸链接放最后，避免吞掉已被 [文字](url) 消费的 URL。
+		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s)]+)/g;
+
+		/** 大一统链接点击：在机器浏览器打开（新标签页），不触发画布聚焦缩放。 */
+		function openLink(event, url) {
+			event.preventDefault();
+			event.stopPropagation();
+			try {
+				window.open(url, "_blank", "noopener");
+			} catch {
+				// 宿主环境拦截时退化为浏览器默认行为（不静默吞链接）。
+				event.defaultPrevented = false;
+			}
+		}
+
+		/**
+		 * 零依赖行内渲染器：任何块（文本/Markdown/列表/表格单元格）的内容都走这里。
+		 * 链接完整呈现、永不缩减（缩减=阉割信息，003 §7）；无预览、无加载态。
+		 * 返回 React 子节点数组（无格式时原样返回字符串）。
+		 */
+		function renderInline(text, keyPrefix) {
+			const source = String(text ?? "");
+			INLINE_PATTERN.lastIndex = 0;
+			const out = [];
+			let last = 0;
+			let k = 0;
+			let m;
+			while ((m = INLINE_PATTERN.exec(source)) !== null) {
+				if (m.index > last) out.push(source.slice(last, m.index));
+				const token = m[0];
+				const key = `${keyPrefix || "i"}-${k++}`;
+				if (m[1]) {
+					// [文字](url) 或 ![alt](url)。图片块暂缓（003 §9）：图语法退化为
+					// 指向原图的链接，同时把 alt 与原图地址都完整呈现（不缩减）。
+					const parsed = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
+					// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
+					const label = parsed[1]
+						? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
+						: (parsed[2] || parsed[3]);
+					out.push((0, react_jsx_runtime.jsx)("a", {
+						key,
+						href: parsed[3],
+						target: "_blank",
+						rel: "noopener noreferrer",
+						style: S.inlineLink,
+						title: parsed[3],
+						onClick: (e) => openLink(e, parsed[3]),
+						children: label,
+					}, key));
+				} else if (m[2]) {
+					out.push((0, react_jsx_runtime.jsx)("code", { key, style: S.inlineCode, children: token.slice(1, -1) }, key));
+				} else if (m[3]) {
+					out.push((0, react_jsx_runtime.jsx)("strong", { key, children: token.slice(2, -2) }, key));
+				} else if (m[4]) {
+					out.push((0, react_jsx_runtime.jsx)("s", { key, children: token.slice(2, -2) }, key));
+				} else if (m[5]) {
+					out.push((0, react_jsx_runtime.jsx)("em", { key, children: token.slice(1, -1) }, key));
+				} else {
+					// 裸链接：完整显示、可点击。
+					out.push((0, react_jsx_runtime.jsx)("a", {
+						key,
+						href: token,
+						target: "_blank",
+						rel: "noopener noreferrer",
+						style: S.inlineLink,
+						title: token,
+						onClick: (e) => openLink(e, token),
+						children: token,
+					}, key));
+				}
+				last = m.index + token.length;
+			}
+			if (last < source.length) out.push(source.slice(last));
+			return out.length > 1 || (out.length === 1 && typeof out[0] !== "string") ? out : source;
+		}
+
+		/** 表格块渲染：完整网格（全量行列、单元格内换行、表头加重），单元格不拆。 */
+		function renderTableBlock(node) {
+			const rows = (node.data && node.data.rows) || [];
+			if (rows.length === 0) return renderInline(node.topic, node.id);
+			return (0, react_jsx_runtime.jsx)("div", { style: S.tableWrap, children: (0, react_jsx_runtime.jsx)("table", { style: S.tableGrid, children: (0, react_jsx_runtime.jsx)("tbody", { children: rows.map((row, ri) => (0, react_jsx_runtime.jsx)("tr", { children: row.map((cell, ci) => (0, react_jsx_runtime.jsx)(ri === 0 ? "th" : "td", {
+				style: ri === 0 ? { ...S.tableCell, ...S.tableHeaderCell } : S.tableCell,
+				children: renderInline(cell, `${node.id}-${ri}-${ci}`),
+			}, ci)) }, ri)) }) }) });
+		}
+		//#endregion
+
 		function NodeBox(props) {
-			const { node, theme, revealDelay } = props;
-			// 015 节点主题：卡片圆角（圆角/直角）+ 颜色主题令牌（根盒/标题用主题色）。
-			const tokens = colorThemeTokens(theme && theme.colorTheme);
-			const radius = theme && theme.cardStyle === "square" ? 0 : 10;
-			const style = node.kind === "root"
-				? { ...S.box, ...S.rootBox, borderRadius: radius, borderColor: tokens.rootBorder, background: tokens.rootBg }
-				: node.kind === "heading"
-					? { ...S.box, ...S.headingBox, borderRadius: radius, color: tokens.heading }
-					: node.kind === "placeholder"
-						? { ...S.placeholderBox, borderRadius: radius }
-						: node.kind === "code"
-							? { ...S.box, ...S.codeBox, borderRadius: radius }
-							: { ...S.box, borderRadius: radius };
+			const { node, theme, revealDelay, selectedId, onCodePanel } = props;
+			const [hovered, setHovered] = react.useState(false);
+			const boxRef = react.useRef(null);
+			// 019 皮肤层：颜色/圆角/阴影/状态全部由 resolveNodeStyle 纯函数生成。
+			const style = {
+				...S.box,
+				...resolveNodeStyle(node, {
+					colorTheme: theme && theme.colorTheme,
+					cardStyle: theme && theme.cardStyle,
+					states: { hovered, selected: selectedId === node.id },
+				}),
+			};
 			// 018 生长动画：动画挂在内层节点盒（外层被连线测量，不能带 transform）。
 			if (revealDelay !== undefined) style.animationDelay = `${revealDelay}ms`;
-			const title = node.data?.description
-				? `${node.topic}\n\n${node.data.description}`
-				: node.data?.code
-					? `${node.topic}\n\n${node.data.code}`
-					: node.topic;
+
+			function handleEnter() {
+				setHovered(true);
+				// 019 代码块：盒内紧凑摘要，悬停浮起面板看全文（003 §5.3）。
+				if (node.kind === "code" && onCodePanel && boxRef.current) {
+					onCodePanel({ node, anchor: boxRef.current.getBoundingClientRect() });
+				}
+			}
+			function handleLeave() {
+				setHovered(false);
+				if (node.kind === "code" && onCodePanel) onCodePanel(null);
+			}
+
+			const children = node.kind === "placeholder"
+				? "待填写"
+				: node.kind === "table"
+					? renderTableBlock(node)
+					: renderInline(node.topic, node.id);
+			const title = node.kind === "code" ? `${node.topic}\n\n（悬停看全文）` : node.topic;
 			return (0, react_jsx_runtime.jsx)("div", {
+				ref: boxRef,
 				style,
 				title,
 				className: revealDelay !== undefined ? "dsh-mm-reveal" : undefined,
-				children: node.kind === "placeholder" ? "待填写" : node.topic,
+				onMouseEnter: handleEnter,
+				onMouseLeave: handleLeave,
+				children,
 			});
 		}
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu, reveal } = props;
+			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel } = props;
 			// 018 生长动画：本节点渐显延迟（新节点盒）与本行连线渐显延迟（有新子节点）。
 			const revealDelay = reveal && reveal.nodes ? reveal.nodes.get(node.id) : undefined;
 			const edgeRevealDelay = reveal && reveal.edges ? reveal.edges.get(node.id) : undefined;
+			// 019 连线外观走令牌（皮肤层），不再硬编码。
+			const overrides = COLOR_THEMES[theme && theme.colorTheme] || COLOR_THEMES.ocean;
+			const connectorColor = resolveToken("connector.color", overrides);
+			const connectorWidth = resolveToken("connector.width", overrides);
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
@@ -116,8 +225,8 @@
 						children: layout.edges.map((d, i) => (0, react_jsx_runtime.jsx)("path", {
 							key: i,
 							d,
-							stroke: "var(--dsw-alias-border-l2)",
-							strokeWidth: 1.5,
+							stroke: connectorColor,
+							strokeWidth: connectorWidth,
 							fill: "none",
 							// 016：CSS zoom 缩放下 strokeWidth 会被一并缩放，缩小后线变
 							// 亚像素、模糊看不清；vectorEffect=non-scaling-stroke 让线宽
@@ -129,6 +238,8 @@
 				(0, react_jsx_runtime.jsx)("div", {
 					ref: boxWrapRef,
 					"data-mindmap-node": "",
+					// 019：节点 id 挂在盒包裹上，画布点击聚焦时据此记选中态。
+					"data-mindmap-node-id": node.id,
 					style: { flex: "0 0 auto", cursor: "pointer" },
 					// 017 节点右键：弹「复制/导出为图片」菜单；stopPropagation 免触
 					// 画布空白拦截（空白处只拦默认菜单、不弹自己的）。
@@ -137,7 +248,7 @@
 						e.stopPropagation();
 						onNodeContextMenu(e, node);
 					} : undefined,
-					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay }),
+					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel }),
 				}),
 				node.children && node.children.length > 0
 					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
@@ -145,7 +256,7 @@
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel }),
 					}, child.id)) })
 					: null,
 				] });

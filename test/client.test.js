@@ -17,7 +17,12 @@ function loadBrowserModule() {
   vm.runInNewContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), { URL, window })
   assert.equal(definition.id, 'dsh-mindmap')
   const runtime = definition.factory((id) => {
-    if (id === 'react/jsx-runtime') return { jsx() {}, jsxs() {}, Fragment: {} }
+    if (id === 'react/jsx-runtime') return {
+      // 019：桩返回最小元素形状（带 props），供 renderInline 等纯渲染函数断言。
+      jsx(type, props, key) { return { type, props: props || {}, key } },
+      jsxs(type, props, key) { return { type, props: props || {}, key } },
+      Fragment: {},
+    }
     if (id === 'react') {
       return { useState, useEffect, useMemo, useRef }
     }
@@ -53,7 +58,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, colorThemeTokens, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, renderInline, stripInlineForExport, wrapExportText, COLOR_THEMES } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -112,21 +117,57 @@ test('code fences become leaf nodes titled by language and first line', () => {
   assert.ok([...long.children[0].topic].length <= 7 + 40 + 1)
 })
 
-test('paragraphs become the nearest heading note, not nodes', () => {
+test('paragraphs become text/md block nodes (019 block concept)', () => {
+  // 019 段落升格：不再塞 description，自己成为节点；含行内格式 → md，否则 text。
   const tree = parseMarkdownToTree('# T\nfirst note\nsecond line\n\nanother para', 'doc')
   assert.equal(tree.children.length, 1)
-  assert.equal(tree.children[0].data.description, 'first note second line\nanother para')
+  assert.deepEqual([...tree.children[0].children.map((n) => n.kind)], ['text', 'text'])
+  assert.equal(tree.children[0].children[0].topic, 'first note second line')
+  assert.equal(tree.children[0].children[0].data.raw, 'first note second line')
   // 没有标题时挂到根
   const bare = parseMarkdownToTree('just text', 'doc')
-  assert.equal(bare.children.length, 0)
-  assert.equal(bare.data.description, 'just text')
+  assert.equal(bare.children.length, 1)
+  assert.equal(bare.children[0].kind, 'text')
+  assert.equal(bare.children[0].topic, 'just text')
+  // 行内格式分流：含粗体/行内代码/链接 → md 块（原文完整存 data.raw）
+  const mixed = parseMarkdownToTree('plain words\n\n**bold** and `code` and [t](https://x.y)', 'doc')
+  assert.equal(mixed.children[0].kind, 'text')
+  assert.equal(mixed.children[1].kind, 'md')
+  assert.equal(mixed.children[1].data.raw, '**bold** and `code` and [t](https://x.y)')
+  assert.equal(hasInlineFormat('plain words'), false)
+  assert.equal(hasInlineFormat('**bold**'), true)
+  assert.equal(hasInlineFormat('see [doc](https://a.b)'), true)
 })
 
-test('frontmatter, thematic breaks and blockquotes are skipped', () => {
-  const tree = parseMarkdownToTree('---\ntitle: x\n---\n# A\n---\n> quote\n## B', 'doc')
-  assert.deepEqual([...tree.children.map((n) => n.topic)], ['A'])
-  assert.deepEqual([...tree.children[0].children.map((n) => n.topic)], ['B'])
-  assert.equal(tree.children[0].data.description, undefined)
+test('blockquotes become quote nodes with the first paragraph promoted (001 §3.1)', () => {
+  // frontmatter 与分隔线仍跳过；引用不再被吞。
+  const tree = parseMarkdownToTree('---\ntitle: x\n---\n# A\n---\n> quoted words\n> second line\n## B', 'doc')
+  const [a] = tree.children
+  assert.deepEqual([...a.children.map((n) => n.kind)], ['quote', 'heading'])
+  // 首段提升为自身内容，其余成子节点；原文存 data.raw。
+  assert.equal(a.children[0].topic, 'quoted words second line')
+  assert.equal(a.children[0].data.raw, 'quoted words\nsecond line')
+  // 递归：引用内的标题/段落照同一套块规则解析（首段被提升后不重复）。
+  const nested = parseMarkdownToTree('> intro\n> ## Inner\n> more', 'doc')
+  const [q] = nested.children
+  assert.equal(q.kind, 'quote')
+  assert.equal(q.topic, 'intro')
+  assert.deepEqual([...q.children.map((n) => n.kind)], ['heading', 'text'])
+  assert.equal(q.children[0].topic, 'Inner')
+})
+
+test('tables become table nodes keeping every cell (019 block concept)', () => {
+  const tree = parseMarkdownToTree('| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |', 'doc')
+  const [t] = tree.children
+  assert.equal(t.kind, 'table')
+  assert.equal(t.topic, '3×2 表格')
+  assert.deepEqual(t.data.rows, [['h1', 'h2'], ['a', 'b'], ['c', 'd']])
+  // 无分隔行的 | 行不是表格，退化为段落。
+  const notTable = parseMarkdownToTree('| only | one |', 'doc')
+  assert.equal(notTable.children[0].kind, 'text')
+  assert.deepEqual(parseTableRow('| a | b |'), ['a', 'b'])
+  assert.equal(isTableSeparator('| --- | :---: |'), true)
+  assert.equal(isTableSeparator('| a | b |'), false)
 })
 
 test('node ids stay stable when siblings are inserted or removed', () => {
@@ -635,20 +676,69 @@ test('relPathWithin strips the cwd prefix and falls back to the entry name outsi
   assert.equal(relPathWithin('C:\\w', 'C:\\w\\a.md', 'a.md'), 'a.md')
 })
 
-test('colorThemeTokens serves three distinct palettes and falls back to ocean', () => {
-  const ocean = colorThemeTokens('ocean')
-  const sunset = colorThemeTokens('sunset')
-  const forest = colorThemeTokens('forest')
-  for (const t of [ocean, sunset, forest]) {
-    assert.equal(typeof t.rootBg, 'string')
-    assert.equal(typeof t.rootBorder, 'string')
-    assert.equal(typeof t.heading, 'string')
-  }
-  assert.notEqual(ocean.heading, sunset.heading)
-  assert.notEqual(sunset.heading, forest.heading)
-  assert.notEqual(ocean.heading, forest.heading)
+test('resolveToken walks override → fallback chain → registry default', () => {
+  // 直查覆写
+  assert.equal(resolveToken('color.accent.heading.strong', COLOR_THEMES.sunset), '#d96b2a')
+  // 覆写缺失 → 沿回退链命中上级覆写 / 登记默认值
+  assert.equal(resolveToken('color.accent.heading.medium', { 'color.accent.heading.strong': '#111111' }), '#111111')
+  assert.equal(resolveToken('color.text.primary', {}), 'var(--dsw-alias-label-primary)')
+  // 未登记令牌返回 null，主题名非法回落海洋蓝
+  assert.equal(resolveToken('no.such.token', {}), null)
+  const themes = ['ocean', 'sunset', 'forest'].map((n) => resolveToken('color.accent.root', COLOR_THEMES[n]))
+  assert.equal(new Set(themes).size, 3)
+})
+
+test('resolveNodeStyle maps block identity and states to styles (pure function)', () => {
+  const rootStyle = resolveNodeStyle({ kind: 'root' }, { colorTheme: 'ocean' })
+  assert.equal(rootStyle.fontWeight, 700)
+  assert.ok(rootStyle.background.includes('59,91,219'))
+  // 标题分档：H1-H2 强 / H3-H4 中 / H5-H6 弱
+  assert.equal(resolveNodeStyle({ kind: 'heading', data: { level: 1 } }, { colorTheme: 'forest' }).color, '#2a9d68')
+  assert.equal(resolveNodeStyle({ kind: 'heading', data: { level: 5 } }, { colorTheme: 'forest' }).color, '#6fcf9f')
+  // 血肉配方：引用左竖条、代码等宽、占位无底虚线框
+  assert.ok(resolveNodeStyle({ kind: 'quote' }, {}).borderLeft.includes('solid'))
+  assert.equal(resolveNodeStyle({ kind: 'code' }, {}).fontFamily, 'Menlo, monospace')
+  assert.equal(resolveNodeStyle({ kind: 'placeholder' }, {}).background, 'none')
+  // 直角卡片偏好 → 圆角归零；同输入同输出（纯函数性）
+  assert.equal(resolveNodeStyle({ kind: 'text' }, { cardStyle: 'square' }).borderRadius, 0)
+  const a = resolveNodeStyle({ kind: 'text' }, { states: { selected: true, hovered: true } })
+  const b = resolveNodeStyle({ kind: 'text' }, { states: { selected: true, hovered: true } })
+  assert.deepEqual(a, b)
+  assert.ok(a.boxShadow.includes('0 0 0 2px'))
+})
+
+test('exportPalette gives a static light snapshot per theme', () => {
+  const p = exportPalette('sunset')
+  assert.equal(p.rootBorder, '#d96b2a')
+  assert.equal(p.canvasBg, '#ffffff')
   // 未知名回落海洋蓝
-  assert.equal(colorThemeTokens('nope').heading, ocean.heading)
+  assert.equal(exportPalette('nope').heading, exportPalette('ocean').heading)
+})
+
+test('renderInline linkifies bare URLs and markdown links in full (no truncation)', () => {
+  assert.equal(renderInline('plain'), 'plain')
+  const out = renderInline('go https://example.com/very/long/path now', 'k')
+  assert.ok(Array.isArray(out))
+  const link = out.find((el) => el && el.props && el.props.href)
+  assert.equal(link.props.href, 'https://example.com/very/long/path')
+  // 完整呈现、永不缩减
+  assert.equal(link.props.children, 'https://example.com/very/long/path')
+  assert.equal(link.props.target, '_blank')
+  // [文字](url) 与图片语法（暂缓期退化为链接）
+  const named = renderInline('see [doc](https://a.b) and ![alt](https://img.c/d.png)', 'k')
+  const links = named.filter((el) => el && el.props && el.props.href)
+  assert.equal(links.length, 2)
+  assert.equal(links[0].props.children, 'doc')
+  assert.ok(String(links[1].props.children).includes('https://img.c/d.png'))
+  // 导出剥离格式但保留完整 URL（PNG 不可点击，文本不缩减）
+  assert.equal(stripInlineForExport('**b** and [doc](https://a.b)'), 'b and doc(https://a.b)')
+})
+
+test('wrapExportText wraps long content and keeps explicit newlines', () => {
+  const lines = wrapExportText('a'.repeat(100), 220 - 24, 13)
+  assert.ok(lines.length > 1)
+  assert.equal(wrapExportText('l1\nl2', 100, 13).length, 2)
+  assert.equal(wrapExportText('a'.repeat(100), 220 - 24, 13).join('').length, 100)
 })
 
 test('clampZoom clamps to [0.25, 3] and guards non-finite or non-positive input', () => {

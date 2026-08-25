@@ -73,6 +73,23 @@
 							const [nodeMenuBusy, setNodeMenuBusy] = react.useState(null);
 							const [nodeMenuError, setNodeMenuError] = react.useState("");
 							const nodeMenuRef = react.useRef(null);
+							// 019 选中态：点击聚焦的节点下选选中环（002 §6 状态体系）。
+							const [selectedId, setSelectedId] = react.useState(null);
+							// 019 代码块悬停浮层：{node, anchor}；null = 关闭。延迟关闭（150ms
+							// 宽限）让鼠标能从节点盒移到面板上滚动全文，不闪灭。
+							const [codePanel, setCodePanel] = react.useState(null);
+							const codePanelTimerRef = react.useRef(null);
+							function handleCodePanel(panel) {
+								if (codePanelTimerRef.current) {
+									clearTimeout(codePanelTimerRef.current);
+									codePanelTimerRef.current = null;
+								}
+								if (panel) {
+									setCodePanel(panel);
+									return;
+								}
+								codePanelTimerRef.current = setTimeout(() => setCodePanel(null), 150);
+							}
 
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
@@ -193,7 +210,13 @@
 					const target = e.target;
 					if (!target || typeof target.closest !== "function") return;
 					const boxEl = target.closest("[data-mindmap-node]");
-					if (!boxEl || !boxEl.isConnected) return;
+					if (!boxEl || !boxEl.isConnected) {
+						// 019 空白处点击：取消选中环（链接点击已 stopPropagation，不走这里）。
+						setSelectedId(null);
+						return;
+					}
+					// 019：聚焦同时记选中态（盒包裹上挂了 data-mindmap-node-id）。
+					setSelectedId(boxEl.getAttribute("data-mindmap-node-id"));
 					const rowEl = boxEl.closest("[data-mindmap-row]");
 					if (!rowEl) return;
 					const scroller = scrollRef.current;
@@ -251,6 +274,8 @@
 				}, [nodeMenu]);
 				react.useEffect(() => {
 					setNodeMenu(null);
+					// 019：文档内容变化时同步收掉代码浮层（节点对象已失效）。
+					setCodePanel(null);
 				}, [node]);
 
 				// 017 右键节点：记录菜单锚点与目标子树（清掉上次的忙碌/错误态）。
@@ -269,8 +294,8 @@
 					setNodeMenuBusy(mode);
 					setNodeMenuError("");
 					try {
-						if (mode === "copy") await copyPng(target);
-						else await exportPng(target, target.topic);
+						if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
+						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
 					} catch (error) {
 						setNodeMenuError(String(error?.message ?? error));
@@ -291,10 +316,10 @@
 					// 017 空白处/缩放条右键只拦浏览器默认菜单（节点右键已 stopPropagation）。
 					onContextMenu: (e) => e.preventDefault(),
 					children: [
-					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children:
-						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children:
-							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children:
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal })
+					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children: 
+						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
+							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel })
 							})
 						})
 					}),
@@ -361,6 +386,25 @@
 							nodeMenuError ? (0, react_jsx_runtime.jsx)("p", { style: S.nodeMenuError, children: nodeMenuError }) : null,
 						],
 					}) : null,
+					// 019 代码块悬停浮层：position:fixed 挂在画布外层（不进 zoom 内容，
+					// 不影响行测量）；默认贴节点盒右侧，右缘放不下时翻到左侧；可滚动全文。
+					codePanel ? (() => {
+						const panelW = 440;
+						const panelH = 340;
+						const anchor = codePanel.anchor || { left: 0, right: 0, top: 0 };
+						const left = anchor.right + 8 + panelW > window.innerWidth
+							? Math.max(8, anchor.left - panelW - 8)
+							: anchor.right + 8;
+						const top = Math.min(anchor.top, Math.max(8, window.innerHeight - panelH - 8));
+						return (0, react_jsx_runtime.jsxs)("div", {
+							style: { ...S.codePanel, left, top },
+							onMouseLeave: () => handleCodePanel(null),
+							children: [
+								(0, react_jsx_runtime.jsx)("p", { style: S.codePanelLang, children: (codePanel.node.data && codePanel.node.data.lang) || "code" }),
+								(0, react_jsx_runtime.jsx)("pre", { style: S.codePanelCode, children: (codePanel.node.data && codePanel.node.data.code) || "" }),
+							],
+						});
+					})() : null,
 				] });
 				}
 				//#endregion

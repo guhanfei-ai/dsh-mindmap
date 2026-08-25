@@ -81,11 +81,23 @@
 			// 百分比高度解析为 auto 会让 SVG 坐标系塌缩，连线与节点像素错位。
 			// 改为由 TreeRow 在 measure 里同步记下实际像素，作 SVG 属性直传。
 			edgeLayer: { position: "absolute", top: 0, left: 0, display: "block", pointerEvents: "none", overflow: "visible" },
-			box: { padding: "6px 12px", borderRadius: "10px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "0 0 auto", boxShadow: "0 1px 2px rgba(16,24,40,0.04)" },
-			rootBox: { fontWeight: 700, fontSize: "14px", border: "1px solid var(--dsw-alias-border-l2-darkmode-thin, #b9c0cc)", background: "var(--dsw-alias-bg-module-platform, #eef2ff)" },
-			headingBox: { fontWeight: 600 },
-			placeholderBox: { padding: "6px 12px", borderRadius: "10px", border: "1px dashed var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-tertiary)", background: "none" },
-			codeBox: { fontFamily: "Menlo, monospace", fontSize: "12px" },
+			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
+			// 颜色/圆角/阴影由 resolveNodeStyle 生成。全量换行：盒内换行、盒高随内容
+			// 生长，废除单行 ellipsis；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box" },
+			// 019 代码块悬停浮层：看全文的浮起面板（position:fixed 不进测量链，
+			// 不影响行测量；等宽全文、可滚动、移开即收）。
+			codePanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontFamily: "Menlo, monospace", fontSize: "12px", lineHeight: 1.6, whiteSpace: "pre", boxSizing: "border-box" },
+			codePanelLang: { margin: "0 0 6px", fontSize: "11px", color: "var(--dsw-alias-label-tertiary)", fontFamily: "inherit" },
+			codePanelCode: { margin: "0", fontFamily: "inherit", fontSize: "inherit", whiteSpace: "pre" },
+			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。
+			tableWrap: { fontSize: "12px", lineHeight: 1.5 },
+			tableGrid: { borderCollapse: "collapse" },
+			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", maxWidth: "200px" },
+			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
+			// 019 大一统可点击链接：任何块里的任何 URL 完整呈现、永不缩减。
+			inlineLink: { color: "var(--dsw-alias-state-business-primary)", textDecoration: "underline", textUnderlineOffset: "2px", overflowWrap: "anywhere", cursor: "pointer" },
+			inlineCode: { fontFamily: "Menlo, monospace", fontSize: "12px", background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
 			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
 			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto" },

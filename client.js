@@ -35,17 +35,184 @@ window.__ModuleLoader__.load({
 
 		const EMPTY_NODES = [];
 
-		// 015 节点颜色主题（三风格：海洋蓝 / 落日橙 / 森林绿）。
-		// 根盒用主题色淡底 + 半透明描边；标题节点文字用主题主色；背景永远跟随全局。
-		const COLOR_THEMES = {
-			ocean: { rootBg: "rgba(59,91,219,0.10)", rootBorder: "rgba(59,91,219,0.45)", heading: "#3b5bdb" },
-			sunset: { rootBg: "rgba(232,110,52,0.10)", rootBorder: "rgba(232,110,52,0.45)", heading: "#d96b2a" },
-			forest: { rootBg: "rgba(42,157,104,0.10)", rootBorder: "rgba(42,157,104,0.45)", heading: "#2a9d68" },
+		//#region 皮肤层：令牌注册表 + 回退链 + 节点样式解析（002 规范 §7/§5）
+		/**
+		 * 令牌注册表（002 §7.2）：只登记实际被消费的令牌。
+		 * default 一律给安全值（多数跟随宿主 --dsw-alias-* 变量，面板亮暗自动跟随）；
+		 * fallback 为可选回退令牌名（回退链：专用 → 通用 → 默认）。
+		 */
+		const TOKEN_REGISTRY = {
+			"color.surface.default": { default: "var(--dsw-alias-bg-layer-3)" },
+			"color.surface.root": { default: "var(--dsw-alias-bg-module-platform, #eef2ff)", fallback: "color.surface.default" },
+			"color.surface.code": { default: "var(--dsw-alias-fill-tsp-secondary)", fallback: "color.surface.default" },
+			"color.surface.quote": { default: "var(--dsw-alias-bg-layer-3)", fallback: "color.surface.default" },
+			"color.surface.table": { default: "var(--dsw-alias-bg-layer-3)", fallback: "color.surface.default" },
+			"color.border.default": { default: "var(--dsw-alias-border-l2)" },
+			"color.border.strong": { default: "var(--dsw-alias-border-l2-darkmode-thin, #b9c0cc)", fallback: "color.border.default" },
+			"color.border.subtle": { default: "var(--dsw-alias-border-l2)", fallback: "color.border.default" },
+			"color.border.root": { default: "var(--dsw-alias-border-l2-darkmode-thin, #b9c0cc)", fallback: "color.border.strong" },
+			"color.text.primary": { default: "var(--dsw-alias-label-primary)" },
+			"color.text.muted": { default: "var(--dsw-alias-label-tertiary)" },
+			// 强调色族：默认值 = 海洋蓝（默认主题），各主题以覆写表换肤。
+			"color.accent.root": { default: "#3b5bdb" },
+			"color.accent.heading.strong": { default: "#3b5bdb", fallback: "color.accent.root" },
+			"color.accent.heading.medium": { default: "#5c7cfa", fallback: "color.accent.heading.strong" },
+			"color.accent.heading.subtle": { default: "#91a7ff", fallback: "color.accent.heading.medium" },
+			"color.accent.code": { default: "#3b5bdb", fallback: "color.accent.root" },
+			"color.accent.quote": { default: "#5c7cfa", fallback: "color.accent.heading.medium" },
+			"color.state.selected": { default: "var(--dsw-alias-state-business-primary)" },
+			"color.state.hovered": { default: "var(--dsw-alias-interactive-bg-hover)" },
+			"connector.color": { default: "var(--dsw-alias-border-l2)", fallback: "color.border.default" },
+			"connector.width": { default: 1.5 },
+			"shape.radius.node": { default: 10 },
+			"effect.shadow.default": { default: "0 1px 2px rgba(16,24,40,0.04)" },
+			"effect.shadow.hovered": { default: "0 4px 12px rgba(16,24,40,0.10)", fallback: "effect.shadow.default" },
 		};
-		/** 颜色主题名 → 色值令牌（未知名回落海洋蓝）。 */
-		function colorThemeTokens(name) {
-			return COLOR_THEMES[name] || COLOR_THEMES.ocean;
+
+		/**
+		 * 颜色主题 = 令牌覆写表（002 §7.1）：三主题只覆写强调色族与根盒表面/描边，
+		 * 其余令牌走注册表默认值。持久化格式（设置里的名字）不变。
+		 */
+		const COLOR_THEMES = {
+			ocean: {
+				"color.accent.root": "#3b5bdb",
+				"color.accent.heading.strong": "#3b5bdb",
+				"color.accent.heading.medium": "#5c7cfa",
+				"color.accent.heading.subtle": "#91a7ff",
+				"color.accent.code": "#3b5bdb",
+				"color.accent.quote": "#5c7cfa",
+				"color.surface.root": "rgba(59,91,219,0.10)",
+				"color.border.root": "rgba(59,91,219,0.45)",
+			},
+			sunset: {
+				"color.accent.root": "#d96b2a",
+				"color.accent.heading.strong": "#d96b2a",
+				"color.accent.heading.medium": "#e8834a",
+				"color.accent.heading.subtle": "#f2a26d",
+				"color.accent.code": "#d96b2a",
+				"color.accent.quote": "#e8834a",
+				"color.surface.root": "rgba(232,110,52,0.10)",
+				"color.border.root": "rgba(232,110,52,0.45)",
+			},
+			forest: {
+				"color.accent.root": "#2a9d68",
+				"color.accent.heading.strong": "#2a9d68",
+				"color.accent.heading.medium": "#3db57f",
+				"color.accent.heading.subtle": "#6fcf9f",
+				"color.accent.code": "#2a9d68",
+				"color.accent.quote": "#3db57f",
+				"color.surface.root": "rgba(42,157,104,0.10)",
+				"color.border.root": "rgba(42,157,104,0.45)",
+			},
+		};
+
+		/**
+		 * 令牌解析（002 §7.4）：先沿回退链逐跳找主题覆写（全链优先），
+		 * 命中即返；全链无覆写再取登记默认值（同样沿链找第一个可用默认）。
+		 * 这样主题只覆写上级令牌时下级自动跟随（如只覆写 heading.strong
+		 * 时 medium/subtle 也随之换色）。未登记令牌返回 null（纯函数）。
+		 */
+		function resolveToken(name, overrides) {
+			let current = name;
+			for (let hop = 0; current && hop < 8; hop++) {
+				const entry = TOKEN_REGISTRY[current];
+				if (!entry) break;
+				if (overrides && Object.prototype.hasOwnProperty.call(overrides, current) && overrides[current] != null) {
+					return overrides[current];
+				}
+				current = entry.fallback;
+			}
+			current = name;
+			for (let hop = 0; current && hop < 8; hop++) {
+				const entry = TOKEN_REGISTRY[current];
+				if (!entry) return null;
+				if (entry.default != null) return entry.default;
+				current = entry.fallback;
+			}
+			return null;
 		}
+
+		/**
+		 * 节点样式解析（002 §5 语义配方 + §6 状态）：纯函数，同输入同输出。
+		 * 输入 = 节点语义身份（kind / 标题级别）+ 交互状态 + 主题覆写表；
+		 * 输出 = 可直接铺进节点盒 style 的外观属性（骨架属性不在其中）。
+		 */
+		function resolveNodeStyle(node, options) {
+			const opts = options || {};
+			const overrides = COLOR_THEMES[opts.colorTheme] || COLOR_THEMES.ocean;
+			const kind = node && node.kind;
+			const level = node && node.data && node.data.level;
+			const states = opts.states || {};
+			const radius = opts.cardStyle === "square" ? 0 : resolveToken("shape.radius.node", overrides);
+			const style = {
+				borderRadius: radius,
+				background: resolveToken("color.surface.default", overrides),
+				border: `1px solid ${resolveToken("color.border.default", overrides)}`,
+				color: resolveToken("color.text.primary", overrides),
+				boxShadow: resolveToken("effect.shadow.default", overrides),
+			};
+			if (kind === "root") {
+				style.background = resolveToken("color.surface.root", overrides);
+				style.border = `1px solid ${resolveToken("color.border.root", overrides)}`;
+				style.color = resolveToken("color.accent.root", overrides);
+				style.fontWeight = 700;
+				style.fontSize = "14px";
+			} else if (kind === "heading") {
+				// §5.2：H1-H2 强 / H3-H4 中 / H5-H6 弱。
+				const tier = level <= 2 ? "strong" : level <= 4 ? "medium" : "subtle";
+				style.color = resolveToken(`color.accent.heading.${tier}`, overrides);
+				style.fontWeight = 600;
+			} else if (kind === "code") {
+				style.background = resolveToken("color.surface.code", overrides);
+				style.fontFamily = "Menlo, monospace";
+				style.fontSize = "12px";
+			} else if (kind === "quote") {
+				style.background = resolveToken("color.surface.quote", overrides);
+				style.border = `1px solid ${resolveToken("color.border.subtle", overrides)}`;
+				style.borderLeft = `3px solid ${resolveToken("color.accent.quote", overrides)}`;
+			} else if (kind === "table") {
+				style.background = resolveToken("color.surface.table", overrides);
+				style.border = `1px solid ${resolveToken("color.border.subtle", overrides)}`;
+			} else if (kind === "placeholder") {
+				style.background = "none";
+				style.border = `1px dashed ${resolveToken("color.border.default", overrides)}`;
+				style.color = resolveToken("color.text.muted", overrides);
+				style.boxShadow = "none";
+			}
+			// §6 状态叠加：hovered 抬升阴影；selected 强调环优先（两者并存时环在外）。
+			if (states.hovered && kind !== "placeholder") {
+				style.boxShadow = resolveToken("effect.shadow.hovered", overrides);
+			}
+			if (states.selected) {
+				const ring = resolveToken("color.state.selected", overrides);
+				style.boxShadow = `0 0 0 2px ${ring}${style.boxShadow && style.boxShadow !== "none" ? `, ${style.boxShadow}` : ""}`;
+			}
+			return style;
+		}
+
+		/**
+		 * 导出静态亮色快照：导出 SVG 走 data-URL，宿主 CSS 变量在那里不可解析，
+		 * 只能带静态十六进制色。按主题名取强调色族（未知名回落海洋蓝）。
+		 */
+		function exportPalette(name) {
+			const theme = COLOR_THEMES[name] || COLOR_THEMES.ocean;
+			return {
+				rootBg: "#eef2ff",
+				rootBorder: theme["color.accent.root"] || "#7c8cf8",
+				rootText: theme["color.accent.heading.strong"] || "#2f3ab2",
+				heading: theme["color.accent.heading.strong"] || "#3b5bdb",
+				quote: theme["color.accent.quote"] || "#5c7cfa",
+				surface: "#f6f7f9",
+				surfaceCode: "#f5f2ea",
+				border: "#d4d9e0",
+				borderSubtle: "#e2e6eb",
+				connector: "#c8cdd6",
+				text: "#1f2430",
+				muted: "#9aa2b1",
+				canvasBg: "#ffffff",
+			};
+		}
+		//#endregion
 
 		// 015 设置变更总线：设置面板保存成功后 bump；脑图面板订阅 stamp 重读主题。
 		// 面板组件常驻不卸载，open 不变时不会自行重读——靠总线驱动
@@ -102,12 +269,36 @@ window.__ModuleLoader__.load({
 			for (const ch of raw) width += ch === "\t" ? 4 : 1;
 			return width;
 		}
-
+		
+		//#region 019 块概念（骨架/血肉/皮肤 的血肉层，规范源：MarkGrove/_arch/003）
+		/**
+		 * 行内格式检测（003 §3 拆分判据）：粗体/斜体/删除线/行内代码/链接/图片
+		 * 都是行内格式——永不拆子节点，只影响块内渲染；含任一即判为 md 块，
+		 * 否则是 text 块。
+		 */
+		function hasInlineFormat(text) {
+			return /(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(~~[^~]+~~)|(`[^`]+`)|(!?\[[^\]]*\]\([^)]*\))/.test(String(text ?? ""));
+		}
+		
+		/** 表格分隔行：由 | - : 空白组成且至少含一个 -。 */
+		function isTableSeparator(line) {
+			const t = String(line ?? "").trim();
+			return /^[|:\s-]+$/.test(t) && t.includes("-");
+		}
+		
+		/** 表格行 → 单元格数组（去首尾空段，保留中间空单元格）。 */
+		function parseTableRow(line) {
+			return String(line ?? "").trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+		}
+		//#endregion
+		
 		/**
 		 * markdown → 脑图树。根节点 topic = 文档名（rootTitle，由调用方从文件路径
 		 * 推导——001 决策 2：根节点标题 = markdown 文档名）。
-		 * 节点 kind：root / heading / list / placeholder / code。
-		 * 段落不成为节点，附到最近的标题（或根）的 data.description。
+		 * 节点 kind：root / heading / list / placeholder / code / text / md / quote / table。
+		 * 019 块概念：段落升格为节点（含行内格式 → md 块，否则 text 块，原文存
+		 * data.raw）；引用块聚合为 quote 节点（首段提升为自身内容，其余成子节点）；
+		 * 连续 | 行解析为 table 节点（data.rows 全量保留，单元格不拆）。
 		 */
 		function parseMarkdownToTree(markdown, rootTitle) {
 			const idOf = createIdFactory();
@@ -118,139 +309,205 @@ window.__ModuleLoader__.load({
 				children: [],
 				data: {},
 			};
-			const headingStack = [];
-			let listStack = [];
 			// 根标题回声标记：记录文档常以文件名作首行 H1（如 "# 002-spike结论.md"），
 			// 而根节点标题就是文件名——首个 H1 与根标题一致（或仅多 .md 后缀）时
-			// 并入根节点，避免标题显示两次。
+			// 并入根节点，避免标题显示两次。仅文档顶层参与回声（引用内不算）。
 			let firstHeadingSeen = false;
 			const lines = String(markdown ?? "").split(/\r?\n/);
-
-			const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
-			const parentPathOf = () => {
-				if (listStack.length) return listStack[listStack.length - 1].path;
-				const h = parentRec();
-				return h ? h.path : "";
-			};
-			const parentNode = () => {
-				if (listStack.length) return listStack[listStack.length - 1].node;
-				const h = parentRec();
-				return h ? h.node : root;
-			};
-			const appendDescription = (node, text) => {
-				node.data.description = node.data.description ? `${node.data.description}\n${text}` : text;
-			};
-
-			let i = 0;
+		
+			let start = 0;
 			// 跳过 YAML frontmatter（--- ... ---）
 			if (lines.length > 0 && /^\s*---\s*$/.test(lines[0])) {
-				for (i = 1; i < lines.length; i++) {
-					if (/^\s*---\s*$/.test(lines[i])) {
-						i += 1;
+				for (start = 1; start < lines.length; start++) {
+					if (/^\s*---\s*$/.test(lines[start])) {
+						start += 1;
 						break;
 					}
 				}
 			}
-
-			let paraBuffer = [];
-			const flushParagraph = () => {
-				if (paraBuffer.length === 0) return;
-				appendDescription(parentNode(), paraBuffer.join(" "));
-				paraBuffer = [];
-			};
-
-			for (; i < lines.length; i++) {
-				const line = lines[i];
-
-				// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要。
-				if (/^\s*(```|~~~)/.test(line)) {
-					flushParagraph();
-					listStack = [];
-					const lang = line.trim().slice(3).trim();
-					const buf = [];
-					for (i += 1; i < lines.length && !/^\s*(```|~~~)/.test(lines[i]); i++) buf.push(lines[i]);
-					const code = buf.join("\n");
-					const firstLine = (code.split("\n")[0] || "").trim();
-					const summary = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
-					const node = {
-						id: idOf("code", code, parentPathOf()),
-						kind: "code",
-						topic: `[${lang || "code"}] ${summary}`,
-						children: [],
-						data: { lang, code, firstLine: firstLine || undefined },
-					};
-					parentNode().children.push(node);
-					continue;
-				}
-
-				// ATX 标题：按层级入栈挂树（H1 挂根、H2 挂前一个 H1……）。
-				const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
-				if (heading) {
-					flushParagraph();
-					listStack = [];
-					const level = heading[1].length;
-					const text = heading[2].trim() || "（无标题）";
-					// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
-					if (!firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
-						firstHeadingSeen = true;
-						continue;
-					}
-					firstHeadingSeen = true;
-					while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
-					const basePath = parentRec() ? parentRec().path : "";
-					const node = {
-						id: idOf("heading", text, basePath),
-						kind: "heading",
+		
+			/**
+			 * 块级解析循环（标题/列表/代码/引用/表格/段落）。引用块内容递归走本函数，
+			 * echoRoot=false 时不参与根标题回声。节点挂入 container（顶层 = root.children）。
+			 */
+			function parseBlockLines(container, lineList, echoRoot) {
+				const headingStack = [];
+				let listStack = [];
+				const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
+				const parentPathOf = () => {
+					if (listStack.length) return listStack[listStack.length - 1].path;
+					const h = parentRec();
+					return h ? h.path : "";
+				};
+				const parentNode = () => {
+					if (listStack.length) return listStack[listStack.length - 1].node;
+					const h = parentRec();
+					return h ? h.node : null;
+				};
+				const appendNode = (node) => {
+					const p = parentNode();
+					(p ? p.children : container).push(node);
+				};
+		
+				let paraBuffer = [];
+				// 019 段落升格：段落不再塞 description，自己成为 text/md 块节点。
+				const flushParagraph = () => {
+					if (paraBuffer.length === 0) return;
+					const text = paraBuffer.join(" ");
+					paraBuffer = [];
+					const kind = hasInlineFormat(text) ? "md" : "text";
+					appendNode({
+						id: idOf(kind, text, parentPathOf()),
+						kind,
 						topic: text,
 						children: [],
-						data: { level },
-					};
-					parentNode().children.push(node);
-					headingStack.push({ level, node, path: `${basePath}/h${level}-${node.id}` });
-					continue;
+						data: { raw: text },
+					});
+				};
+		
+				for (let i = 0; i < lineList.length; i++) {
+					const line = lineList[i];
+		
+					// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要（盒内紧凑，
+					// 悬停浮层看全文——003 §5.3；data.code 全量保存）。
+					if (/^\s*(```|~~~)/.test(line)) {
+						flushParagraph();
+						listStack = [];
+						const lang = line.trim().slice(3).trim();
+						const buf = [];
+						for (i += 1; i < lineList.length && !/^\s*(```|~~~)/.test(lineList[i]); i++) buf.push(lineList[i]);
+						const code = buf.join("\n");
+						const firstLine = (code.split("\n")[0] || "").trim();
+						const summary = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
+						appendNode({
+							id: idOf("code", code, parentPathOf()),
+							kind: "code",
+							topic: `[${lang || "code"}] ${summary}`,
+							children: [],
+							data: { lang, code, firstLine: firstLine || undefined },
+						});
+						continue;
+					}
+		
+					// ATX 标题：按层级入栈挂树（H1 挂根、H2 挂前一个 H1……）。
+					const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+					if (heading) {
+						flushParagraph();
+						listStack = [];
+						const level = heading[1].length;
+						const text = heading[2].trim() || "（无标题）";
+						// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
+						if (echoRoot && !firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
+							firstHeadingSeen = true;
+							continue;
+						}
+						firstHeadingSeen = true;
+						while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
+						const basePath = parentRec() ? parentRec().path : "";
+						const node = {
+							id: idOf("heading", text, basePath),
+							kind: "heading",
+							topic: text,
+							children: [],
+							data: { level },
+						};
+						appendNode(node);
+						headingStack.push({ level, node, path: `${basePath}/h${level}-${node.id}` });
+						continue;
+					}
+		
+					// 水平分隔线：线性视觉脚手架，跳过。
+					if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+						flushParagraph();
+						continue;
+					}
+		
+					// 列表项：缩进决定层级（约定每级 2 空格，tab=4）；空项=占位节点。
+					const listItem = /^(\s*)([-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
+					const listEmpty = /^(\s*)([-*+]|(\d+)[.)])\s*$/.exec(line);
+					if (listItem || listEmpty) {
+						flushParagraph();
+						const m = listItem || listEmpty;
+						const indent = indentWidth(m[1]);
+						const text = listItem ? m[4].trim() : "";
+						const ordered = m[3] !== undefined;
+						while (listStack.length > 0 && listStack[listStack.length - 1].indent >= indent) listStack.pop();
+						const topic = ordered && listItem ? `${m[3]}. ${text}` : text;
+						const node = text === ""
+							? { id: idOf("list", "", parentPathOf()), kind: "placeholder", topic: "", children: [], data: {} }
+							: { id: idOf("list", topic, parentPathOf()), kind: "list", topic, children: [], data: ordered ? { ordered: true } : {} };
+						appendNode(node);
+						listStack.push({ indent, node, path: `${parentPathOf()}/${node.id}` });
+						continue;
+					}
+		
+					// 019 表格块：连续 | 行且第二行为分隔行 → table 节点（003 §5.5，
+					// data.rows 全量保留，单元格不拆子节点）。不满足分隔行条件的 | 行
+					// 按普通段落处理。
+					if (/^\s*\|/.test(line)) {
+						const rows = [];
+						let j = i;
+						for (; j < lineList.length && /^\s*\|/.test(lineList[j]); j++) rows.push(lineList[j]);
+						if (rows.length >= 2 && isTableSeparator(rows[1])) {
+							flushParagraph();
+							listStack = [];
+							i = j - 1;
+							const header = parseTableRow(rows[0]);
+							const body = rows.slice(2).map(parseTableRow);
+							const tableRows = [header].concat(body);
+							appendNode({
+								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
+								kind: "table",
+								topic: `${tableRows.length}×${header.length} 表格`,
+								children: [],
+								data: { rows: tableRows },
+							});
+							continue;
+						}
+						// 非表格：落入下方段落缓冲。
+					}
+		
+					// 019 引用块：连续 > 行聚合为 quote 节点（003 §5.4）。去 > 前缀后
+						// 递归走同一套块规则；首个 text/md 段提升为自身内容（001 §3.1），
+						// 其余内容成为子节点。
+					if (/^\s*>/.test(line)) {
+						flushParagraph();
+						listStack = [];
+						const inner = [];
+						let j = i;
+						for (; j < lineList.length && /^\s*>/.test(lineList[j]); j++) inner.push(lineList[j].replace(/^\s*>\s?/, ""));
+						i = j - 1;
+						const innerNodes = [];
+						parseBlockLines(innerNodes, inner, false);
+						let topic = "";
+						const promoteIdx = innerNodes.findIndex((n) => n.kind === "text" || n.kind === "md");
+						if (promoteIdx >= 0) {
+							topic = innerNodes[promoteIdx].topic;
+							innerNodes.splice(promoteIdx, 1);
+						}
+						appendNode({
+							id: idOf("quote", topic || inner.join("\n"), parentPathOf()),
+							kind: "quote",
+							topic: topic || "（引用）",
+							children: innerNodes,
+							data: { raw: inner.join("\n") },
+						});
+						continue;
+					}
+		
+					if (!line.trim()) {
+						flushParagraph();
+						continue;
+					}
+		
+					paraBuffer.push(line.trim());
 				}
-
-				// 水平分隔线：线性视觉脚手架，跳过。
-				if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-					flushParagraph();
-					continue;
-				}
-
-				// 列表项：缩进决定层级（约定每级 2 空格，tab=4）；空项=占位节点。
-				const listItem = /^(\s*)([-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
-				const listEmpty = /^(\s*)([-*+]|(\d+)[.)])\s*$/.exec(line);
-				if (listItem || listEmpty) {
-					flushParagraph();
-					const m = listItem || listEmpty;
-					const indent = indentWidth(m[1]);
-					const text = listItem ? m[4].trim() : "";
-					const ordered = m[3] !== undefined;
-					while (listStack.length > 0 && listStack[listStack.length - 1].indent >= indent) listStack.pop();
-					const topic = ordered && listItem ? `${m[3]}. ${text}` : text;
-					const node = text === ""
-						? { id: idOf("list", "", parentPathOf()), kind: "placeholder", topic: "", children: [], data: {} }
-						: { id: idOf("list", topic, parentPathOf()), kind: "list", topic, children: [], data: ordered ? { ordered: true } : {} };
-					parentNode().children.push(node);
-					listStack.push({ indent, node, path: `${parentPathOf()}/${node.id}` });
-					continue;
-				}
-
-				// 引用块：v0 不映射，跳过。
-				if (/^\s*>/.test(line)) {
-					flushParagraph();
-					continue;
-				}
-
-				if (!line.trim()) {
-					flushParagraph();
-					continue;
-				}
-
-				paraBuffer.push(line.trim());
+				flushParagraph();
 			}
-			flushParagraph();
-
-			// 病理内容的兜底去重（MarkGrove 同款）：重复 id 追加序号。
+		
+			parseBlockLines(root.children, lines.slice(start), true);
+		
+			// 病理内容的兕底去重（MarkGrove 同款）：重复 id 追加序号。
 			const seen = new Set();
 			const dedupe = (node) => {
 				if (seen.has(node.id)) {
@@ -642,7 +899,13 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
-		const EXPORT = { nodeW: 200, nodeH: 30, hGap: 48, vGap: 10, pad: 20, fontSize: 13 };
+		// 019 可变盒高布局：盒高按内容估行数（全量换行的导出形态），表格节点加宽；
+		// 布局契约不变——叶子自上而下占行、父节点垂直居中于其子块。
+		const EXPORT = {
+			nodeW: 220, padX: 12, padY: 8, hGap: 48, vGap: 12, pad: 20,
+			fontSize: 13, lineHeight: 18,
+			tableCellW: 110, tableCellPad: 8, tableMinW: 140, tableMaxW: 480,
+		};
 
 		function escapeXml(text) {
 			return String(text ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -655,60 +918,168 @@ window.__ModuleLoader__.load({
 			return [...s].length > max ? `${[...s].slice(0, max).join("")}…` : s;
 		}
 
+		/** 019 行内格式剥离：导出为纯文本（URL 原样保留——完整不缩减，003 §7）。 */
+		function stripInlineForExport(text) {
+			return String(text ?? "")
+				.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, "$2")
+				.replace(/\[([^\]]*)\]\(([^)]*)\)/g, (m, label, url) => (label ? `${label}(${url})` : url))
+				.replace(/`([^`]+)`/g, "$1")
+				.replace(/\*\*([^*]+)\*\*/g, "$1")
+				.replace(/~~([^~]+)~~/g, "$1")
+				.replace(/\*([^*\n]+)\*/g, "$1");
+		}
+
+		/** 字符宽度估算：CJK 按一个字号宽，其余按 0.55 折算。 */
+		function charW(ch, fontSize) {
+			return ch.charCodeAt(0) > 0x2e7f ? fontSize : fontSize * 0.55;
+		}
+
+		/** 按可用宽度贪心折行（尊重显式换行；长串硬折——长 URL 完整呈现不截断）。 */
+		function wrapExportText(text, maxWidth, fontSize) {
+			const lines = [];
+			for (const segment of String(text ?? "").split("\n")) {
+				let cur = "";
+				let w = 0;
+				for (const ch of segment) {
+					const cw = charW(ch, fontSize);
+					if (w + cw > maxWidth && cur) {
+						lines.push(cur);
+						cur = ch;
+						w = cw;
+					} else {
+						cur += ch;
+						w += cw;
+					}
+				}
+				lines.push(cur);
+			}
+			return lines.length > 0 ? lines : [""];
+		}
+
+		/** 019 导出块内容：按 kind 取全量呈现的文本与行数。 */
+		function exportBlock(node) {
+			if (node.kind === "table") {
+				const rows = (node.data && node.data.rows) || [];
+				const cells = rows.reduce((acc, row) => acc.concat(row), []);
+				return { text: cells.map(stripInlineForExport).join("\n"), lines: Math.max(1, rows.length) };
+			}
+			if (node.kind === "quote") return { text: stripInlineForExport(node.topic), lines: null };
+			if (node.kind === "code") return { text: node.topic, lines: 1 };
+			return { text: stripInlineForExport(node.topic), lines: null };
+		}
+
+		/** 019 盒尺寸估算：文本按折行行数生长；表格按行列数算网格尺寸。 */
+		function measureExportBox(node) {
+			if (node.kind === "table") {
+				const rows = (node.data && node.data.rows) || [];
+				const cols = rows.reduce((mx, row) => Math.max(mx, row.length), 0) || 1;
+				const cellInner = EXPORT.tableCellW - EXPORT.tableCellPad * 2;
+				const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), cellInner, EXPORT.fontSize - 1).length), 1));
+				const w = Math.min(EXPORT.tableMaxW, Math.max(EXPORT.tableMinW, cols * EXPORT.tableCellW));
+				const h = Math.max(EXPORT.lineHeight, rowLines.reduce((a, b) => a + b, 0) * EXPORT.lineHeight);
+				return { w, h };
+			}
+			const text = exportBlock(node).text;
+			const inner = EXPORT.nodeW - EXPORT.padX * 2;
+			const lines = node.kind === "code" ? [text] : wrapExportText(text, inner, EXPORT.fontSize);
+			return { w: EXPORT.nodeW, h: EXPORT.padY * 2 + lines.length * EXPORT.lineHeight };
+		}
+
 		/**
-		 * 布局 + 生成导出用 SVG 字符串。左→右分层：x = 深度列，叶子自上而下占行，
-		 * 父节点垂直居中于其子块；连线为水平贝塞尔。
+		 * 布局 + 生成导出用 SVG 字符串。左→右分层：x = 父盒右缘 + 间距（可变盒宽），
+		 * 叶子自上而下占行，父节点垂直居中于其子块；连线为水平贝塞尔。
+		 * 019：盒高随内容生长（表格/引用画专属形态）；色值取主题静态亮色快照
+		 *（导出 SVG 走 data-URL，宿主 CSS 变量不可用）。
 		 */
-		function buildExportSvg(tree) {
+		function buildExportSvg(tree, themeName) {
+			const palette = exportPalette(themeName);
 			const placed = [];
 			const edges = [];
 			let cursor = EXPORT.pad;
-			let maxDepth = 0;
-			const place = (node, depth, parent) => {
-				const entry = { node, depth, x: EXPORT.pad + depth * (EXPORT.nodeW + EXPORT.hGap), y: 0 };
+			const place = (node, parentEntry) => {
+				const size = measureExportBox(node);
+				const entry = {
+					node,
+					size,
+					x: parentEntry ? parentEntry.x + parentEntry.size.w + EXPORT.hGap : EXPORT.pad,
+					y: 0,
+				};
 				placed.push(entry);
-				if (depth > maxDepth) maxDepth = depth;
-				if (parent) edges.push({ from: parent, to: entry });
+				if (parentEntry) edges.push({ from: parentEntry, to: entry });
 				if (node.children && node.children.length > 0) {
 					let first = null;
 					let last = null;
 					for (const child of node.children) {
-						const childEntry = place(child, depth + 1, entry);
+						const childEntry = place(child, entry);
 						if (!first) first = childEntry;
 						last = childEntry;
 					}
 					entry.y = (first.y + last.y) / 2;
 				} else {
-					entry.y = cursor + EXPORT.nodeH / 2;
-					cursor += EXPORT.nodeH + EXPORT.vGap;
+					entry.y = cursor + size.h / 2;
+					cursor += size.h + EXPORT.vGap;
 				}
 				return entry;
 			};
-			place(tree, 0, null);
-			const width = EXPORT.pad * 2 + (maxDepth + 1) * EXPORT.nodeW + maxDepth * EXPORT.hGap;
-			const height = Math.max(EXPORT.pad * 2 + EXPORT.nodeH, cursor - EXPORT.vGap + EXPORT.pad);
+			place(tree, null);
+			const width = placed.reduce((mx, p) => Math.max(mx, p.x + p.size.w), 0) + EXPORT.pad;
+			const height = Math.max(EXPORT.pad * 2 + EXPORT.lineHeight, cursor - EXPORT.vGap + EXPORT.pad);
 			const parts = [];
 			parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">`);
-			parts.push(`<rect x="0" y="0" width="${width}" height="${height}" fill="#ffffff"/>`);
+			parts.push(`<rect x="0" y="0" width="${width}" height="${height}" fill="${palette.canvasBg}"/>`);
 			for (const e of edges) {
-				const x1 = e.from.x + EXPORT.nodeW;
+				const x1 = e.from.x + e.from.size.w;
 				const y1 = e.from.y;
 				const x2 = e.to.x;
 				const y2 = e.to.y;
 				const mid = (x1 + x2) / 2;
-				parts.push(`<path d="M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}" fill="none" stroke="#c8cdd6" stroke-width="1.5"/>`);
+				parts.push(`<path d="M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}" fill="none" stroke="${palette.connector}" stroke-width="1.5"/>`);
 			}
 			for (const p of placed) {
-				const isRoot = p.depth === 0;
-				const isPlaceholder = p.node.kind === "placeholder";
-				const isCode = p.node.kind === "code";
-				const boxY = p.y - EXPORT.nodeH / 2;
-				const fill = isRoot ? "#eef2ff" : isCode ? "#f5f2ea" : "#f6f7f9";
-				parts.push(`<rect x="${p.x}" y="${boxY}" width="${EXPORT.nodeW}" height="${EXPORT.nodeH}" rx="7" fill="${isPlaceholder ? "none" : fill}" stroke="${isRoot ? "#7c8cf8" : isPlaceholder ? "#b9c0cc" : "#d4d9e0"}" stroke-width="${isRoot ? 1.6 : 1}"${isPlaceholder ? ' stroke-dasharray="5,4"' : ""}/>`);
-				const label = isPlaceholder ? "待填写" : truncateForExport(p.node.topic);
-				const color = isRoot ? "#2f3ab2" : isPlaceholder ? "#9aa2b1" : "#1f2430";
-				const weight = isRoot ? 700 : p.node.kind === "heading" ? 600 : 400;
-				parts.push(`<text x="${p.x + 10}" y="${p.y + 4.5}" font-size="${EXPORT.fontSize}" font-weight="${weight}" font-family="${isCode ? "Menlo, monospace" : "inherit"}" fill="${color}">${escapeXml(label)}</text>`);
+				const node = p.node;
+				const kind = node.kind;
+				const isRoot = !edges.some((e) => e.to === p);
+				const isPlaceholder = kind === "placeholder";
+				const isCode = kind === "code";
+				const isQuote = kind === "quote";
+				const isTable = kind === "table";
+				const boxY = p.y - p.size.h / 2;
+				const fill = isRoot ? palette.rootBg : isCode ? palette.surfaceCode : palette.surface;
+				parts.push(`<rect x="${p.x}" y="${boxY}" width="${p.size.w}" height="${p.size.h}" rx="7" fill="${isPlaceholder ? "none" : fill}" stroke="${isRoot ? palette.rootBorder : isPlaceholder ? palette.border : palette.border}" stroke-width="${isRoot ? 1.6 : 1}"${isPlaceholder ? ' stroke-dasharray="5,4"' : ""}/>`);
+				if (isQuote) {
+					parts.push(`<rect x="${p.x}" y="${boxY}" width="3" height="${p.size.h}" fill="${palette.quote}"/>`);
+				}
+				if (isTable) {
+					// 表格块：完整网格（全量行列、单元格换行、不缩减，003 §5.5）。
+					const rows = (node.data && node.data.rows) || [];
+					const cols = rows.reduce((mx, row) => Math.max(mx, row.length), 0) || 1;
+					const colW = p.size.w / cols;
+					const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), colW - EXPORT.tableCellPad * 2, EXPORT.fontSize - 1).length), 1));
+					const rowH = rowLines.map((n) => n * EXPORT.lineHeight);
+					let ry = boxY;
+					rows.forEach((row, ri) => {
+						row.forEach((cell, ci) => {
+							const cx = p.x + ci * colW;
+							parts.push(`<rect x="${cx}" y="${ry}" width="${colW}" height="${rowH[ri]}" fill="${ri === 0 ? palette.surfaceCode : "none"}" stroke="${palette.borderSubtle}" stroke-width="1"/>`);
+							const cellLines = wrapExportText(stripInlineForExport(cell), colW - EXPORT.tableCellPad * 2, EXPORT.fontSize - 1);
+							cellLines.forEach((ln, li) => {
+								const ty = ry + (li + 0.5) * EXPORT.lineHeight + (EXPORT.fontSize - 1) * 0.35;
+								parts.push(`<text x="${cx + EXPORT.tableCellPad}" y="${ty.toFixed(1)}" font-size="${EXPORT.fontSize - 1}" font-weight="${ri === 0 ? 600 : 400}" fill="${palette.text}">${escapeXml(ln)}</text>`);
+							});
+						});
+						ry += rowH[ri];
+					});
+					continue;
+				}
+				const label = isPlaceholder ? "待填写" : exportBlock(node).text;
+				const color = isPlaceholder ? palette.muted : isRoot ? palette.rootText : kind === "heading" ? palette.heading : palette.text;
+				const weight = isRoot ? 700 : kind === "heading" ? 600 : 400;
+				const inner = p.size.w - EXPORT.padX * 2 - (isQuote ? 3 : 0);
+				const lines = isCode ? [label] : wrapExportText(label, inner, EXPORT.fontSize);
+				const startY = p.y - (lines.length - 1) * EXPORT.lineHeight / 2 + EXPORT.fontSize * 0.35;
+				lines.forEach((ln, li) => {
+					parts.push(`<text x="${p.x + EXPORT.padX + (isQuote ? 3 : 0)}" y="${(startY + li * EXPORT.lineHeight).toFixed(1)}" font-size="${EXPORT.fontSize}" font-weight="${weight}" font-family="${isCode ? "Menlo, monospace" : "inherit"}" fill="${color}">${escapeXml(ln)}</text>`);
+				});
 			}
 			parts.push("</svg>");
 			return { svg: parts.join(""), width, height };
@@ -734,8 +1105,8 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 浏览器侧导出：SVG → canvas → PNG 下载。tree 可为整树或任意子树（017）。 */
-		async function exportPng(tree, rootTitle) {
-			const { svg, width, height } = buildExportSvg(tree);
+		async function exportPng(tree, rootTitle, themeName) {
+			const { svg, width, height } = buildExportSvg(tree, themeName);
 			const canvas = await renderSvgToCanvas(svg, width, height);
 			const dataUrl = canvas.toDataURL("image/png");
 			const a = document.createElement("a");
@@ -752,11 +1123,11 @@ window.__ModuleLoader__.load({
 		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全
 		 * 上下文等）或写入被拒时抛错，由菜单提示改用「导出为图片」。
 		 */
-		async function copyPng(tree) {
+		async function copyPng(tree, themeName) {
 			if (typeof ClipboardItem === "undefined" || !navigator.clipboard || typeof navigator.clipboard.write !== "function") {
 				throw new Error("当前环境不支持复制图片，请改用「导出为图片」");
 			}
-			const { svg, width, height } = buildExportSvg(tree);
+			const { svg, width, height } = buildExportSvg(tree, themeName);
 			const blobPromise = renderSvgToCanvas(svg, width, height).then((canvas) => new Promise((resolve, reject) => {
 				canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG 生成失败"))), "image/png");
 			}));
@@ -850,11 +1221,23 @@ window.__ModuleLoader__.load({
 			// 百分比高度解析为 auto 会让 SVG 坐标系塌缩，连线与节点像素错位。
 			// 改为由 TreeRow 在 measure 里同步记下实际像素，作 SVG 属性直传。
 			edgeLayer: { position: "absolute", top: 0, left: 0, display: "block", pointerEvents: "none", overflow: "visible" },
-			box: { padding: "6px 12px", borderRadius: "10px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "0 0 auto", boxShadow: "0 1px 2px rgba(16,24,40,0.04)" },
-			rootBox: { fontWeight: 700, fontSize: "14px", border: "1px solid var(--dsw-alias-border-l2-darkmode-thin, #b9c0cc)", background: "var(--dsw-alias-bg-module-platform, #eef2ff)" },
-			headingBox: { fontWeight: 600 },
-			placeholderBox: { padding: "6px 12px", borderRadius: "10px", border: "1px dashed var(--dsw-alias-border-l2)", color: "var(--dsw-alias-label-tertiary)", background: "none" },
-			codeBox: { fontFamily: "Menlo, monospace", fontSize: "12px" },
+			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
+			// 颜色/圆角/阴影由 resolveNodeStyle 生成。全量换行：盒内换行、盒高随内容
+			// 生长，废除单行 ellipsis；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.5, fontSize: "13px", boxSizing: "border-box" },
+			// 019 代码块悬停浮层：看全文的浮起面板（position:fixed 不进测量链，
+			// 不影响行测量；等宽全文、可滚动、移开即收）。
+			codePanel: { position: "fixed", zIndex: 70, maxWidth: "440px", maxHeight: "340px", overflow: "auto", padding: "10px 12px", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px", boxShadow: "var(--dsw-shadow-lv2)", fontFamily: "Menlo, monospace", fontSize: "12px", lineHeight: 1.6, whiteSpace: "pre", boxSizing: "border-box" },
+			codePanelLang: { margin: "0 0 6px", fontSize: "11px", color: "var(--dsw-alias-label-tertiary)", fontFamily: "inherit" },
+			codePanelCode: { margin: "0", fontFamily: "inherit", fontSize: "inherit", whiteSpace: "pre" },
+			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。
+			tableWrap: { fontSize: "12px", lineHeight: 1.5 },
+			tableGrid: { borderCollapse: "collapse" },
+			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", maxWidth: "200px" },
+			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
+			// 019 大一统可点击链接：任何块里的任何 URL 完整呈现、永不缩减。
+			inlineLink: { color: "var(--dsw-alias-state-business-primary)", textDecoration: "underline", textUnderlineOffset: "2px", overflowWrap: "anywhere", cursor: "pointer" },
+			inlineCode: { fontFamily: "Menlo, monospace", fontSize: "12px", background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
 			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
 			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto" },
@@ -984,7 +1367,8 @@ window.__ModuleLoader__.load({
 							{ value: "sunset", label: "落日橙" },
 							{ value: "forest", label: "森林绿" },
 						].map((t) => {
-							const tokens = colorThemeTokens(t.value);
+							// 019：色点读令牌表（该主题的强标题强调色）。
+							const dot = resolveToken("color.accent.heading.strong", COLOR_THEMES[t.value]);
 							return (0, react_jsx_runtime.jsxs)("button", {
 								key: t.value,
 								type: "button",
@@ -992,7 +1376,7 @@ window.__ModuleLoader__.load({
 								disabled: saving,
 								onClick: () => setField({ colorTheme: t.value }),
 								children: [
-									(0, react_jsx_runtime.jsx)("span", { style: { ...S.swatchDot, background: tokens.heading } }),
+									(0, react_jsx_runtime.jsx)("span", { style: { ...S.swatchDot, background: dot } }),
 									t.label,
 								],
 							}, t.value);
@@ -1091,41 +1475,150 @@ window.__ModuleLoader__.load({
 			] });
 		}
 
+		//#region 019 血肉渲染：行内格式 + 大一统链接 + 表格块（规范源：003）
+		// 行内格式统一扫描序：图片/链接 → 行内代码 → 粗体 → 删除线 → 斜体 → 裸链接。
+		// 先命中先生效，裸链接放最后，避免吞掉已被 [文字](url) 消费的 URL。
+		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s)]+)/g;
+
+		/** 大一统链接点击：在机器浏览器打开（新标签页），不触发画布聚焦缩放。 */
+		function openLink(event, url) {
+			event.preventDefault();
+			event.stopPropagation();
+			try {
+				window.open(url, "_blank", "noopener");
+			} catch {
+				// 宿主环境拦截时退化为浏览器默认行为（不静默吞链接）。
+				event.defaultPrevented = false;
+			}
+		}
+
+		/**
+		 * 零依赖行内渲染器：任何块（文本/Markdown/列表/表格单元格）的内容都走这里。
+		 * 链接完整呈现、永不缩减（缩减=阉割信息，003 §7）；无预览、无加载态。
+		 * 返回 React 子节点数组（无格式时原样返回字符串）。
+		 */
+		function renderInline(text, keyPrefix) {
+			const source = String(text ?? "");
+			INLINE_PATTERN.lastIndex = 0;
+			const out = [];
+			let last = 0;
+			let k = 0;
+			let m;
+			while ((m = INLINE_PATTERN.exec(source)) !== null) {
+				if (m.index > last) out.push(source.slice(last, m.index));
+				const token = m[0];
+				const key = `${keyPrefix || "i"}-${k++}`;
+				if (m[1]) {
+					// [文字](url) 或 ![alt](url)。图片块暂缓（003 §9）：图语法退化为
+					// 指向原图的链接，同时把 alt 与原图地址都完整呈现（不缩减）。
+					const parsed = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
+					// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
+					const label = parsed[1]
+						? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
+						: (parsed[2] || parsed[3]);
+					out.push((0, react_jsx_runtime.jsx)("a", {
+						key,
+						href: parsed[3],
+						target: "_blank",
+						rel: "noopener noreferrer",
+						style: S.inlineLink,
+						title: parsed[3],
+						onClick: (e) => openLink(e, parsed[3]),
+						children: label,
+					}, key));
+				} else if (m[2]) {
+					out.push((0, react_jsx_runtime.jsx)("code", { key, style: S.inlineCode, children: token.slice(1, -1) }, key));
+				} else if (m[3]) {
+					out.push((0, react_jsx_runtime.jsx)("strong", { key, children: token.slice(2, -2) }, key));
+				} else if (m[4]) {
+					out.push((0, react_jsx_runtime.jsx)("s", { key, children: token.slice(2, -2) }, key));
+				} else if (m[5]) {
+					out.push((0, react_jsx_runtime.jsx)("em", { key, children: token.slice(1, -1) }, key));
+				} else {
+					// 裸链接：完整显示、可点击。
+					out.push((0, react_jsx_runtime.jsx)("a", {
+						key,
+						href: token,
+						target: "_blank",
+						rel: "noopener noreferrer",
+						style: S.inlineLink,
+						title: token,
+						onClick: (e) => openLink(e, token),
+						children: token,
+					}, key));
+				}
+				last = m.index + token.length;
+			}
+			if (last < source.length) out.push(source.slice(last));
+			return out.length > 1 || (out.length === 1 && typeof out[0] !== "string") ? out : source;
+		}
+
+		/** 表格块渲染：完整网格（全量行列、单元格内换行、表头加重），单元格不拆。 */
+		function renderTableBlock(node) {
+			const rows = (node.data && node.data.rows) || [];
+			if (rows.length === 0) return renderInline(node.topic, node.id);
+			return (0, react_jsx_runtime.jsx)("div", { style: S.tableWrap, children: (0, react_jsx_runtime.jsx)("table", { style: S.tableGrid, children: (0, react_jsx_runtime.jsx)("tbody", { children: rows.map((row, ri) => (0, react_jsx_runtime.jsx)("tr", { children: row.map((cell, ci) => (0, react_jsx_runtime.jsx)(ri === 0 ? "th" : "td", {
+				style: ri === 0 ? { ...S.tableCell, ...S.tableHeaderCell } : S.tableCell,
+				children: renderInline(cell, `${node.id}-${ri}-${ci}`),
+			}, ci)) }, ri)) }) }) });
+		}
+		//#endregion
+
 		function NodeBox(props) {
-			const { node, theme, revealDelay } = props;
-			// 015 节点主题：卡片圆角（圆角/直角）+ 颜色主题令牌（根盒/标题用主题色）。
-			const tokens = colorThemeTokens(theme && theme.colorTheme);
-			const radius = theme && theme.cardStyle === "square" ? 0 : 10;
-			const style = node.kind === "root"
-				? { ...S.box, ...S.rootBox, borderRadius: radius, borderColor: tokens.rootBorder, background: tokens.rootBg }
-				: node.kind === "heading"
-					? { ...S.box, ...S.headingBox, borderRadius: radius, color: tokens.heading }
-					: node.kind === "placeholder"
-						? { ...S.placeholderBox, borderRadius: radius }
-						: node.kind === "code"
-							? { ...S.box, ...S.codeBox, borderRadius: radius }
-							: { ...S.box, borderRadius: radius };
+			const { node, theme, revealDelay, selectedId, onCodePanel } = props;
+			const [hovered, setHovered] = react.useState(false);
+			const boxRef = react.useRef(null);
+			// 019 皮肤层：颜色/圆角/阴影/状态全部由 resolveNodeStyle 纯函数生成。
+			const style = {
+				...S.box,
+				...resolveNodeStyle(node, {
+					colorTheme: theme && theme.colorTheme,
+					cardStyle: theme && theme.cardStyle,
+					states: { hovered, selected: selectedId === node.id },
+				}),
+			};
 			// 018 生长动画：动画挂在内层节点盒（外层被连线测量，不能带 transform）。
 			if (revealDelay !== undefined) style.animationDelay = `${revealDelay}ms`;
-			const title = node.data?.description
-				? `${node.topic}\n\n${node.data.description}`
-				: node.data?.code
-					? `${node.topic}\n\n${node.data.code}`
-					: node.topic;
+
+			function handleEnter() {
+				setHovered(true);
+				// 019 代码块：盒内紧凑摘要，悬停浮起面板看全文（003 §5.3）。
+				if (node.kind === "code" && onCodePanel && boxRef.current) {
+					onCodePanel({ node, anchor: boxRef.current.getBoundingClientRect() });
+				}
+			}
+			function handleLeave() {
+				setHovered(false);
+				if (node.kind === "code" && onCodePanel) onCodePanel(null);
+			}
+
+			const children = node.kind === "placeholder"
+				? "待填写"
+				: node.kind === "table"
+					? renderTableBlock(node)
+					: renderInline(node.topic, node.id);
+			const title = node.kind === "code" ? `${node.topic}\n\n（悬停看全文）` : node.topic;
 			return (0, react_jsx_runtime.jsx)("div", {
+				ref: boxRef,
 				style,
 				title,
 				className: revealDelay !== undefined ? "dsh-mm-reveal" : undefined,
-				children: node.kind === "placeholder" ? "待填写" : node.topic,
+				onMouseEnter: handleEnter,
+				onMouseLeave: handleLeave,
+				children,
 			});
 		}
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu, reveal } = props;
+			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel } = props;
 			// 018 生长动画：本节点渐显延迟（新节点盒）与本行连线渐显延迟（有新子节点）。
 			const revealDelay = reveal && reveal.nodes ? reveal.nodes.get(node.id) : undefined;
 			const edgeRevealDelay = reveal && reveal.edges ? reveal.edges.get(node.id) : undefined;
+			// 019 连线外观走令牌（皮肤层），不再硬编码。
+			const overrides = COLOR_THEMES[theme && theme.colorTheme] || COLOR_THEMES.ocean;
+			const connectorColor = resolveToken("connector.color", overrides);
+			const connectorWidth = resolveToken("connector.width", overrides);
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
@@ -1208,8 +1701,8 @@ window.__ModuleLoader__.load({
 						children: layout.edges.map((d, i) => (0, react_jsx_runtime.jsx)("path", {
 							key: i,
 							d,
-							stroke: "var(--dsw-alias-border-l2)",
-							strokeWidth: 1.5,
+							stroke: connectorColor,
+							strokeWidth: connectorWidth,
 							fill: "none",
 							// 016：CSS zoom 缩放下 strokeWidth 会被一并缩放，缩小后线变
 							// 亚像素、模糊看不清；vectorEffect=non-scaling-stroke 让线宽
@@ -1221,6 +1714,8 @@ window.__ModuleLoader__.load({
 				(0, react_jsx_runtime.jsx)("div", {
 					ref: boxWrapRef,
 					"data-mindmap-node": "",
+					// 019：节点 id 挂在盒包裹上，画布点击聚焦时据此记选中态。
+					"data-mindmap-node-id": node.id,
 					style: { flex: "0 0 auto", cursor: "pointer" },
 					// 017 节点右键：弹「复制/导出为图片」菜单；stopPropagation 免触
 					// 画布空白拦截（空白处只拦默认菜单、不弹自己的）。
@@ -1229,7 +1724,7 @@ window.__ModuleLoader__.load({
 						e.stopPropagation();
 						onNodeContextMenu(e, node);
 					} : undefined,
-					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay }),
+					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel }),
 				}),
 				node.children && node.children.length > 0
 					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
@@ -1237,7 +1732,7 @@ window.__ModuleLoader__.load({
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel }),
 					}, child.id)) })
 					: null,
 				] });
@@ -1317,6 +1812,23 @@ window.__ModuleLoader__.load({
 							const [nodeMenuBusy, setNodeMenuBusy] = react.useState(null);
 							const [nodeMenuError, setNodeMenuError] = react.useState("");
 							const nodeMenuRef = react.useRef(null);
+							// 019 选中态：点击聚焦的节点下选选中环（002 §6 状态体系）。
+							const [selectedId, setSelectedId] = react.useState(null);
+							// 019 代码块悬停浮层：{node, anchor}；null = 关闭。延迟关闭（150ms
+							// 宽限）让鼠标能从节点盒移到面板上滚动全文，不闪灭。
+							const [codePanel, setCodePanel] = react.useState(null);
+							const codePanelTimerRef = react.useRef(null);
+							function handleCodePanel(panel) {
+								if (codePanelTimerRef.current) {
+									clearTimeout(codePanelTimerRef.current);
+									codePanelTimerRef.current = null;
+								}
+								if (panel) {
+									setCodePanel(panel);
+									return;
+								}
+								codePanelTimerRef.current = setTimeout(() => setCodePanel(null), 150);
+							}
 
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
@@ -1437,7 +1949,13 @@ window.__ModuleLoader__.load({
 					const target = e.target;
 					if (!target || typeof target.closest !== "function") return;
 					const boxEl = target.closest("[data-mindmap-node]");
-					if (!boxEl || !boxEl.isConnected) return;
+					if (!boxEl || !boxEl.isConnected) {
+						// 019 空白处点击：取消选中环（链接点击已 stopPropagation，不走这里）。
+						setSelectedId(null);
+						return;
+					}
+					// 019：聚焦同时记选中态（盒包裹上挂了 data-mindmap-node-id）。
+					setSelectedId(boxEl.getAttribute("data-mindmap-node-id"));
 					const rowEl = boxEl.closest("[data-mindmap-row]");
 					if (!rowEl) return;
 					const scroller = scrollRef.current;
@@ -1495,6 +2013,8 @@ window.__ModuleLoader__.load({
 				}, [nodeMenu]);
 				react.useEffect(() => {
 					setNodeMenu(null);
+					// 019：文档内容变化时同步收掉代码浮层（节点对象已失效）。
+					setCodePanel(null);
 				}, [node]);
 
 				// 017 右键节点：记录菜单锚点与目标子树（清掉上次的忙碌/错误态）。
@@ -1513,8 +2033,8 @@ window.__ModuleLoader__.load({
 					setNodeMenuBusy(mode);
 					setNodeMenuError("");
 					try {
-						if (mode === "copy") await copyPng(target);
-						else await exportPng(target, target.topic);
+						if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
+						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
 					} catch (error) {
 						setNodeMenuError(String(error?.message ?? error));
@@ -1535,10 +2055,10 @@ window.__ModuleLoader__.load({
 					// 017 空白处/缩放条右键只拦浏览器默认菜单（节点右键已 stopPropagation）。
 					onContextMenu: (e) => e.preventDefault(),
 					children: [
-					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children:
-						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children:
-							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children:
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal })
+					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children: 
+						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
+							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel })
 							})
 						})
 					}),
@@ -1605,6 +2125,25 @@ window.__ModuleLoader__.load({
 							nodeMenuError ? (0, react_jsx_runtime.jsx)("p", { style: S.nodeMenuError, children: nodeMenuError }) : null,
 						],
 					}) : null,
+					// 019 代码块悬停浮层：position:fixed 挂在画布外层（不进 zoom 内容，
+					// 不影响行测量）；默认贴节点盒右侧，右缘放不下时翻到左侧；可滚动全文。
+					codePanel ? (() => {
+						const panelW = 440;
+						const panelH = 340;
+						const anchor = codePanel.anchor || { left: 0, right: 0, top: 0 };
+						const left = anchor.right + 8 + panelW > window.innerWidth
+							? Math.max(8, anchor.left - panelW - 8)
+							: anchor.right + 8;
+						const top = Math.min(anchor.top, Math.max(8, window.innerHeight - panelH - 8));
+						return (0, react_jsx_runtime.jsxs)("div", {
+							style: { ...S.codePanel, left, top },
+							onMouseLeave: () => handleCodePanel(null),
+							children: [
+								(0, react_jsx_runtime.jsx)("p", { style: S.codePanelLang, children: (codePanel.node.data && codePanel.node.data.lang) || "code" }),
+								(0, react_jsx_runtime.jsx)("pre", { style: S.codePanelCode, children: (codePanel.node.data && codePanel.node.data.code) || "" }),
+							],
+						});
+					})() : null,
 				] });
 				}
 				//#endregion
@@ -1882,7 +2421,7 @@ window.__ModuleLoader__.load({
 				setExporting(true);
 				setExportError("");
 				try {
-					await exportPng(tree, doc.rootTitle);
+					await exportPng(tree, doc.rootTitle, theme && theme.colorTheme);
 				} catch (error) {
 					setExportError(String(error?.message ?? error));
 				} finally {
@@ -2513,7 +3052,18 @@ window.__ModuleLoader__.load({
 			planGrowthReveal,
 			relPathWithin,
 			visibleTreeRows,
-			colorThemeTokens,
+			// 019 皮肤层与血肉层纯函数（供测试）。
+			resolveToken,
+			resolveNodeStyle,
+			exportPalette,
+			hasInlineFormat,
+			isTableSeparator,
+			parseTableRow,
+			renderInline,
+			stripInlineForExport,
+			wrapExportText,
+			COLOR_THEMES,
+			TOKEN_REGISTRY,
 			clampZoom,
 			stepZoom,
 			fitZoom,

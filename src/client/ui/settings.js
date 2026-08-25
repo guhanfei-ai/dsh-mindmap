@@ -111,7 +111,8 @@
 							{ value: "sunset", label: "落日橙" },
 							{ value: "forest", label: "森林绿" },
 						].map((t) => {
-							const tokens = colorThemeTokens(t.value);
+							// 019：色点读令牌表（该主题的强标题强调色）。
+							const dot = resolveToken("color.accent.heading.strong", COLOR_THEMES[t.value]);
 							return (0, react_jsx_runtime.jsxs)("button", {
 								key: t.value,
 								type: "button",
@@ -119,7 +120,7 @@
 								disabled: saving,
 								onClick: () => setField({ colorTheme: t.value }),
 								children: [
-									(0, react_jsx_runtime.jsx)("span", { style: { ...S.swatchDot, background: tokens.heading } }),
+									(0, react_jsx_runtime.jsx)("span", { style: { ...S.swatchDot, background: dot } }),
 									t.label,
 								],
 							}, t.value);
