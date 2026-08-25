@@ -1230,6 +1230,8 @@ window.__ModuleLoader__.load({
 			treeMenuItem: { display: "block", width: "100%", boxSizing: "border-box", textAlign: "left", border: "none", background: "none", cursor: "pointer", padding: "7px 12px", borderRadius: "8px", font: "inherit", fontSize: "13px", color: "var(--dsw-alias-label-primary)" },
 			// 017 画布节点右键菜单：标题行（节点主题）+ 错误行 + 菜单项禁用态。
 			nodeMenuHeader: { padding: "4px 12px 6px", fontSize: "12px", color: "var(--dsw-alias-label-tertiary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "220px", boxSizing: "border-box" },
+			// 020：标题（节点主题）与动作项之间的分隔线，拉开层次。
+			nodeMenuDivider: { height: "1px", background: "var(--dsw-alias-border-l2)", margin: "4px 6px" },
 			nodeMenuError: { color: "var(--dsw-alias-label-error)", fontSize: "12px", lineHeight: 1.5, margin: "0", padding: "2px 12px 4px", wordBreak: "break-word" },
 			treeMenuItemDisabled: { opacity: 0.5, cursor: "default" },
 			// 015 设置面板（settings.section 页面内容）。
@@ -2173,6 +2175,8 @@ window.__ModuleLoader__.load({
 								title: nodeMenu.node.topic || "待填写",
 								children: truncateForExport(nodeMenu.node.topic, 18) || "待填写",
 							}),
+							// 020：标题与动作项之间拉一根分隔线。
+							(0, react_jsx_runtime.jsx)("div", { style: S.nodeMenuDivider }),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
 								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,

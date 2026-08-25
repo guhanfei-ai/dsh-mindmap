@@ -368,6 +368,8 @@
 								title: nodeMenu.node.topic || "待填写",
 								children: truncateForExport(nodeMenu.node.topic, 18) || "待填写",
 							}),
+							// 020：标题与动作项之间拉一根分隔线。
+							(0, react_jsx_runtime.jsx)("div", { style: S.nodeMenuDivider }),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
 								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
