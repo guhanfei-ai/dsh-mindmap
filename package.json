@@ -13,6 +13,8 @@
   "publishConfig": {
     "access": "public"
   },
+  "author": "guhanfei-ai",
+  "license": "MIT",
   "type": "module",
   "main": "index.js",
   "scripts": {

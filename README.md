@@ -68,4 +68,4 @@ The browser implementation is maintained under `src/client/` and assembled into 
 
 ## License
 
-Not yet chosen — contact the author before redistributing.
+MIT License. See [LICENSE](LICENSE) for details.

@@ -68,4 +68,4 @@ npm pack --dry-run    # 检查将进入 npm 包的文件
 
 ## License
 
-尚未确定——再分发前请先联系作者。
+MIT License，详见 [LICENSE](LICENSE)。
