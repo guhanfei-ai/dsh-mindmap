@@ -24,7 +24,7 @@ function loadBrowserModule() {
       Fragment: {},
     }
     if (id === 'react') {
-      return { useState, useEffect, useMemo, useRef }
+      return { useState, useEffect, useLayoutEffect, useMemo, useRef }
     }
     throw new Error(`Unexpected browser dependency: ${id}`)
   })
@@ -32,15 +32,20 @@ function loadBrowserModule() {
 }
 
 // react 桩：组件不真正渲染，只保证钩子在模块加载与 apply 时可用。
+// 021：useRef 统一登记，测试据此拿到组件内部的滚动区 ref 驱动平移手势。
+const capturedRefs = []
 function useState(initial) {
   return [typeof initial === 'function' ? initial() : initial, () => {}]
 }
 function useEffect() {}
+function useLayoutEffect() {}
 function useMemo(factory) {
   return factory()
 }
 function useRef(value) {
-  return { current: value }
+  const ref = { current: value }
+  capturedRefs.push(ref)
+  return ref
 }
 
 function toolResultNode(name, payload, { isError = false, callId = `call-${Math.random().toString(36).slice(2)}` } = {}) {
@@ -58,7 +63,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, COLOR_THEMES } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -823,6 +828,261 @@ test('focusZoom fits the subtree and caps zoom-in at focusMax', () => {
   assert.equal(focusZoom(0, 500, 800, 600), 1)
   assert.equal(focusZoom(500, 500, 800, 0), 1)
   assert.equal(focusZoom(NaN, 500, 800, 600), 1)
+})
+
+// 021 画布平移
+test('shouldStartPan accepts the middle button anywhere, left only on blank or with space', () => {
+  // 中键：画布惯例，压在节点上也拖
+  assert.equal(shouldStartPan(1, { onNode: true }), true)
+  assert.equal(shouldStartPan(1, {}), true)
+  // 左键空白处：Mac 触摸板「按住拖」走这条
+  assert.equal(shouldStartPan(0, { onNode: false }), true)
+  // 左键压节点上：留给文字选区，不拖
+  assert.equal(shouldStartPan(0, { onNode: true }), false)
+  // 空格 + 左键：压节点上也能拖
+  assert.equal(shouldStartPan(0, { onNode: true, spaceHeld: true }), true)
+  // 右键与其它键：不拖
+  assert.equal(shouldStartPan(2, { onNode: false }), false)
+  assert.equal(shouldStartPan(-1, { onNode: false }), false)
+  // 触摸：交还原生滚动（保住惯性），不劫持
+  assert.equal(shouldStartPan(0, { onNode: false, touch: true }), false)
+  // 缺参数：默认空白处左键
+  assert.equal(shouldStartPan(0), true)
+})
+
+test('panScroll moves content with the pointer and flags drags past the threshold', () => {
+  const start = { scrollLeft: 100, scrollTop: 40 }
+  // 注：panScroll 的返回对象诞生在 vm 沙箱里，原型与外界不同，逐字段断言而不用 deepEqual。
+  // 指针右移 30 → 内容右移 → scrollLeft 减小 30（跟手）
+  assert.deepEqual({ ...panScroll(start, 30, 0, 4) }, { scrollLeft: 70, scrollTop: 40, moved: true })
+  // 指针下移 30 → scrollTop 减小 30
+  assert.deepEqual({ ...panScroll(start, 0, 30, 4) }, { scrollLeft: 100, scrollTop: 10, moved: true })
+  // 指针左移/上移 → scroll 回升（反向拖回）
+  assert.deepEqual({ ...panScroll(start, -50, -50, 4) }, { scrollLeft: 150, scrollTop: 90, moved: true })
+  // 阈值内算点击：不吞随后的 click（保留点空白取消选中 / 点节点聚焦）
+  assert.deepEqual({ ...panScroll(start, 2, -2, 4) }, { scrollLeft: 98, scrollTop: 42, moved: false })
+  // 恰好 4px：越过阈值
+  assert.equal(panScroll(start, 4, 0, 4).moved, true)
+  assert.equal(panScroll(start, 3, 0, 4).moved, false)
+  // 缺省阈值走 PAN.threshold；非法阈值回退缺省
+  assert.equal(panScroll(start, PAN.threshold, 0).moved, true)
+  assert.equal(panScroll(start, 3, 0, NaN).moved, false)
+})
+
+test('isTextEntry only claims spaces typed into inputs, textareas and contenteditable', () => {
+  assert.equal(isTextEntry({ tagName: 'INPUT' }), true)
+  assert.equal(isTextEntry({ tagName: 'TEXTAREA' }), true)
+  assert.equal(isTextEntry({ tagName: 'DIV', isContentEditable: true }), true)
+  // 画布/面板上的普通元素：空格归画布
+  assert.equal(isTextEntry({ tagName: 'DIV', isContentEditable: false }), false)
+  assert.equal(isTextEntry({ tagName: 'SPAN' }), false)
+  // 无目标（keydown 落在 document 上）也归画布
+  assert.equal(isTextEntry(null), false)
+  assert.equal(isTextEntry(undefined), false)
+  assert.equal(isTextEntry({}), false)
+})
+
+test('isActivatable spares space-activation targets when swallowing the space key', () => {
+  // 选择器命中按钮 / 链接 / 自定义控件 → 空格的激活语义必须放行
+  assert.equal(isActivatable({ closest: (sel) => (String(sel).includes('button') ? {} : null) }), true)
+  // 普通画布元素：不在任何可激活控件里
+  assert.equal(isActivatable({ closest: () => null }), false)
+  // 没有 closest（keydown 落在 document / 非元素目标上）：同样不算可激活
+  assert.equal(isActivatable(null), false)
+  assert.equal(isActivatable({}), false)
+})
+
+// 021 冒烟：把画布组件的平移手势整体跑一遍。jsx 桩不调用子组件（TreeRow 不会
+// 真的渲染），因此这里拿到的是 props 树——直接在上面驱动 pointer 处理器，
+// 验证「按下 → 移动 → 松手」确实写到了 scroll 上。
+function renderCanvasScroller() {
+  capturedRefs.length = 0
+  const canvas = MindmapCanvas({
+    node: parseMarkdownToTree('# A\n## B', 'doc'),
+    theme: null,
+    fitKey: 'doc.md',
+    reveal: null,
+  })
+  let scroller = null
+  const walk = (el) => {
+    if (!el || typeof el !== 'object' || scroller) return
+    const props = el.props
+    if (props && typeof props.onPointerDown === 'function' && typeof props.onPointerMove === 'function') {
+      scroller = el
+      return
+    }
+    const children = props && props.children
+    if (Array.isArray(children)) children.forEach(walk)
+    else walk(children)
+  }
+  walk(canvas)
+  return scroller
+}
+
+// 021 假滚动区：只实现平移用到的三样（scroll 读写 / style / 指针捕获）。
+function fakeScroller(left, top) {
+  return { scrollLeft: left, scrollTop: top, style: {}, setPointerCapture() {}, releasePointerCapture() {} }
+}
+
+// 021 事件工厂：字段给全，免得漏字段误触发防御分支（buttons 尤其关键）。
+const ON_NODE = { closest: () => ({}) }
+const BLANK = { closest: () => null }
+function pointer(overrides) {
+  return {
+    button: 1, buttons: 1, pointerId: 7, clientX: 0, clientY: 0,
+    pointerType: 'mouse', target: ON_NODE, preventDefault() {},
+    ...overrides,
+  }
+}
+
+test('MindmapCanvas pans the scroller on middle-drag and swallows the trailing click', () => {
+  const scroller = renderCanvasScroller()
+  assert.ok(scroller, '画布里找不到带平移手势的滚动区')
+  // 空白处抓手光标；滚到边时不把滚动链传给宿主页面（聊天区不跟着动）
+  assert.equal(scroller.props.style.cursor, 'grab')
+  assert.equal(scroller.props.style.overscrollBehavior, 'contain')
+  const fake = fakeScroller(120, 60)
+  capturedRefs[0].current = fake
+  // 中键压在节点盒上：画布惯例，照样启动平移
+  scroller.props.onPointerDown(pointer({ pointerId: 7, clientX: 300, clientY: 200 }))
+  // 按下还不算拖拽：光标维持 grab（普通点击不该闪一下 grabbing）
+  assert.equal(fake.style.cursor, undefined)
+  scroller.props.onPointerMove(pointer({ pointerId: 7, clientX: 330, clientY: 180 }))
+  // 越过阈值才上抓手光标 + 锁文本选择
+  assert.equal(fake.style.cursor, 'grabbing')
+  assert.equal(fake.style.userSelect, 'none')
+  // 指针右移 30 → scrollLeft −30；上移 20 → scrollTop +20（内容跟手）
+  assert.equal(fake.scrollLeft, 90)
+  assert.equal(fake.scrollTop, 80)
+  scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 7 }))
+  assert.equal(fake.style.cursor, 'grab')
+  assert.equal(fake.style.userSelect, '')
+  // 拖过 → 随后那次 click 被吞：平移不该顺手把选中环清掉（closest 都不该被问）
+  let asked = 0
+  const clickBlank = () => scroller.props.onClick({ target: { closest: () => { asked += 1; return null } } })
+  clickBlank()
+  assert.equal(asked, 0)
+  // 松手后浏览器补发的 lostpointercapture 不能把「吞 click」的标记洗掉：
+  // 再拖一次，pointerup 与 lostpointercapture 之间不插 click。
+  scroller.props.onPointerDown(pointer({ pointerId: 8, clientX: 100, clientY: 100 }))
+  scroller.props.onPointerMove(pointer({ pointerId: 8, clientX: 140, clientY: 100 }))
+  scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 8 }))
+  scroller.props.onLostPointerCapture(pointer({ buttons: 0, pointerId: 8 }))
+  clickBlank()
+  assert.equal(asked, 0)
+  // 标记只吃一次，不粘手：再点一次空白照常走「取消选中」
+  clickBlank()
+  assert.equal(asked, 1)
+})
+
+test('MindmapCanvas leaves left-press on nodes, touch and plain taps alone', () => {
+  const scroller = renderCanvasScroller()
+  const fake = fakeScroller(10, 10)
+  capturedRefs[0].current = fake
+  // 左键压节点上：不平移，节点里的文字照常可选
+  scroller.props.onPointerDown(pointer({ button: 0, pointerId: 1, target: ON_NODE }))
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 1, clientX: 80, clientY: 80 }))
+  assert.equal(fake.scrollLeft, 10)
+  assert.equal(fake.scrollTop, 10)
+  // 触摸：交还原生滚动（保住惯性），不劫持
+  scroller.props.onPointerDown(pointer({ button: 0, pointerId: 2, pointerType: 'touch', target: BLANK }))
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 2, pointerType: 'touch', clientX: 80, clientY: 80 }))
+  assert.equal(fake.scrollLeft, 10)
+  assert.equal(fake.scrollTop, 10)
+  // 左键空白处轻点（位移 2px，未过 4px 阈值）：不吞 click，点空白取消选中照常
+  scroller.props.onPointerDown(pointer({ button: 0, pointerId: 3, target: BLANK }))
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 3, clientX: 2, clientY: 0 }))
+  scroller.props.onPointerUp(pointer({ button: 0, buttons: 0, pointerId: 3 }))
+  // 关键：手抖不挪画布（021 遗留修复 1）
+  assert.equal(fake.scrollLeft, 10)
+  assert.equal(fake.scrollTop, 10)
+  let asked = 0
+  scroller.props.onClick({ target: { closest: () => { asked += 1; return null } } })
+  assert.equal(asked, 1)
+})
+
+test('MindmapCanvas holds the canvas still and the cursor plain below the threshold', () => {
+  const scroller = renderCanvasScroller()
+  const fake = fakeScroller(200, 100)
+  capturedRefs[0].current = fake
+  scroller.props.onPointerDown(pointer({ button: 0, pointerId: 4, target: BLANK }))
+  // 3px 抖动：不写 scroll、不上 grabbing
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 4, clientX: 3, clientY: 1 }))
+  assert.equal(fake.scrollLeft, 200)
+  assert.equal(fake.scrollTop, 100)
+  assert.equal(fake.style.cursor, undefined)
+  // 第 4px 越线：这一下就把整段位移一次性补上（公式是相对按下锚点的绝对值，
+  // 跳过早期写入不丢位移，仍 1:1 跟手）
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 4, clientX: 4, clientY: 1 }))
+  assert.equal(fake.scrollLeft, 196)
+  assert.equal(fake.style.cursor, 'grabbing')
+  // 已经越过阈值后，小幅移动照常跟手
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 4, clientX: 6, clientY: 1 }))
+  assert.equal(fake.scrollLeft, 194)
+  scroller.props.onPointerUp(pointer({ button: 0, buttons: 0, pointerId: 4 }))
+})
+
+test('MindmapCanvas ends a hanging pan when the pointer moves with no button held', () => {
+  // 捕获失败 + 指针在滚动区外松手 → pointerup 收不到，panRef 会悬挂；
+  // 之后不按键移动就会变成「无键拖画布」。
+  const scroller = renderCanvasScroller()
+  const fake = fakeScroller(50, 50)
+  fake.setPointerCapture = () => { throw new Error('capture failed') }
+  capturedRefs[0].current = fake
+  scroller.props.onPointerDown(pointer({ pointerId: 9, clientX: 100, clientY: 100 }))
+  scroller.props.onPointerMove(pointer({ pointerId: 9, clientX: 160, clientY: 100 }))
+  assert.equal(fake.scrollLeft, -10)
+  assert.equal(fake.style.cursor, 'grabbing')
+  // 不按任何按键的移动 = 早已松手：自动收尾，且不写 scroll
+  scroller.props.onPointerMove(pointer({ buttons: 0, pointerId: 9, clientX: 400, clientY: 400 }))
+  assert.equal(fake.style.cursor, 'grab')
+  assert.equal(fake.style.userSelect, '')
+  assert.equal(fake.scrollLeft, -10)
+  assert.equal(fake.scrollTop, 50)
+  // 收尾后继续晃也不再拖动画布
+  scroller.props.onPointerMove(pointer({ buttons: 0, pointerId: 9, clientX: 900, clientY: 900 }))
+  assert.equal(fake.scrollLeft, -10)
+})
+
+test('MindmapCanvas clears the click suppression at the top of every gesture', () => {
+  // 遗留修复 3：拖完画布后若下一个手势走「不启动平移」的早退路径（触摸点按 /
+  // 左键压节点），残留的 true 会白吞掉那次点击。
+  const scroller = renderCanvasScroller()
+  const fake = fakeScroller(0, 0)
+  capturedRefs[0].current = fake
+  // 走一遍「触摸点按」残留路径
+  scroller.props.onPointerDown(pointer({ pointerId: 11 }))
+  scroller.props.onPointerMove(pointer({ pointerId: 11, clientX: 60 }))
+  scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 11 }))
+  // 故意不发 click，标记残留 true
+  scroller.props.onPointerDown(pointer({ button: 0, pointerId: 12, pointerType: 'touch', target: BLANK }))
+  scroller.props.onPointerUp(pointer({ button: 0, buttons: 0, pointerId: 12 }))
+  let asked = 0
+  scroller.props.onClick({ target: { closest: () => { asked += 1; return null } } })
+  assert.equal(asked, 1, '触摸点按路径也应清掉残留的吞 click 标记')
+  // 走一遍「左键压节点」残留路径
+  scroller.props.onPointerDown(pointer({ pointerId: 13 }))
+  scroller.props.onPointerMove(pointer({ pointerId: 13, clientX: 60 }))
+  scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 13 }))
+  scroller.props.onPointerDown(pointer({ button: 0, pointerId: 14, target: ON_NODE }))
+  scroller.props.onPointerUp(pointer({ button: 0, buttons: 0, pointerId: 14 }))
+  asked = 0
+  scroller.props.onClick({ target: { closest: () => { asked += 1; return null } } })
+  assert.equal(asked, 1, '左键压节点路径也应清掉残留的吞 click 标记')
+})
+
+test('MindmapCanvas ignores a second pointer driving an existing pan', () => {
+  const scroller = renderCanvasScroller()
+  const fake = fakeScroller(0, 0)
+  capturedRefs[0].current = fake
+  scroller.props.onPointerDown(pointer({ pointerId: 21, clientX: 100, clientY: 100 }))
+  scroller.props.onPointerMove(pointer({ pointerId: 21, clientX: 140, clientY: 100 }))
+  assert.equal(fake.scrollLeft, -40)
+  // 第二根指头（另一个 pointerId）的移动不该驱动第一根指头的锚点
+  scroller.props.onPointerMove(pointer({ pointerId: 22, clientX: 900, clientY: 900 }))
+  assert.equal(fake.scrollLeft, -40)
+  assert.equal(fake.scrollTop, 0)
+  scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 21 }))
 })
 
 test('apply wires listTree and settings faces through the mindmapFace (header slot inject)', () => {

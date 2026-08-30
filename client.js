@@ -1301,7 +1301,9 @@ window.__ModuleLoader__.load({
 			inlineCode: { fontFamily: "Menlo, monospace", fontSize: "12px", background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
 			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
-			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto" },
+			// 021 平移：空白处抓手光标（节点盒自带 pointer 覆盖）；overscroll
+			// contain 让画布滚到边时不把滚动链传给宿主页面（聊天区不跟着动）。
+			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto", cursor: "grab", overscrollBehavior: "contain" },
 			// 居中层：内容小则铺满视口（100%），大则撑到内容尺寸（max-content）；
 			// 子项用 margin:auto——空间充足双向居中，溢出时 margin 归零、从滚动
 			// 原点排布（flexbox 溢出居中裁剪的标准解法，无左/上侧裁剪）。
@@ -1850,8 +1852,54 @@ window.__ModuleLoader__.load({
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
 				}
 
-				/**
-				* 脑图画布：滚动区（canvasScroll）+ 居中层（canvasCenter，100%/max-content
+				//#region 021 画布平移：拖拽手势（中键 / 空白处左键 / 空格+左键）
+				// 平移契约（三条手指路径，覆盖鼠标与 Mac 触摸板）：
+				//   中键拖动        —— 画布惯例，任何位置都拖（压节点上也拖）
+				//   左键空白处拖动  —— Mac 触摸板「按住拖」= 左键拖拽，走这条
+				//   空格 + 左键拖动 —— 压在节点上也能拖（节点上留文字选区给左键）
+				// 方向：内容跟手（按下点始终贴着指针），故 scroll = 按下时 scroll − 位移。
+				// 阈值 4px 以内算「点击」：不写 scroll（手抖不挪画布）、不上抓手光标、
+				// 不吞随后的 click——保留点空白取消选中 / 点节点聚焦的既有行为。
+				// 触摸（触屏）不劫持——交给原生滚动，保住惯性。
+				const PAN = { threshold: 4 };
+
+				/** 是否在该指针按下上启动平移。button: 0 左 / 1 中 / 2 右。 */
+				function shouldStartPan(button, options) {
+					const { onNode = false, spaceHeld = false, touch = false } = options || {};
+					if (touch) return false;
+					if (button === 1) return true;
+					if (button !== 0) return false;
+					if (spaceHeld) return true;
+					return !onNode;
+				}
+
+				/** 平移一步：目标 scroll = 按下时 scroll − 位移；moved 表示已越过点击阈值。 */
+				function panScroll(start, dx, dy, threshold) {
+					const limit = Number.isFinite(threshold) ? threshold : PAN.threshold;
+					return {
+						scrollLeft: start.scrollLeft - dx,
+						scrollTop: start.scrollTop - dy,
+						moved: Math.abs(dx) >= limit || Math.abs(dy) >= limit,
+					};
+				}
+
+				/** 空格键是否落在可输入元素里（聊天框/输入框与面板同 document，不能抢空格）。 */
+				function isTextEntry(el) {
+					if (!el || typeof el.tagName !== "string") return false;
+					const tag = el.tagName.toLowerCase();
+					return tag === "input" || tag === "textarea" || el.isContentEditable === true;
+				}
+
+				/** 空格键是否落在「空格即激活」的控件上（按钮/链接/自定义控件）。
+				 *  这类元素上不能 preventDefault，否则挡掉空格激活。 */
+				function isActivatable(el) {
+					if (!el || typeof el.closest !== "function") return false;
+					return Boolean(el.closest("button, a[href], [role='button'], input, textarea, select, [contenteditable='true']"));
+				}
+				//#endregion
+
+			/**
+			* 脑图画布：滚动区（canvasScroll）+ 居中层（canvasCenter，100%/max-content
 				* 双下限）+ 缩放内容（margin:auto + CSS zoom）。zoom 用 CSS zoom 而非
 				* transform:scale——它影响布局，滚动范围随缩放自动正确；TreeRow 连线是
 				* getBoundingClientRect 相对测量，父子同因子缩放，几何保持一致。
@@ -1908,6 +1956,19 @@ window.__ModuleLoader__.load({
 								}
 								codePanelTimerRef.current = setTimeout(() => setCodePanel(null), 150);
 							}
+
+							// 021 画布平移锚点：本次拖拽按下时的指针与 scroll。刻意不用
+							// state——平移起止若触发重渲染，每个 TreeRow 的 useLayoutEffect
+							// 都要重测一遍（O(n) 强制重排），大树上拖一下会明显顿一下。
+							// 光标与「禁用选中」直接改 DOM style，全程零重渲染。
+							const panRef = react.useRef(null);
+							// 021 空格键：按下时左键在节点上也能拖。同样用 ref（按空格不该重渲染）。
+							const spaceRef = react.useRef(false);
+						// 021 拖过就吞掉随后那次 click（保留单击空白取消选中 / 点节点聚焦）。
+						const suppressClickRef = react.useRef(false);
+						// 021 指针是否悬在画布上（空格键要不要拦默认行为的门控；纯
+						// 读取，不参与渲染）。
+						const hoverRef = react.useRef(false);
 
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
@@ -1976,6 +2037,111 @@ window.__ModuleLoader__.load({
 								return () => observer.disconnect();
 							}, []);
 
+				// 021 空格键跟踪：指针悬在画布上时按住空格 → 左键可拖画布（画布惯例）。
+				// 输入框/聊天框里按空格不抢；窗口失焦即松开，防「卡在按住态」。
+				// 悬停门控（hoverRef）用于决定要不要拦空格的默认行为——全局拦会把
+				// 聊天区的「空格翻页」一起干掉，只拦「指针在画布上」这一刻才安全。
+				react.useEffect(() => {
+					const isSpace = (e) => e.code === "Space" || e.key === " ";
+					const onKeyDown = (e) => {
+						if (!isSpace(e) || isTextEntry(e.target)) return;
+						spaceRef.current = true;
+						// 悬在画布上、且不在按钮/链接上：掐掉空格滚动宿主页面。
+						if (hoverRef.current && !isActivatable(e.target)) e.preventDefault();
+					};
+					const onKeyUp = (e) => {
+						if (!isSpace(e)) return;
+						spaceRef.current = false;
+					};
+					const onBlur = () => {
+						spaceRef.current = false;
+					};
+					window.addEventListener("keydown", onKeyDown);
+					window.addEventListener("keyup", onKeyUp);
+					window.addEventListener("blur", onBlur);
+					return () => {
+						window.removeEventListener("keydown", onKeyDown);
+						window.removeEventListener("keyup", onKeyUp);
+						window.removeEventListener("blur", onBlur);
+					};
+				}, []);
+
+				// 021 平移三件套：按下记锚点 → 移动按差值写 scroll → 松手收尾。
+				// 用 pointer 事件 + setPointerCapture：指针滑出画布（甚至滑出面板）
+				// 仍跟手，不必在 window 上挂监听。
+				function applyPanCursor(scroller, active) {
+					scroller.style.cursor = active ? "grabbing" : "grab";
+					scroller.style.userSelect = active ? "none" : "";
+				}
+
+				function beginPan(e) {
+					// 吞 click 的标记一律在本轮手势的最开头清零，放在所有早退之前：
+					// 否则上轮手势留下的 true 会粘到下一次点击上——例：拖完画布后再
+					// 触摸点按（touch 路径不启动平移就早退了），那次点击会被白吞一次。
+					suppressClickRef.current = false;
+					const scroller = scrollRef.current;
+					if (!scroller || panRef.current) return;
+					const target = e.target;
+					const onNode = Boolean(target && typeof target.closest === "function" && target.closest("[data-mindmap-node]"));
+					if (!shouldStartPan(e.button, { onNode, spaceHeld: spaceRef.current, touch: e.pointerType === "touch" })) return;
+					// 中键：掐掉浏览器自动滚动；左键：掐掉拖选文本。
+					e.preventDefault();
+					panRef.current = {
+						pointerId: e.pointerId,
+						x: e.clientX,
+						y: e.clientY,
+						scrollLeft: scroller.scrollLeft,
+						scrollTop: scroller.scrollTop,
+						moved: false,
+					};
+					// 不在按下就上抓手光标：普通点击（位移 < 阈值）不该闪一下
+					// grabbing、也不该提前锁掉文本选择——等真正越过阈值再上。
+					if (e.pointerId != null && typeof scroller.setPointerCapture === "function") {
+						try { scroller.setPointerCapture(e.pointerId); } catch { /* 捕获失败：退化为元素内拖拽，movePan 有兜底 */ }
+					}
+				}
+
+				function movePan(e) {
+					const pan = panRef.current;
+					const scroller = scrollRef.current;
+					if (!pan || !scroller) return;
+					// 多指针（触屏/笔）下第二根指头的移动不该驱动第一根指头的锚点。
+					if (e.pointerId != null && pan.pointerId != null && e.pointerId !== pan.pointerId) return;
+					// 兜底：捕获失败退化为元素内拖拽时，指针在滚动区外松手就收不到
+					// pointerup，panRef 会悬挂 → 之后不按键移动也会拖画布。无按键
+					// 还在动说明早已松手，直接收尾（触摸进不了平移，不会误伤）。
+					if (e.buttons === 0) {
+						endPan();
+						return;
+					}
+					const step = panScroll(pan, e.clientX - pan.x, e.clientY - pan.y, PAN.threshold);
+					// 阈值内不写 scroll：点击手抖 1~3px 不该把画布挪走。公式是从按下
+					// 锚点算的绝对值（非增量），跳过早期写入仍保持 1:1 跟手。
+					if (!pan.moved && !step.moved) return;
+					// 首次越过阈值：这才算拖拽——上抓手光标 + 锁文本选择。
+					if (!pan.moved) applyPanCursor(scroller, true);
+					if (step.moved) pan.moved = true;
+					// 越界交给浏览器钳制（不自己算 scrollWidth，省一次重排）。
+					scroller.scrollLeft = step.scrollLeft;
+					scroller.scrollTop = step.scrollTop;
+				}
+
+				function endPan() {
+					const pan = panRef.current;
+					// 已收尾（pointerup 后浏览器会补发 lostpointercapture）→ 不再动手，
+					// 否则会把 suppressClickRef 清掉、平移后误触发 click。
+					if (!pan) return;
+					panRef.current = null;
+					const scroller = scrollRef.current;
+					if (scroller) {
+						applyPanCursor(scroller, false);
+						if (pan.pointerId != null && typeof scroller.releasePointerCapture === "function") {
+							try { scroller.releasePointerCapture(pan.pointerId); } catch { /* 已释放 */ }
+						}
+					}
+					suppressClickRef.current = pan.moved;
+				}
+
 				function setZoom(next, anchorViewport) {
 					const value = clampZoom(next);
 					anchorRef.current = anchorViewport && scrollRef.current
@@ -2025,6 +2191,12 @@ window.__ModuleLoader__.load({
 				// 上限 focusMax）。事件委托：closest 找节点盒与所在子树 row，无需给
 				// 递归 TreeRow 传回调。聚焦视为用户手动缩放（停自动再适配）。
 				function onCanvasClick(e) {
+					// 021：刚拖过画布（平移）的这次 click 不是点击，直接吞掉——
+					// 否则每次平移松手都会顺手把选中环清掉。
+					if (suppressClickRef.current) {
+						suppressClickRef.current = false;
+						return;
+					}
 					const target = e.target;
 					if (!target || typeof target.closest !== "function") return;
 					const boxEl = target.closest("[data-mindmap-node]");
@@ -2135,7 +2307,29 @@ window.__ModuleLoader__.load({
 					// 017 空白处/缩放条右键只拦浏览器默认菜单（节点右键已 stopPropagation）。
 					onContextMenu: (e) => e.preventDefault(),
 					children: [
-					(0, react_jsx_runtime.jsx)("div", { ref: scrollRef, style: S.canvasScroll, onClick: onCanvasClick, children: 
+					(0, react_jsx_runtime.jsx)("div", {
+						ref: scrollRef,
+						style: S.canvasScroll,
+						onClick: onCanvasClick,
+						// 021 画布平移：pointer 三件套 + 捕获，指针滑出画布仍跟手。
+						onPointerDown: beginPan,
+						onPointerMove: movePan,
+						onPointerUp: endPan,
+						// 系统手势打断（如三指滑动）与捕获丢失都走同一收尾。
+						onPointerCancel: endPan,
+						onLostPointerCapture: endPan,
+						// 中键松开的 auxclick：掐掉自动滚动 / 剪贴板粘贴等默认行为。
+						onAuxClick: (e) => {
+							if (e.button === 1) e.preventDefault();
+						},
+						// 021 悬停门控：空格键只在指针悬在画布上时才拦默认行为。
+						onPointerEnter: () => { hoverRef.current = true; },
+						onPointerLeave: () => { hoverRef.current = false; },
+						// 平移中掐掉原生 HTML5 拖拽（拖文字/图片会抢走手势）。
+						onDragStart: (e) => {
+							if (panRef.current) e.preventDefault();
+						},
+						children: 
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
 							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
 								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel })
@@ -3166,8 +3360,16 @@ window.__ModuleLoader__.load({
 			stepZoom,
 			fitZoom,
 			focusZoom,
+			// 021 画布平移手势判定（供测试）。
+			PAN,
+			shouldStartPan,
+			panScroll,
+			isTextEntry,
+			isActivatable,
 			TOOL_NAMES,
 			OPENING_OPS,
+			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
+			MindmapCanvas,
 		});
 		return module.exports;
 	}

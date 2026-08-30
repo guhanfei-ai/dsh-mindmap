@@ -5,3 +5,6 @@ dist/
 docs/
 .reasonix/
 .codebuddy/
+.workbuddy
+_*/
+._*/

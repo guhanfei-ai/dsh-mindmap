@@ -112,7 +112,9 @@
 			inlineCode: { fontFamily: "Menlo, monospace", fontSize: "12px", background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
 			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
-			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto" },
+			// 021 平移：空白处抓手光标（节点盒自带 pointer 覆盖）；overscroll
+			// contain 让画布滚到边时不把滚动链传给宿主页面（聊天区不跟着动）。
+			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto", cursor: "grab", overscrollBehavior: "contain" },
 			// 居中层：内容小则铺满视口（100%），大则撑到内容尺寸（max-content）；
 			// 子项用 margin:auto——空间充足双向居中，溢出时 margin 归零、从滚动
 			// 原点排布（flexbox 溢出居中裁剪的标准解法，无左/上侧裁剪）。

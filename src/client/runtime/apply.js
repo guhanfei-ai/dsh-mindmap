@@ -132,8 +132,16 @@
 			stepZoom,
 			fitZoom,
 			focusZoom,
+			// 021 画布平移手势判定（供测试）。
+			PAN,
+			shouldStartPan,
+			panScroll,
+			isTextEntry,
+			isActivatable,
 			TOOL_NAMES,
 			OPENING_OPS,
+			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
+			MindmapCanvas,
 		});
 
 
