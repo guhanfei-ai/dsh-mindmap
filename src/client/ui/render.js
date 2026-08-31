@@ -2,18 +2,25 @@
 		//#region 019 血肉渲染：行内格式 + 大一统链接 + 表格块（规范源：003）
 		// 行内格式统一扫描序：图片/链接 → 行内代码 → 粗体 → 删除线 → 斜体 → 裸链接。
 		// 先命中先生效，裸链接放最后，避免吞掉已被 [文字](url) 消费的 URL。
-		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s)]+)/g;
+		// 裸链接字符类排除 CJK 标点与全角符号（，。、；（）……），
+		// 否则中文句读被吞进 URL；ASCII 括号放行，由配平裁剪兜底。
+		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s\u3000-\u303f\uff00-\uffef]+)/g;
 
 		/** 大一统链接点击：在机器浏览器打开（新标签页），不触发画布聚焦缩放。 */
 		function openLink(event, url) {
-			event.preventDefault();
 			event.stopPropagation();
+			// 只在 window.open 成功后 preventDefault：宿主拦截（返回 null 或
+			// 抛错）时不拦，锚点自带的 target=_blank 原生导航接管——链接永远可达。
+			// （旧版 catch 里给只读属性 defaultPrevented 赋值是死代码，拦了默认
+			// 行为又开不了窗，链接彻底点不开。）
+			let opened = null;
 			try {
-				window.open(url, "_blank", "noopener");
+				opened = window.open(url, "_blank", "noopener");
 			} catch {
-				// 宿主环境拦截时退化为浏览器默认行为（不静默吞链接）。
-				event.defaultPrevented = false;
+				opened = null;
 			}
+			if (!opened) return;
+			event.preventDefault();
 		}
 
 		/**
@@ -36,20 +43,26 @@
 					// [文字](url) 或 ![alt](url)。图片块暂缓（003 §9）：图语法退化为
 					// 指向原图的链接，同时把 alt 与原图地址都完整呈现（不缩减）。
 					const parsed = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
-					// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
-					const label = parsed[1]
-						? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
-						: (parsed[2] || parsed[3]);
-					out.push((0, react_jsx_runtime.jsx)("a", {
-						key,
-						href: parsed[3],
-						target: "_blank",
-						rel: "noopener noreferrer",
-						style: S.inlineLink,
-						title: parsed[3],
-						onClick: (e) => openLink(e, parsed[3]),
-						children: label,
-					}, key));
+					// scheme 白名单：只放行 http/https/mailto。javascript:/data:
+					// 等不进 href，整串原样退化为纯文本（不缩减，也不可执行）。
+					if (!/^\s*(https?:|mailto:)/i.test(parsed[3])) {
+						out.push(token);
+					} else {
+						// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
+						const label = parsed[1]
+							? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
+							: (parsed[2] || parsed[3]);
+						out.push((0, react_jsx_runtime.jsx)("a", {
+							key,
+							href: parsed[3],
+							target: "_blank",
+							rel: "noopener noreferrer",
+							style: S.inlineLink,
+							title: parsed[3],
+							onClick: (e) => openLink(e, parsed[3]),
+							children: label,
+						}, key));
+					}
 				} else if (m[2]) {
 					out.push((0, react_jsx_runtime.jsx)("code", { key, style: S.inlineCode, children: token.slice(1, -1) }, key));
 				} else if (m[3]) {
@@ -59,17 +72,30 @@
 				} else if (m[5]) {
 					out.push((0, react_jsx_runtime.jsx)("em", { key, children: token.slice(1, -1) }, key));
 				} else {
-					// 裸链接：完整显示、可点击。
+					// 裸链接：完整显示、可点击。维基式配平括号属于 URL；未配平的
+					// 尾 ) 退回正文当纯文本——href 干净，可见文本不丢字符。
+					let url = token;
+					let opens = 0;
+					let closes = 0;
+					for (const ch of url) {
+						if (ch === "(") opens += 1;
+						else if (ch === ")") closes += 1;
+					}
+					while (closes > opens && url.endsWith(")")) {
+						url = url.slice(0, -1);
+						closes -= 1;
+					}
 					out.push((0, react_jsx_runtime.jsx)("a", {
 						key,
-						href: token,
+						href: url,
 						target: "_blank",
 						rel: "noopener noreferrer",
 						style: S.inlineLink,
-						title: token,
-						onClick: (e) => openLink(e, token),
-						children: token,
+						title: url,
+						onClick: (e) => openLink(e, url),
+						children: url,
 					}, key));
+					if (url.length < token.length) out.push(token.slice(url.length));
 				}
 				last = m.index + token.length;
 			}

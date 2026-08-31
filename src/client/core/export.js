@@ -69,14 +69,16 @@
 			return { text: stripInlineForExport(node.topic), lines: null };
 		}
 
-		/** 019 盒尺寸估算：文本按折行行数生长；表格按行列数算网格尺寸。 */
+		/** 019 盒尺寸估算：文本按折行行数生长；表格按行列数算网格尺寸。
+		 * 022：测量与渲染必须共用钳制后的列宽——先算盒宽再按 w/cols 折行，
+		 * 否则宽表（钳到 tableMaxW）按 110px 估行、渲染按更窄列宽折行，盒高不足。 */
 		function measureExportBox(node) {
 			if (node.kind === "table") {
 				const rows = (node.data && node.data.rows) || [];
 				const cols = rows.reduce((mx, row) => Math.max(mx, row.length), 0) || 1;
-				const cellInner = EXPORT.tableCellW - EXPORT.tableCellPad * 2;
-				const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), cellInner, EXPORT.fontSize - 1).length), 1));
 				const w = Math.min(EXPORT.tableMaxW, Math.max(EXPORT.tableMinW, cols * EXPORT.tableCellW));
+				const cellInner = w / cols - EXPORT.tableCellPad * 2;
+				const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), cellInner, EXPORT.fontSize - 1).length), 1));
 				const h = Math.max(EXPORT.lineHeight, rowLines.reduce((a, b) => a + b, 0) * EXPORT.lineHeight);
 				return { w, h };
 			}

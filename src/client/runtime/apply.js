@@ -124,6 +124,8 @@
 			parseTableRow,
 			nodeFullText,
 			renderInline,
+			// 链接点击：供测试验证开窗成功才拦默认行为（宿主拦截时退回原生导航）。
+			openLink,
 			stripInlineForExport,
 			wrapExportText,
 			COLOR_THEMES,

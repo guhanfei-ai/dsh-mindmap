@@ -204,7 +204,9 @@
 				const lower = p.toLowerCase();
 				if (snapPaths.some((sp) => sp.toLowerCase() === lower)) dropped.add(p);
 			}
-			for (const p of dropped) delete byPath[p];
+			// 只删本地条目；若该路径同时是存活快照文档
+			// （改名后又重建），快照保留，面板照常打开。
+			for (const p of dropped) if (!snapByPath[p]) delete byPath[p];
 			const order = [...(snapshot?.order ?? [])];
 			for (const p of Object.keys(localDocs)) {
 				if (!snapByPath[p] && !dropped.has(p)) order.push(p);

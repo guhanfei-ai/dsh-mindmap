@@ -28,7 +28,7 @@ function loadBrowserModule() {
     }
     throw new Error(`Unexpected browser dependency: ${id}`)
   })
-  return runtime
+  return { runtime, window }
 }
 
 // react 桩：组件不真正渲染，只保证钩子在模块加载与 apply 时可用。
@@ -62,8 +62,8 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
   return { ...toolResultNode(name, payload, options), subCalls }
 }
 
-const runtime = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas } = runtime.internals
+const { runtime, window: fakeWindow } = loadBrowserModule()
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -179,7 +179,7 @@ test('tables become table nodes keeping every cell (019 block concept)', () => {
   assert.equal(isTableSeparator('| a | b |'), false)
   // GFM 转义：\| 是字面竖线，不切单元格。
   assert.deepEqual([...parseTableRow('| a \\| b | c |')], ['a | b', 'c'])
-  // GFM 对齐契约：列数钉在表头——少列补空、多列截断（未转义竖线切碎的行网格不参差）。
+  // GFM 对齐契约：列数钉在分隔行——少列补空、多列截断（未转义竖线切碎的行网格不参差）。
   const ragged = parseMarkdownToTree('| x | y |\n| --- | --- |\n| 三栏 [会|脑图|聊天] | ⚠️ |\n| only |', 'doc')
   const [rt] = ragged.children
   assert.equal(rt.kind, 'table')
@@ -188,6 +188,65 @@ test('tables become table nodes keeping every cell (019 block concept)', () => {
     ['三栏 [会', '脑图'],
     ['only', ''],
   ])
+})
+
+test('unclosed leading --- is not treated as frontmatter (doc not swallowed)', () => {
+  // 只有分隔线开头、没有闭合 ---：整篇曾被当 frontmatter 吞成空树。
+  // 回退为普通解析：--- 按水平分隔线跳过，其余内容照旧
+  // （正文段落归属最近的标题，挂在 A 名下而非根级）。
+  const tree = parseMarkdownToTree('---\n# A\nbody words', 'doc')
+  assert.deepEqual([...tree.children.map((n) => n.kind)], ['heading'])
+  assert.equal(tree.children[0].topic, 'A')
+  assert.deepEqual([...tree.children[0].children.map((n) => n.kind)], ['text'])
+  // 正常闭合的 frontmatter 仍被跳过（既有契约不变）
+  const closed = parseMarkdownToTree('---\ntitle: x\n---\n# A', 'doc')
+  assert.deepEqual([...closed.children.map((n) => n.topic)], ['A'])
+})
+
+test('root-title echo only counts top-level H1 (H2 or quoted headings do not consume it)', () => {
+  // H2 先行：随后的同名顶层 H1 仍应并入根节点。
+  const t1 = parseMarkdownToTree('## sub\n# doc\nbody', 'doc')
+  assert.deepEqual([...t1.children.map((n) => n.topic)], ['sub'])
+  // 引用块内的标题不消耗回声名额（递归不参与回声）。
+  const t2 = parseMarkdownToTree('> ## Inner\n# doc\nbody', 'doc')
+  assert.deepEqual([...t2.children.map((n) => n.kind)], ['quote', 'text'])
+  // 只有首个顶层 H1 参与回声：它不匹配时，之后的同名 H1 保留为节点。
+  const t3 = parseMarkdownToTree('# other\n# doc', 'doc')
+  assert.deepEqual([...t3.children.map((n) => n.topic)], ['other', 'doc'])
+})
+
+test('table column count follows the separator row per GFM', () => {
+  // 分隔行 3 列：表头 2 列补空到 3，数据 3 列完整保留。
+  const wide = parseMarkdownToTree('| a | b |\n| --- | --- | --- |\n| 1 | 2 | 3 |', 'doc')
+  const [w] = wide.children
+  assert.equal(w.kind, 'table')
+  assert.deepEqual([...w.data.rows.map((r) => [...r])], [['a', 'b', ''], ['1', '2', '3']])
+  assert.equal(w.topic, '2×3 表格')
+  // 分隔行 2 列：表头 3 列截断到 2。
+  const narrow = parseMarkdownToTree('| a | b | c |\n| --- | --- |\n| 1 | 2 |', 'doc')
+  const [n] = narrow.children
+  assert.deepEqual([...n.data.rows.map((r) => [...r])], [['a', 'b'], ['1', '2']])
+})
+
+test('code fences close only on a matching marker of at least the same length', () => {
+  // ~~~ 块不会被 ``` 行提前关闭。
+  const tilde = parseMarkdownToTree('~~~\n``` inside\nstill code\n~~~', 'doc')
+  assert.equal(tilde.children.length, 1)
+  assert.equal(tilde.children[0].kind, 'code')
+  assert.equal(tilde.children[0].data.code, '``` inside\nstill code')
+  // 闭合围栏至少与开启围栏等长。
+  const long = parseMarkdownToTree('````\n```\nstill code\n````', 'doc')
+  assert.equal(long.children.length, 1)
+  assert.equal(long.children[0].data.code, '```\nstill code')
+})
+
+test('parseTableRow treats \\\\| as escaped backslash plus a real separator', () => {
+  // 双反斜杠是转义的反斜杠，其后的 | 是真切分（GFM）——
+  // 回归点是「照常切开」（旧代码误当转义竖线不切）；
+  // 反斜杠对本身保留原样（与解析器其余处保留字面反斜杠一致）。
+  assert.deepEqual([...parseTableRow('| a\\\\| b |')], ['a\\\\', 'b'])
+  // 单反斜杠转义语义不变（输入 a\| 本无空格，还原后也无空格）。
+  assert.deepEqual([...parseTableRow('| a\\| b |')], ['a| b'])
 })
 
 test('nodeFullText returns the complete own content per kind (020 copy full text)', () => {
@@ -550,6 +609,24 @@ test('mergeDocuments drops a local placeholder that matches a snapshot doc case-
   assert.deepEqual([...distinct.order], ['/w/Docs/Plan.md', '/w/docs/other.md'])
 })
 
+test('mergeDocuments keeps a live snapshot doc when another doc renamedFrom its path', () => {
+  // A 改名 B（B.renamedFrom=A）后，A 又被重建为快照文档，且本地还有 A 占位：
+  // 丢弃只应移除本地旧名条目，不能把新快照 A 一起删掉
+  // （旧代码 order 有 A、byPath 无 A，面板打不开）。
+  const snapshot = {
+    order: ['/w/a.md', '/w/b.md'],
+    byPath: {
+      '/w/a.md': { path: '/w/a.md', rootTitle: 'a', content: '重生', op: 'create', callId: 'c2', renamedFrom: null },
+      '/w/b.md': { path: '/w/b.md', rootTitle: 'b', content: '改名', op: 'update', callId: 'c1', renamedFrom: '/w/a.md' },
+    },
+  }
+  const merged = mergeDocuments(snapshot, {
+    '/w/a.md': { path: '/w/a.md', rootTitle: 'a', content: '本地占位', op: 'local', callId: null, renamedFrom: null },
+  })
+  assert.equal(merged.byPath['/w/a.md'].content, '重生')
+  assert.deepEqual([...merged.order], ['/w/a.md', '/w/b.md'])
+})
+
 test('matchDocError matches exact and case-insensitive paths and honors the since baseline', () => {
   const base = reduceDocuments([
     toolResultNode('mindmap_open', { ok: false, op: 'open', path: '/w/Docs/Plan.md', error: { message: 'not found' } }, { callId: 'err-1' }),
@@ -768,11 +845,98 @@ test('renderInline linkifies bare URLs and markdown links in full (no truncation
   assert.equal(stripInlineForExport('**b** and [doc](https://a.b)'), 'b and doc(https://a.b)')
 })
 
+test('renderInline bare links stop at CJK punctuation and never swallow trailing prose', () => {
+  // 中文标点不再进 URL：， 是句读不是链接的一部分
+  const cjk = renderInline('详见 https://a.com/x，然后继续', 'k')
+  const cjkLink = cjk.find((el) => el && el.props && el.props.href)
+  assert.equal(cjkLink.props.href, 'https://a.com/x')
+  assert.ok(cjk.some((part) => typeof part === 'string' && part.includes('，然后继续')))
+  // 、 分隔两个裸链接（旧正则把两个 URL 合并成一个坏链）
+  const duo = renderInline('https://a.com、https://b.com', 'k')
+  const duoLinks = duo.filter((el) => el && el.props && el.props.href)
+  assert.deepEqual([...duoLinks.map((l) => l.props.href)], ['https://a.com', 'https://b.com'])
+})
+
+test('renderInline bare links keep balanced parens and return unbalanced tail to prose', () => {
+  // 维基式括号配平：完整保留（链接永不缩减）
+  const wiki = renderInline('go https://en.wikipedia.org/wiki/Foo_(bar) now', 'k')
+  const wikiLink = wiki.find((el) => el && el.props && el.props.href)
+  assert.equal(wikiLink.props.href, 'https://en.wikipedia.org/wiki/Foo_(bar)')
+  assert.equal(wikiLink.props.children, 'https://en.wikipedia.org/wiki/Foo_(bar)')
+  // 未配平的尾 )：退回正文（可见文本不丢字符，href 不带坏尾巴）
+  const tail = renderInline('(见 https://a.com/x) 完', 'k')
+  const tailLink = tail.find((el) => el && el.props && el.props.href)
+  assert.equal(tailLink.props.href, 'https://a.com/x')
+  assert.equal(tail.map((p) => (typeof p === 'string' ? p : p.props.children)).join(''), '(见 https://a.com/x) 完')
+})
+
+test('renderInline only linkifies allowlisted schemes (http/https/mailto)', () => {
+  // javascript:/data: 不进 href——整串退化为纯文本（无锚点）
+  const evil = renderInline('点我 [x](javascript:alert(1)) 和 [y](data:text/html,z)', 'k')
+  const parts = Array.isArray(evil) ? evil : [evil]
+  assert.ok(!parts.some((el) => el && el.type === 'a'))
+  assert.equal(parts.map((p) => (typeof p === 'string' ? p : p.props.children)).join(''), '点我 [x](javascript:alert(1)) 和 [y](data:text/html,z)')
+  // mailto 在白名单内
+  const mail = renderInline('写信 [me](mailto:a@b.c)', 'k')
+  const mailLink = mail.find((el) => el && el.props && el.props.href)
+  assert.equal(mailLink.props.href, 'mailto:a@b.c')
+})
+
+test('openLink preventDefaults only when window.open succeeds (blocked falls back to native navigation)', () => {
+  const mkEvent = () => ({ prevented: false, stopped: false, preventDefault() { this.prevented = true }, stopPropagation() { this.stopped = true } })
+  // 成功开窗：拦默认行为（避免锚点再跳一次），事件已消费
+  fakeWindow.open = (...args) => {
+    fakeWindow.__openArgs = args
+    return {}
+  }
+  const okEvent = mkEvent()
+  openLink(okEvent, 'https://a.b/c')
+  assert.deepEqual([...fakeWindow.__openArgs], ['https://a.b/c', '_blank', 'noopener'])
+  assert.equal(okEvent.prevented, true)
+  assert.equal(okEvent.stopped, true)
+  // 宿主拦截（返回 null）：不拦默认行为，原生 <a target=_blank> 导航接管
+  fakeWindow.open = () => null
+  const blockedEvent = mkEvent()
+  openLink(blockedEvent, 'https://a.b/c')
+  assert.equal(blockedEvent.prevented, false)
+  // 宿主抛异常：吞掉异常，同样退回原生导航
+  fakeWindow.open = () => { throw new Error('blocked') }
+  const thrownEvent = mkEvent()
+  openLink(thrownEvent, 'https://a.b/c')
+  assert.equal(thrownEvent.prevented, false)
+})
+
 test('wrapExportText wraps long content and keeps explicit newlines', () => {
   const lines = wrapExportText('a'.repeat(100), 220 - 24, 13)
   assert.ok(lines.length > 1)
   assert.equal(wrapExportText('l1\nl2', 100, 13).length, 2)
   assert.equal(wrapExportText('a'.repeat(100), 220 - 24, 13).join('').length, 100)
+})
+
+test('buildExportSvg measures wide-table height with the same clamped column width as rendering', () => {
+  // 022 #12：6 列宽表被钳到 480（列宽 80 < tableCellW 110）。
+  // 旧病：测量按 110 折行、渲染按 80 折行 → 盒高不足，文字画出盒外。
+  const long = '字'.repeat(42)
+  const table = {
+    id: 't', kind: 'table', topic: '2×6 表格', children: [],
+    data: { rows: [['h1', 'h2', 'h3', 'h4', 'h5', 'h6'], [long, 'x', 'x', 'x', 'x', 'x']] },
+  }
+  const tree = { id: 'r', kind: 'heading', topic: 'root', children: [table] }
+  const { svg } = buildExportSvg(tree, 'ocean')
+  const rects = [...svg.matchAll(/<rect x="([\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="7"/g)]
+  assert.equal(rects.length, 2)
+  const box = rects[1]
+  const bx = Number(box[1])
+  const by = Number(box[2])
+  const bw = Number(box[3])
+  const bottom = by + Number(box[4])
+  const texts = [...svg.matchAll(/<text x="([\d.]+)" y="(-?[\d.]+)"/g)]
+    .map((m) => ({ x: Number(m[1]), y: Number(m[2]) }))
+    .filter((t) => t.x >= bx && t.x <= bx + bw)
+  assert.ok(texts.length > 6)
+  for (const t of texts) {
+    assert.ok(t.y <= bottom, `text baseline y=${t.y} overflows table box bottom ${bottom}`)
+  }
 })
 
 test('clampZoom clamps to [0.25, 3] and guards non-finite or non-positive input', () => {

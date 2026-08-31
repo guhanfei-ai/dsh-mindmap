@@ -51,11 +51,12 @@
 		}
 		
 		/** 表格行 → 单元格数组（去首尾空段，保留中间空单元格）。
-		 * 支持 GFM 转义：`\|` 是字面竖线（占位符避位，剥标记后还原），不切单元格。 */
+		 * 支持 GFM 转义：`\|` 是字面竖线（占位符避位，剥标记后还原），不切单元格；
+		 * `\\|` 则是已转义的反斜杠 + 真分隔符，照常切开。 */
 		function parseTableRow(line) {
 			return String(line ?? "").trim()
 				.replace(/^\|/, "").replace(/\|$/, "")
-				.replace(/\\\|/g, "\u0000")
+				.replace(/(?<!\\)((?:\\\\)*)\\\|/g, "$1\u0000")
 				.split("|")
 				.map((c) => c.replace(/\u0000/g, "|").trim());
 		}
@@ -97,13 +98,16 @@
 				data: {},
 			};
 			// 根标题回声标记：记录文档常以文件名作首行 H1（如 "# 002-spike结论.md"），
-			// 而根节点标题就是文件名——首个 H1 与根标题一致（或仅多 .md 后缀）时
-			// 并入根节点，避免标题显示两次。仅文档顶层参与回声（引用内不算）。
-			let firstHeadingSeen = false;
+			// 而根节点标题就是文件名——首个顶层 H1 与根标题一致（或仅多 .md 后缀）
+			// 时并入根节点，避免标题显示两次。只有顶层 H1 参与回声：H2 等低级标题
+			// 不消耗名额，引用块递归（echoRoot=false）也不触碰本标记。
+			let firstTopH1Seen = false;
 			const lines = String(markdown ?? "").split(/\r?\n/);
 		
 			let start = 0;
-			// 跳过 YAML frontmatter（--- ... ---）
+			// 跳过 YAML frontmatter（--- ... ---）：找不到闭合行说明不是
+			// frontmatter（如以水平线开头的合法文档），回退普通解析，
+			// 否则整篇会被吞成空树。
 			if (lines.length > 0 && /^\s*---\s*$/.test(lines[0])) {
 				for (start = 1; start < lines.length; start++) {
 					if (/^\s*---\s*$/.test(lines[start])) {
@@ -111,6 +115,7 @@
 						break;
 					}
 				}
+				if (start >= lines.length) start = 0;
 			}
 		
 			/**
@@ -157,12 +162,16 @@
 		
 					// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要（盒内紧凑，
 					// 悬停浮层看全文——003 §5.3；data.code 全量保存）。
-					if (/^\s*(```|~~~)/.test(line)) {
+					// GFM：闭合围栏须同字符且不少于开启长度——``` 块里的 ~~~、
+					// ```` 块里的 ``` 都是代码内容，不是围栏。
+					const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+					if (fence) {
 						flushParagraph();
 						listStack = [];
-						const lang = line.trim().slice(3).trim();
+						const lang = line.trim().slice(fence[1].length).trim();
+						const fenceClose = new RegExp(`^\\s*${fence[1][0]}{${fence[1].length},}\\s*$`);
 						const buf = [];
-						for (i += 1; i < lineList.length && !/^\s*(```|~~~)/.test(lineList[i]); i++) buf.push(lineList[i]);
+						for (i += 1; i < lineList.length && !fenceClose.test(lineList[i]); i++) buf.push(lineList[i]);
 						const code = buf.join("\n");
 						const firstLine = (code.split("\n")[0] || "").trim();
 						const summary = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
@@ -183,12 +192,15 @@
 						listStack = [];
 						const level = heading[1].length;
 						const text = heading[2].trim() || "（无标题）";
-						// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
-						if (echoRoot && !firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
-							firstHeadingSeen = true;
-							continue;
+						// 首个顶层 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
+						// 名额只属于顶层 H1：低级标题先行、引用块内出现标题都不影响回声。
+						if (echoRoot && level === 1) {
+							if (!firstTopH1Seen && (text === root.topic || text === `${root.topic}.md`)) {
+								firstTopH1Seen = true;
+								continue;
+							}
+							firstTopH1Seen = true;
 						}
-						firstHeadingSeen = true;
 						while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
 						const basePath = parentRec() ? parentRec().path : "";
 						const node = {
@@ -239,19 +251,20 @@
 							flushParagraph();
 							listStack = [];
 							i = j - 1;
-							const header = parseTableRow(rows[0]);
-							// GFM 对齐契约：列数钉死在分隔行（=表头）。少列补空、
-							// 多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
+							// GFM 对齐契约：列数钉死在分隔行。表头与数据行同等待遇：
+							// 少列补空、多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
+							const cols = parseTableRow(rows[1]).length;
 							const toCols = (cells) => {
-								if (cells.length >= header.length) return cells.slice(0, header.length);
-								return cells.concat(new Array(header.length - cells.length).fill(""));
+								if (cells.length >= cols) return cells.slice(0, cols);
+								return cells.concat(new Array(cols - cells.length).fill(""));
 							};
+							const header = toCols(parseTableRow(rows[0]));
 							const body = rows.slice(2).map((row) => toCols(parseTableRow(row)));
 							const tableRows = [header].concat(body);
 							appendNode({
 								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
 								kind: "table",
-								topic: `${tableRows.length}×${header.length} 表格`,
+								topic: `${tableRows.length}×${cols} 表格`,
 								children: [],
 								data: { rows: tableRows },
 							});

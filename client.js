@@ -287,11 +287,12 @@ window.__ModuleLoader__.load({
 		}
 		
 		/** 表格行 → 单元格数组（去首尾空段，保留中间空单元格）。
-		 * 支持 GFM 转义：`\|` 是字面竖线（占位符避位，剥标记后还原），不切单元格。 */
+		 * 支持 GFM 转义：`\|` 是字面竖线（占位符避位，剥标记后还原），不切单元格；
+		 * `\\|` 则是已转义的反斜杠 + 真分隔符，照常切开。 */
 		function parseTableRow(line) {
 			return String(line ?? "").trim()
 				.replace(/^\|/, "").replace(/\|$/, "")
-				.replace(/\\\|/g, "\u0000")
+				.replace(/(?<!\\)((?:\\\\)*)\\\|/g, "$1\u0000")
 				.split("|")
 				.map((c) => c.replace(/\u0000/g, "|").trim());
 		}
@@ -333,13 +334,16 @@ window.__ModuleLoader__.load({
 				data: {},
 			};
 			// 根标题回声标记：记录文档常以文件名作首行 H1（如 "# 002-spike结论.md"），
-			// 而根节点标题就是文件名——首个 H1 与根标题一致（或仅多 .md 后缀）时
-			// 并入根节点，避免标题显示两次。仅文档顶层参与回声（引用内不算）。
-			let firstHeadingSeen = false;
+			// 而根节点标题就是文件名——首个顶层 H1 与根标题一致（或仅多 .md 后缀）
+			// 时并入根节点，避免标题显示两次。只有顶层 H1 参与回声：H2 等低级标题
+			// 不消耗名额，引用块递归（echoRoot=false）也不触碰本标记。
+			let firstTopH1Seen = false;
 			const lines = String(markdown ?? "").split(/\r?\n/);
 		
 			let start = 0;
-			// 跳过 YAML frontmatter（--- ... ---）
+			// 跳过 YAML frontmatter（--- ... ---）：找不到闭合行说明不是
+			// frontmatter（如以水平线开头的合法文档），回退普通解析，
+			// 否则整篇会被吞成空树。
 			if (lines.length > 0 && /^\s*---\s*$/.test(lines[0])) {
 				for (start = 1; start < lines.length; start++) {
 					if (/^\s*---\s*$/.test(lines[start])) {
@@ -347,6 +351,7 @@ window.__ModuleLoader__.load({
 						break;
 					}
 				}
+				if (start >= lines.length) start = 0;
 			}
 		
 			/**
@@ -393,12 +398,16 @@ window.__ModuleLoader__.load({
 		
 					// 围栏代码块：整块成为一个叶节点，标题 = [语言] 首行摘要（盒内紧凑，
 					// 悬停浮层看全文——003 §5.3；data.code 全量保存）。
-					if (/^\s*(```|~~~)/.test(line)) {
+					// GFM：闭合围栏须同字符且不少于开启长度——``` 块里的 ~~~、
+					// ```` 块里的 ``` 都是代码内容，不是围栏。
+					const fence = /^\s*(`{3,}|~{3,})/.exec(line);
+					if (fence) {
 						flushParagraph();
 						listStack = [];
-						const lang = line.trim().slice(3).trim();
+						const lang = line.trim().slice(fence[1].length).trim();
+						const fenceClose = new RegExp(`^\\s*${fence[1][0]}{${fence[1].length},}\\s*$`);
 						const buf = [];
-						for (i += 1; i < lineList.length && !/^\s*(```|~~~)/.test(lineList[i]); i++) buf.push(lineList[i]);
+						for (i += 1; i < lineList.length && !fenceClose.test(lineList[i]); i++) buf.push(lineList[i]);
 						const code = buf.join("\n");
 						const firstLine = (code.split("\n")[0] || "").trim();
 						const summary = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine;
@@ -419,12 +428,15 @@ window.__ModuleLoader__.load({
 						listStack = [];
 						const level = heading[1].length;
 						const text = heading[2].trim() || "（无标题）";
-						// 首个 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
-						if (echoRoot && !firstHeadingSeen && level === 1 && (text === root.topic || text === `${root.topic}.md`)) {
-							firstHeadingSeen = true;
-							continue;
+						// 首个顶层 H1 与根标题一致（或仅多 .md 后缀）→ 并入根节点，不另建节点。
+						// 名额只属于顶层 H1：低级标题先行、引用块内出现标题都不影响回声。
+						if (echoRoot && level === 1) {
+							if (!firstTopH1Seen && (text === root.topic || text === `${root.topic}.md`)) {
+								firstTopH1Seen = true;
+								continue;
+							}
+							firstTopH1Seen = true;
 						}
-						firstHeadingSeen = true;
 						while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
 						const basePath = parentRec() ? parentRec().path : "";
 						const node = {
@@ -475,19 +487,20 @@ window.__ModuleLoader__.load({
 							flushParagraph();
 							listStack = [];
 							i = j - 1;
-							const header = parseTableRow(rows[0]);
-							// GFM 对齐契约：列数钉死在分隔行（=表头）。少列补空、
-							// 多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
+							// GFM 对齐契约：列数钉死在分隔行。表头与数据行同等待遇：
+							// 少列补空、多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
+							const cols = parseTableRow(rows[1]).length;
 							const toCols = (cells) => {
-								if (cells.length >= header.length) return cells.slice(0, header.length);
-								return cells.concat(new Array(header.length - cells.length).fill(""));
+								if (cells.length >= cols) return cells.slice(0, cols);
+								return cells.concat(new Array(cols - cells.length).fill(""));
 							};
+							const header = toCols(parseTableRow(rows[0]));
 							const body = rows.slice(2).map((row) => toCols(parseTableRow(row)));
 							const tableRows = [header].concat(body);
 							appendNode({
 								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
 								kind: "table",
-								topic: `${tableRows.length}×${header.length} 表格`,
+								topic: `${tableRows.length}×${cols} 表格`,
 								children: [],
 								data: { rows: tableRows },
 							});
@@ -807,7 +820,9 @@ window.__ModuleLoader__.load({
 				const lower = p.toLowerCase();
 				if (snapPaths.some((sp) => sp.toLowerCase() === lower)) dropped.add(p);
 			}
-			for (const p of dropped) delete byPath[p];
+			// 只删本地条目；若该路径同时是存活快照文档
+			// （改名后又重建），快照保留，面板照常打开。
+			for (const p of dropped) if (!snapByPath[p]) delete byPath[p];
 			const order = [...(snapshot?.order ?? [])];
 			for (const p of Object.keys(localDocs)) {
 				if (!snapByPath[p] && !dropped.has(p)) order.push(p);
@@ -997,14 +1012,16 @@ window.__ModuleLoader__.load({
 			return { text: stripInlineForExport(node.topic), lines: null };
 		}
 
-		/** 019 盒尺寸估算：文本按折行行数生长；表格按行列数算网格尺寸。 */
+		/** 019 盒尺寸估算：文本按折行行数生长；表格按行列数算网格尺寸。
+		 * 022：测量与渲染必须共用钳制后的列宽——先算盒宽再按 w/cols 折行，
+		 * 否则宽表（钳到 tableMaxW）按 110px 估行、渲染按更窄列宽折行，盒高不足。 */
 		function measureExportBox(node) {
 			if (node.kind === "table") {
 				const rows = (node.data && node.data.rows) || [];
 				const cols = rows.reduce((mx, row) => Math.max(mx, row.length), 0) || 1;
-				const cellInner = EXPORT.tableCellW - EXPORT.tableCellPad * 2;
-				const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), cellInner, EXPORT.fontSize - 1).length), 1));
 				const w = Math.min(EXPORT.tableMaxW, Math.max(EXPORT.tableMinW, cols * EXPORT.tableCellW));
+				const cellInner = w / cols - EXPORT.tableCellPad * 2;
+				const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), cellInner, EXPORT.fontSize - 1).length), 1));
 				const h = Math.max(EXPORT.lineHeight, rowLines.reduce((a, b) => a + b, 0) * EXPORT.lineHeight);
 				return { w, h };
 			}
@@ -1541,18 +1558,25 @@ window.__ModuleLoader__.load({
 		//#region 019 血肉渲染：行内格式 + 大一统链接 + 表格块（规范源：003）
 		// 行内格式统一扫描序：图片/链接 → 行内代码 → 粗体 → 删除线 → 斜体 → 裸链接。
 		// 先命中先生效，裸链接放最后，避免吞掉已被 [文字](url) 消费的 URL。
-		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s)]+)/g;
+		// 裸链接字符类排除 CJK 标点与全角符号（，。、；（）……），
+		// 否则中文句读被吞进 URL；ASCII 括号放行，由配平裁剪兜底。
+		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s\u3000-\u303f\uff00-\uffef]+)/g;
 
 		/** 大一统链接点击：在机器浏览器打开（新标签页），不触发画布聚焦缩放。 */
 		function openLink(event, url) {
-			event.preventDefault();
 			event.stopPropagation();
+			// 只在 window.open 成功后 preventDefault：宿主拦截（返回 null 或
+			// 抛错）时不拦，锚点自带的 target=_blank 原生导航接管——链接永远可达。
+			// （旧版 catch 里给只读属性 defaultPrevented 赋值是死代码，拦了默认
+			// 行为又开不了窗，链接彻底点不开。）
+			let opened = null;
 			try {
-				window.open(url, "_blank", "noopener");
+				opened = window.open(url, "_blank", "noopener");
 			} catch {
-				// 宿主环境拦截时退化为浏览器默认行为（不静默吞链接）。
-				event.defaultPrevented = false;
+				opened = null;
 			}
+			if (!opened) return;
+			event.preventDefault();
 		}
 
 		/**
@@ -1575,20 +1599,26 @@ window.__ModuleLoader__.load({
 					// [文字](url) 或 ![alt](url)。图片块暂缓（003 §9）：图语法退化为
 					// 指向原图的链接，同时把 alt 与原图地址都完整呈现（不缩减）。
 					const parsed = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
-					// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
-					const label = parsed[1]
-						? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
-						: (parsed[2] || parsed[3]);
-					out.push((0, react_jsx_runtime.jsx)("a", {
-						key,
-						href: parsed[3],
-						target: "_blank",
-						rel: "noopener noreferrer",
-						style: S.inlineLink,
-						title: parsed[3],
-						onClick: (e) => openLink(e, parsed[3]),
-						children: label,
-					}, key));
+					// scheme 白名单：只放行 http/https/mailto。javascript:/data:
+					// 等不进 href，整串原样退化为纯文本（不缩减，也不可执行）。
+					if (!/^\s*(https?:|mailto:)/i.test(parsed[3])) {
+						out.push(token);
+					} else {
+						// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
+						const label = parsed[1]
+							? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
+							: (parsed[2] || parsed[3]);
+						out.push((0, react_jsx_runtime.jsx)("a", {
+							key,
+							href: parsed[3],
+							target: "_blank",
+							rel: "noopener noreferrer",
+							style: S.inlineLink,
+							title: parsed[3],
+							onClick: (e) => openLink(e, parsed[3]),
+							children: label,
+						}, key));
+					}
 				} else if (m[2]) {
 					out.push((0, react_jsx_runtime.jsx)("code", { key, style: S.inlineCode, children: token.slice(1, -1) }, key));
 				} else if (m[3]) {
@@ -1598,17 +1628,30 @@ window.__ModuleLoader__.load({
 				} else if (m[5]) {
 					out.push((0, react_jsx_runtime.jsx)("em", { key, children: token.slice(1, -1) }, key));
 				} else {
-					// 裸链接：完整显示、可点击。
+					// 裸链接：完整显示、可点击。维基式配平括号属于 URL；未配平的
+					// 尾 ) 退回正文当纯文本——href 干净，可见文本不丢字符。
+					let url = token;
+					let opens = 0;
+					let closes = 0;
+					for (const ch of url) {
+						if (ch === "(") opens += 1;
+						else if (ch === ")") closes += 1;
+					}
+					while (closes > opens && url.endsWith(")")) {
+						url = url.slice(0, -1);
+						closes -= 1;
+					}
 					out.push((0, react_jsx_runtime.jsx)("a", {
 						key,
-						href: token,
+						href: url,
 						target: "_blank",
 						rel: "noopener noreferrer",
 						style: S.inlineLink,
-						title: token,
-						onClick: (e) => openLink(e, token),
-						children: token,
+						title: url,
+						onClick: (e) => openLink(e, url),
+						children: url,
 					}, key));
+					if (url.length < token.length) out.push(token.slice(url.length));
 				}
 				last = m.index + token.length;
 			}
@@ -3352,6 +3395,8 @@ window.__ModuleLoader__.load({
 			parseTableRow,
 			nodeFullText,
 			renderInline,
+			// 链接点击：供测试验证开窗成功才拦默认行为（宿主拦截时退回原生导航）。
+			openLink,
 			stripInlineForExport,
 			wrapExportText,
 			COLOR_THEMES,

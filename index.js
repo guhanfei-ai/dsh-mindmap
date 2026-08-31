@@ -9,12 +9,12 @@
 // - 四工具都带 path/name 参数（决策 3：多脑图并存，作用于指定那颗）。
 // - 结果 JSON {ok, op, path, rootTitle, content, renamedFrom?}：content 全文
 //   供模型续编辑，client 用同一份重放面板（工具结果即实时通道，002 第二节）。
-// - requireApproval 配置（决策 6）：默认 false 免审批；置 true 时 mindmap_update
-//   走原生 ask（tools/pre-execute，照 dsh-grafana 的钩子模式）。015 起经 settings
-//   namespace 可在设置面板运行时切换（见 SETTINGS_NAMESPACE/Config）。
+// - requireApproval 配置（决策 6）：默认 false 免审批；置 true 时 mindmap_create
+//   与 mindmap_update 走原生 ask（tools/pre-execute，照 dsh-grafana 的钩子模式）。
+//   015 起经 settings namespace 可在设置面板运行时切换（见 SETTINGS_NAMESPACE/Config）。
 // - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
 //   link 开发需先 npm i）。工具参数 schema 仍手写 JSON Schema（003 偏差 1）。
-import { access, opendir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { access, opendir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
@@ -26,7 +26,7 @@ export const inject = ['tools', 'systemPrompt', 'webServer', 'sessions']
 // defaultPanelWidth 供客户端面板取默认宽度（20-80 钳制由客户端执行）。
 export const SETTINGS_NAMESPACE = 'mindmap'
 export const Config = Schema.object({
-  requireApproval: Schema.boolean().default(false).description('Require native DSH approval for every mindmap_update (including renameRoot). Files are git-managed, so it defaults to off. Hidden from the settings panel; still honored at runtime.'),
+  requireApproval: Schema.boolean().default(false).description('Require native DSH approval for every mindmap_create and mindmap_update (including renameRoot). Files are git-managed, so it defaults to off. Hidden from the settings panel; still honored at runtime.'),
   defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).'),
   lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).'),
   cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.'),
@@ -113,15 +113,44 @@ function escapesBase(rel) {
   return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
 }
 
-/** 请求路径校验：缺省 = 根 cwd；显式路径必须绝对且落在 cwd 内。 */
-function resolveTreePath(cwd, input) {
+/**
+ * realpath 包含性校验（#5）：字符串规范化只挡字面 `..`，cwd 内指向外部
+ * 的符号链接能骗过它。尾部不存在的段（待建文件）向上走最近的存在祖先
+ * 逐个 realpath——符号链接只能藏在已存在的段里。解析后仍在 base 内返回
+ * true；base 自身不存在或越界返回 false。
+ */
+async function resolvesInsideBase(resolved, base) {
+  let realBase
+  try {
+    realBase = await realpath(base)
+  } catch {
+    return false
+  }
+  let probe = resolved
+  for (;;) {
+    try {
+      const real = await realpath(probe)
+      if (real === realBase) return true
+      return !escapesBase(relative(realBase, real))
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error
+      const parent = dirname(probe)
+      if (parent === probe) return false
+      probe = parent
+    }
+  }
+}
+
+/** 请求路径校验：缺省 = 根 cwd；显式路径必须绝对、落在 cwd 内，
+ *  且解析符号链接后仍在内（#5）。 */
+async function resolveTreePath(cwd, input) {
   if (!cwd) throw httpError(400, 'no-cwd', 'session has no working directory')
   if (input === undefined || input === null || String(input).trim() === '') return cwd
   const p = String(input).trim()
   if (!isAbsolute(p)) throw httpError(400, 'bad-request', `path must be absolute: ${JSON.stringify(p)}`)
   const resolved = resolvePath(p)
   const rel = relative(cwd, resolved)
-  if (escapesBase(rel)) {
+  if (escapesBase(rel) || !(await resolvesInsideBase(resolved, cwd))) {
     throw httpError(400, 'bad-request', `path must stay inside the session working directory (${cwd})`)
   }
   return resolved
@@ -140,8 +169,10 @@ async function listDirectoryLevel(path, maxEntries = MAX_TREE_ENTRIES) {
   try {
     for await (const dirent of dir) {
       if (rows.length >= maxEntries) {
-        overflow += 1
-        continue
+        // 022：到达上限即停（旧实现 continue 会把巨型目录整个遍历一遍）。
+        // truncated 只取布尔语义，无需精确计数剩余条目。
+        overflow = 1
+        break
       }
       rows.push({
         name: dirent.name,
@@ -204,7 +235,7 @@ function sanitizeStem(input) {
  * 且必须以 .md 结尾。cwd 缺失时仅接受绝对路径。
  * @returns 绝对规范化路径。
  */
-function resolveMindmapPath(cwd, input) {
+async function resolveMindmapPath(cwd, input) {
   if (typeof input !== 'string' || !input.trim()) throw new Error('path is required.')
   const p = input.trim()
   if (!/\.md$/i.test(p)) throw new Error(`mindmap path must end with .md: ${JSON.stringify(p)}.`)
@@ -214,7 +245,8 @@ function resolveMindmapPath(cwd, input) {
   }
   const resolved = resolvePath(cwd, p)
   const rel = relative(cwd, resolved)
-  if (rel === '' || escapesBase(rel)) {
+  // realpath 兜底（#5）：写路径经符号链接越狱是安全敏感操作。
+  if (rel === '' || escapesBase(rel) || !(await resolvesInsideBase(resolved, cwd))) {
     throw new Error(`mindmap path must stay inside the session working directory (${cwd}).`)
   }
   return resolved
@@ -288,10 +320,18 @@ export function apply(ctx, config = {}) {
 
   // 后悔药开关（决策 6）：钩子常驻注册，运行时读 activeConfig().requireApproval
   // ——设置面板切换立即生效；关闭时直接放行（默认 false 免审批）。
+  // 022：create 同为写路径，一并纳入审批（CONTRIBUTING：所有写路径安全敏感）。
   ctx.on('tools/pre-execute', async (exec, next) => {
     const decision = await next()
     if (decision.kind !== 'allow') return decision
     if (!activeConfig().requireApproval) return decision
+    if (exec.name === 'mindmap_create') {
+      const args = exec.arguments ?? {}
+      return {
+        kind: 'ask',
+        reason: `Create mindmap ${JSON.stringify(String(args.name ?? '?'))}. dsh-mindmap is configured with requireApproval.`,
+      }
+    }
     if (exec.name !== 'mindmap_update') return decision
     const args = exec.arguments ?? {}
     const renameNote = typeof args.renameRoot === 'string' && args.renameRoot ? `, rename root to "${args.renameRoot}"` : ''
@@ -318,7 +358,7 @@ export function apply(ctx, config = {}) {
       const cwd = sessionCwd(exec)
       if (!cwd) throw new Error('The session has no working directory; cannot create a mindmap.')
       const stem = sanitizeStem(args?.name)
-      const path = resolveMindmapPath(cwd, `${stem}.md`)
+      const path = await resolveMindmapPath(cwd, `${stem}.md`)
       // wx = 不存在才创建：原子拒绝已存在（含并发竞态）与同名目录，无 TOCTOU 窗口。
       try {
         await writeFile(path, '', { encoding: 'utf8', flag: 'wx' })
@@ -345,7 +385,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'string' }, render: (_args, value) => textOut(value) },
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
-      const path = resolveMindmapPath(sessionCwd(exec), args?.path)
+      const path = await resolveMindmapPath(sessionCwd(exec), args?.path)
       const content = await readFile(path, 'utf8')
       return buildResult('open', path, { content })
     },
@@ -364,7 +404,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'string' }, render: (_args, value) => textOut(value) },
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
-      const path = resolveMindmapPath(sessionCwd(exec), args?.path)
+      const path = await resolveMindmapPath(sessionCwd(exec), args?.path)
       const content = await readFile(path, 'utf8')
       return buildResult('get', path, { content })
     },
@@ -386,7 +426,7 @@ export function apply(ctx, config = {}) {
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
       const cwd = sessionCwd(exec)
-      const path = resolveMindmapPath(cwd, args?.path)
+      const path = await resolveMindmapPath(cwd, args?.path)
       const hasContent = typeof args?.content === 'string'
       if (!hasContent && typeof args?.renameRoot !== 'string') {
         throw new Error('mindmap_update requires content (or renameRoot alone for a pure rename).')
@@ -453,7 +493,7 @@ export function apply(ctx, config = {}) {
           sendJson(res, 400, { ok: false, error: { code: 'no-cwd', message: 'session has no working directory' } })
           return
         }
-        const dir = resolveTreePath(cwd, payload.path)
+        const dir = await resolveTreePath(cwd, payload.path)
         const listing = await listDirectoryLevel(dir)
         sendJson(res, 200, { ok: true, value: { ...listing, cwd } })
       } catch (error) {

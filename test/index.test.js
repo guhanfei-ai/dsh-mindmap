@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
 import { apply, internals } from '../index.js'
 
-const { sanitizeStem, resolveMindmapPath, resolveTreePath, isTrustedRequest, buildResult } = internals
+const { sanitizeStem, resolveMindmapPath, resolveTreePath, listDirectoryLevel, isTrustedRequest, buildResult } = internals
 
 function execution(cwd) {
   return {
@@ -255,7 +255,24 @@ test('paths must stay inside the working directory and end with .md', async () =
   await assert.rejects(async () => resolveMindmapPath(cwd, '/etc/passwd.md'), /stay inside/)
   await assert.rejects(async () => resolveMindmapPath(cwd, 'notes.txt'), /\.md/)
   // cwd 缺失时接受绝对路径
-  assert.equal(resolveMindmapPath(null, '/tmp/x/../y.md'), '/tmp/y.md')
+  assert.equal(await resolveMindmapPath(null, '/tmp/x/../y.md'), '/tmp/y.md')
+})
+
+test('resolveMindmapPath rejects symlink escapes out of the working directory', async () => {
+  // 字符串规范化挡不住符号链接：cwd 内的链接指向外部时，读写会越狱。
+  const cwd = await tmpWorkspace()
+  const outside = await tmpWorkspace()
+  await writeFile(join(outside, 'secret.md'), '', 'utf8')
+  await symlink(join(outside, 'secret.md'), join(cwd, 'link-out.md'))
+  await symlink(outside, join(cwd, 'dir-out'))
+  await assert.rejects(async () => resolveMindmapPath(cwd, 'link-out.md'), /stay inside/)
+  await assert.rejects(async () => resolveMindmapPath(cwd, 'dir-out/secret.md'), /stay inside/)
+  // 指向 cwd 内部的符号链接仍然合法
+  await writeFile(join(cwd, 'inside.md'), '', 'utf8')
+  await symlink(join(cwd, 'inside.md'), join(cwd, 'link-in.md'))
+  assert.equal(await resolveMindmapPath(cwd, 'link-in.md'), join(cwd, 'link-in.md'))
+  // 尚不存在的新建路径（mindmap_create）照常放行
+  assert.equal(await resolveMindmapPath(cwd, 'fresh.md'), join(cwd, 'fresh.md'))
 })
 
 test('sanitizeStem strips .md and normalizes input', () => {
@@ -270,7 +287,7 @@ test('buildResult derives rootTitle from the path', () => {
   assert.equal(parsed.ok, true)
 })
 
-test('requireApproval gates mindmap_update only, and reads the settings namespace at runtime', async () => {
+test('requireApproval gates mindmap_create and mindmap_update, and reads the settings namespace at runtime', async () => {
   // 015：pre-execute 钩子常驻注册；默认（false）直接放行
   const plain = createContext()
   const plainListener = plain.listeners.get('tools/pre-execute')
@@ -286,6 +303,10 @@ test('requireApproval gates mindmap_update only, and reads the settings namespac
   const askUpdate = await listener({ name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }, next)
   assert.equal(askUpdate.kind, 'ask')
   assert.ok(askUpdate.reason.includes('Write mindmap'))
+  // 022：create 同为写路径，同样走审批（CONTRIBUTING：所有写路径安全敏感）
+  const askCreate = await listener({ name: 'mindmap_create', arguments: { name: 'x' } }, next)
+  assert.equal(askCreate.kind, 'ask')
+  assert.ok(askCreate.reason.includes('Create mindmap'))
   const askOther = await listener({ name: 'mindmap_get', arguments: {} }, next)
   assert.deepEqual(askOther, { kind: 'allow' })
   // 上游已拒绝时透传
@@ -415,10 +436,25 @@ test('isTrustedRequest accepts same-origin and rejects cross-site/missing host',
 
 test('resolveTreePath defaults to cwd and requires absolute paths inside it', async () => {
   const cwd = await tmpWorkspace()
-  assert.equal(resolveTreePath(cwd, undefined), cwd)
-  assert.equal(resolveTreePath(cwd, ''), cwd)
-  assert.equal(resolveTreePath(cwd, join(cwd, 'sub')), join(cwd, 'sub'))
-  assert.throws(() => resolveTreePath(cwd, '../x'), /must be absolute/)
-  assert.throws(() => resolveTreePath(cwd, '/etc'), /stay inside/)
-  assert.throws(() => resolveTreePath(null, undefined), /no working directory/)
+  assert.equal(await resolveTreePath(cwd, undefined), cwd)
+  assert.equal(await resolveTreePath(cwd, ''), cwd)
+  assert.equal(await resolveTreePath(cwd, join(cwd, 'sub')), join(cwd, 'sub'))
+  await assert.rejects(async () => resolveTreePath(cwd, '../x'), /must be absolute/)
+  await assert.rejects(async () => resolveTreePath(cwd, '/etc'), /stay inside/)
+  await assert.rejects(async () => resolveTreePath(null, undefined), /no working directory/)
+  // 符号链接越狱同样拒绝（realpath 一层兜底）
+  const outside = await tmpWorkspace()
+  await symlink(outside, join(cwd, 'dir-out'))
+  await assert.rejects(async () => resolveTreePath(cwd, join(cwd, 'dir-out')), /stay inside/)
+})
+
+test('listDirectoryLevel caps entries at maxEntries and flags truncation', async () => {
+  const cwd = await tmpWorkspace()
+  for (let i = 0; i < 5; i += 1) await writeFile(join(cwd, `f${i}.md`), '', 'utf8')
+  const capped = await listDirectoryLevel(cwd, 3)
+  assert.equal(capped.entries.length, 3)
+  assert.equal(capped.truncated, true)
+  const full = await listDirectoryLevel(cwd)
+  assert.equal(full.entries.length, 5)
+  assert.equal(full.truncated, false)
 })
