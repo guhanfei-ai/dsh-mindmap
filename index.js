@@ -65,9 +65,21 @@ function textOut(value) {
   return [{ type: 'text', text: String(value) }]
 }
 
-/** 会话工作目录：工具执行的 agent → session → header.cwd（dsh-session 契约）。 */
-function sessionCwd(exec) {
-  return exec?.agent?.session?.header?.cwd
+/**
+ * 会话工作目录：工具执行的 agent → session → header.cwd（dsh-session 契约）。
+ * 023 双路径：dsh ≤0.1.1 的 Agent 直挂 live session（agent.session.header.cwd）；
+ * 0.1.2-rc.1 起 Agent 只剩 { id }，改经 sessions 服务按 id 查 header.cwd
+ * （SessionStore.get / SessionHeader.cwd 两代同名）。旧链优先，新链兜底。
+ */
+function sessionCwd(exec, sessions) {
+  const direct = exec?.agent?.session?.header?.cwd
+  if (direct) return direct
+  const id = exec?.agent?.id
+  if (id && sessions?.get) {
+    const cwd = sessions.get(id)?.header?.cwd
+    if (cwd) return cwd
+  }
+  return undefined
 }
 
 //#region 013 目录树 API（host 自建只读 HTTP 路由；dsh-better-sidebar 同款机制）
@@ -355,7 +367,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'string' }, render: (_args, value) => textOut(value) },
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
-      const cwd = sessionCwd(exec)
+      const cwd = sessionCwd(exec, ctx.sessions)
       if (!cwd) throw new Error('The session has no working directory; cannot create a mindmap.')
       const stem = sanitizeStem(args?.name)
       const path = await resolveMindmapPath(cwd, `${stem}.md`)
@@ -385,7 +397,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'string' }, render: (_args, value) => textOut(value) },
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
-      const path = await resolveMindmapPath(sessionCwd(exec), args?.path)
+      const path = await resolveMindmapPath(sessionCwd(exec, ctx.sessions), args?.path)
       const content = await readFile(path, 'utf8')
       return buildResult('open', path, { content })
     },
@@ -404,7 +416,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'string' }, render: (_args, value) => textOut(value) },
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
-      const path = await resolveMindmapPath(sessionCwd(exec), args?.path)
+      const path = await resolveMindmapPath(sessionCwd(exec, ctx.sessions), args?.path)
       const content = await readFile(path, 'utf8')
       return buildResult('get', path, { content })
     },
@@ -425,7 +437,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'string' }, render: (_args, value) => textOut(value) },
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
-      const cwd = sessionCwd(exec)
+      const cwd = sessionCwd(exec, ctx.sessions)
       const path = await resolveMindmapPath(cwd, args?.path)
       const hasContent = typeof args?.content === 'string'
       if (!hasContent && typeof args?.renameRoot !== 'string') {

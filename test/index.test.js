@@ -314,10 +314,18 @@ test('requireApproval gates mindmap_create and mindmap_update, and reads the set
   assert.equal(await listener({ name: 'mindmap_update', arguments: {} }, async () => denied), denied)
 })
 
-test('session cwd comes from exec.agent.session.header.cwd', () => {
+test('session cwd comes from the ≤0.1.1 agent.session chain first, then the 0.1.2-rc.1 agent.id lookup', () => {
+  // 023：dsh ≤0.1.1 的 Agent 直挂 live session——旧链优先，语义不变。
   assert.equal(internals.sessionCwd(execution('/w')), '/w')
   assert.equal(internals.sessionCwd({}), undefined)
   assert.equal(internals.sessionCwd(), undefined)
+  // 0.1.2-rc.1 起 Agent 只剩 { id }，经 sessions 服务按 id 查 header.cwd。
+  const sessions = { get: (id) => (id === 's1' ? { header: { cwd: '/w2' } } : undefined) }
+  assert.equal(internals.sessionCwd({ agent: { id: 's1' } }, sessions), '/w2')
+  assert.equal(internals.sessionCwd({ agent: { id: 'missing' } }, sessions), undefined)
+  assert.equal(internals.sessionCwd({ agent: { id: 's1' } }), undefined)
+  // 两链并存（升级窗口期）时旧链优先
+  assert.equal(internals.sessionCwd({ agent: { id: 's1', session: { header: { cwd: '/w-old' } } } }, sessions), '/w-old')
 })
 
 // —— 013 目录树路由 ——

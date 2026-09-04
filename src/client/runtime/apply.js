@@ -1,4 +1,17 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
+		/**
+		 * settings describe 应答的双代信封解析（023）：dsh ≤0.1.1 的远端把
+		 * 描述符聚合在 result.value.namespaces[]；0.1.2-rc.1 起直接返回描述符
+		 * 数组（每项 {ns, schema, value, …}，字段两代同名）。数组优先、
+		 * namespaces 兜底，两代通吃。
+		 */
+		function settingsNamespacesOf(res) {
+			const value = res?.result?.value;
+			if (Array.isArray(value)) return value;
+			const list = value?.namespaces;
+			return Array.isArray(list) ? list : [];
+		}
+
 		function apply(ctx) {
 			const face = {};
 
@@ -60,7 +73,7 @@
 			face.readSettings = async () => {
 				if (!settingsApi || typeof settingsApi.settings?.describe !== "function") return null;
 				const res = await settingsApi.settings.describe({});
-				const namespaces = res?.result?.value?.namespaces ?? [];
+				const namespaces = settingsNamespacesOf(res);
 				const ns = namespaces.find((n) => n?.ns === "mindmap");
 				return ns?.value ?? null;
 			};
@@ -142,6 +155,9 @@
 			isActivatable,
 			TOOL_NAMES,
 			OPENING_OPS,
+			// 023 双代兼容纯函数（供测试）：会话内容节点 / settings 信封。
+			conversationNodesOf,
+			settingsNamespacesOf,
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
 		});

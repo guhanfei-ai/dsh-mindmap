@@ -7,9 +7,10 @@
 // - 脑图面板：014 起注册在 shell.overlay（list 槽、root scope、点击穿透层），
 //   右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，localStorage 持久化）；
 //   details 槽已归还官方（原生「工具详情」栏恢复，003 的顶替方案退役）。
-// - 实时数据通路：消费会话快照（useSession → nodes）里 mindmap_* 工具的
-//   ToolResultNode，重放出各文档的最新内容并渲染（002/003：无自定义事件通道，
-//   工具调用本身就是事件流）。
+// - 实时数据通路：消费会话快照里 mindmap_* 工具的 ToolResultNode，重放出各文档
+//   的最新内容并渲染（002/003：无自定义事件通道，工具调用本身就是事件流）。
+//   023 双代：useChat → ChatSnapshot.legacy.nodes（dsh 0.1.2-rc.1+）优先，
+//   useSession → SessionSnapshot.nodes（dsh ≤0.1.1）兜底。
 // - markdown→脑图树：本文件内置零依赖解析器（MarkGrove mdastConverter 的映射
 //   语法移植：标题栈→树、列表→子节点、空列表项=占位节点、代码块→首行摘要叶
 //   节点、段落→挂标题的正文说明、结构路径稳定 ID）。
@@ -1499,19 +1500,34 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 会话内容节点的双代快照选择（023）：dsh ≤0.1.1 的 useSession 快照带
+		 * 平铺 nodes；0.1.2-rc.1 起 SessionSnapshot 拆成纯控制状态，会话内容
+		 * 迁入 useChat 的 ChatSnapshot.legacy.nodes（官方兼容面，ToolResultNode
+		 * 字段同名）。legacy 优先、旧 nodes 兜底，两代通吃。
+		 */
+		function conversationNodesOf(s) {
+			if (!s) return EMPTY_NODES;
+			const legacy = s.legacy;
+			if (legacy && Array.isArray(legacy.nodes)) return legacy.nodes;
+			return Array.isArray(s.nodes) ? s.nodes : EMPTY_NODES;
+		}
+
+		/**
 		 * 「思维脑图」槽位组件（014）：同一槽位渲染 M 按钮 + 悬浮面板宿主层。
 		 * session scope 的 useSession/sessionId/inputActions 直给，经 props 传给
 		 * MindmapDetailsPanel（无桥、无 useSyncExternalStore——shell.overlay 跨槽
-		 * 方案实测未渲染，弃用后顺手把桥也删了）。
+		 * 方案实测未渲染，弃用后顺手把桥也删了）。023：内容钩子改为
+		 * useChat（0.1.2-rc.1+）优先、useSession（≤0.1.1）兜底。
 		 */
 		function MindmapSlot(props) {
-			const { useSession, sessionId, inputActions, mindmapFace } = props;
-			const nodes = useSession ? useSession((s) => (s && s.nodes) || EMPTY_NODES) : EMPTY_NODES;
+			const { useSession, useChat, sessionId, inputActions, mindmapFace } = props;
+			const nodesHook = useChat ?? useSession;
+			const nodes = nodesHook ? nodesHook(conversationNodesOf) : EMPTY_NODES;
 			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
 			// 不变）时，nodes prop 不换、memo 命中缓存、auto-open effect 永不
 			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
-			// 值比较天然绕过引用相等短路；useSession 不可用时回退空串。
-			const nodesVersion = useSession ? useSession((s) => nodesFingerprint((s && s.nodes) || EMPTY_NODES)) : "";
+			// 值比较天然绕过引用相等短路；内容钩子不可用时回退空串。
+			const nodesVersion = nodesHook ? nodesHook((s) => nodesFingerprint(conversationNodesOf(s))) : "";
 			const [open, setOpen] = react.useState(false);
 			return (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [
 				(0, react_jsx_runtime.jsxs)("button", {
@@ -3270,6 +3286,19 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		/**
+		 * settings describe 应答的双代信封解析（023）：dsh ≤0.1.1 的远端把
+		 * 描述符聚合在 result.value.namespaces[]；0.1.2-rc.1 起直接返回描述符
+		 * 数组（每项 {ns, schema, value, …}，字段两代同名）。数组优先、
+		 * namespaces 兜底，两代通吃。
+		 */
+		function settingsNamespacesOf(res) {
+			const value = res?.result?.value;
+			if (Array.isArray(value)) return value;
+			const list = value?.namespaces;
+			return Array.isArray(list) ? list : [];
+		}
+
 		function apply(ctx) {
 			const face = {};
 
@@ -3331,7 +3360,7 @@ window.__ModuleLoader__.load({
 			face.readSettings = async () => {
 				if (!settingsApi || typeof settingsApi.settings?.describe !== "function") return null;
 				const res = await settingsApi.settings.describe({});
-				const namespaces = res?.result?.value?.namespaces ?? [];
+				const namespaces = settingsNamespacesOf(res);
 				const ns = namespaces.find((n) => n?.ns === "mindmap");
 				return ns?.value ?? null;
 			};
@@ -3413,6 +3442,9 @@ window.__ModuleLoader__.load({
 			isActivatable,
 			TOOL_NAMES,
 			OPENING_OPS,
+			// 023 双代兼容纯函数（供测试）：会话内容节点 / settings 信封。
+			conversationNodesOf,
+			settingsNamespacesOf,
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
 		});

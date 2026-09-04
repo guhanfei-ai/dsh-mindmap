@@ -63,11 +63,43 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
   assert.deepEqual(Array.from(runtime.inject), ['slots'])
+})
+
+test('conversationNodesOf reads legacy.nodes (0.1.2-rc.1+) first and falls back to s.nodes (≤0.1.1)', () => {
+  // 023 双代快照选择：0.1.2-rc.1 的 SessionSnapshot 不带 nodes，会话内容
+  // 在 useChat 的 ChatSnapshot.legacy.nodes；旧版快照直接带 s.nodes。
+  const legacyNodes = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' })]
+  const oldNodes = [toolResultNode('mindmap_get', { ok: true, op: 'get', path: '/w/b.md', content: 'b' })]
+  assert.equal(conversationNodesOf({ legacy: { nodes: legacyNodes } }), legacyNodes)
+  assert.equal(conversationNodesOf({ nodes: oldNodes }), oldNodes)
+  // 双形态并存（升级窗口期）时 legacy 优先
+  assert.equal(conversationNodesOf({ legacy: { nodes: legacyNodes }, nodes: oldNodes }), legacyNodes)
+  // legacy.nodes 非数组时不采用，回退 s.nodes
+  assert.equal(conversationNodesOf({ legacy: { nodes: 'broken' }, nodes: oldNodes }), oldNodes)
+  // 缺失/畸形输入回退共享空数组常量（selector 值比较稳定）
+  assert.equal(conversationNodesOf({}), conversationNodesOf(null))
+  assert.equal(conversationNodesOf(undefined).length, 0)
+})
+
+test('settingsNamespacesOf parses the array envelope (0.1.2-rc.1+) and the namespaces aggregate (≤0.1.1)', () => {
+  // 023 双代信封：0.1.2-rc.1 的 describe 直接返回描述符数组；≤0.1.1 聚合在
+  // result.value.namespaces。描述符条目字段 ns/value 两代同名。
+  const descriptors = [{ ns: 'mindmap', value: { requireApproval: false } }, { ns: 'other', value: {} }]
+  assert.deepEqual(settingsNamespacesOf({ result: { value: descriptors } }), descriptors)
+  assert.deepEqual(settingsNamespacesOf({ result: { value: { namespaces: descriptors } } }), descriptors)
+  // 空值/畸形应答回退空数组（面板降级路径，不抛错）。
+  // 断言形状而非 deepEqual([])：vm realm 造出的 [] 与本 realm 的 []
+  // 结构相等但原型不同源，deepStrictEqual 会误报 not reference-equal。
+  for (const bad of [{ result: {} }, null, { result: { value: { namespaces: 'broken' } } }]) {
+    const out = settingsNamespacesOf(bad)
+    assert.equal(Array.isArray(out), true)
+    assert.equal(out.length, 0)
+  }
 })
 
 test('headings nest by level with H1 children of the root', () => {

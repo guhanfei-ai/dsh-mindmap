@@ -8,9 +8,10 @@
 // - 脑图面板：014 起注册在 shell.overlay（list 槽、root scope、点击穿透层），
 //   右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，localStorage 持久化）；
 //   details 槽已归还官方（原生「工具详情」栏恢复，003 的顶替方案退役）。
-// - 实时数据通路：消费会话快照（useSession → nodes）里 mindmap_* 工具的
-//   ToolResultNode，重放出各文档的最新内容并渲染（002/003：无自定义事件通道，
-//   工具调用本身就是事件流）。
+// - 实时数据通路：消费会话快照里 mindmap_* 工具的 ToolResultNode，重放出各文档
+//   的最新内容并渲染（002/003：无自定义事件通道，工具调用本身就是事件流）。
+//   023 双代：useChat → ChatSnapshot.legacy.nodes（dsh 0.1.2-rc.1+）优先，
+//   useSession → SessionSnapshot.nodes（dsh ≤0.1.1）兜底。
 // - markdown→脑图树：本文件内置零依赖解析器（MarkGrove mdastConverter 的映射
 //   语法移植：标题栈→树、列表→子节点、空列表项=占位节点、代码块→首行摘要叶
 //   节点、段落→挂标题的正文说明、结构路径稳定 ID）。
