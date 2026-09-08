@@ -169,6 +169,14 @@
 			planGrowthReveal,
 			relPathWithin,
 			visibleTreeRows,
+			// 025 草稿保护：宿主草稿读取面的能力探测（供测试）。
+			readDraftText,
+			draftBlocksAutoSend,
+			// 025 子树折叠：视图态纯函数 + 节点行组件（供测试）。
+			toggleCollapsed,
+			countDescendants,
+			pruneCollapsed,
+			TreeRow,
 			// 019 皮肤层与血肉层纯函数（供测试）。
 			resolveToken,
 			resolveNodeStyle,

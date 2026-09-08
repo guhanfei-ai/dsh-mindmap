@@ -958,6 +958,75 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		//#region 025 草稿保护：能力探测（宿主是否让插件读到聊天草稿）
+		/**
+		 * 读取当前聊天草稿。宿主契约只保证 setDraft/submit，读取面属可选能力：
+		 * 逐个探测已知形态，读不到返回 null（= 不可知，不等于空草稿）。
+		 */
+		function readDraftText(inputActions) {
+			if (!inputActions) return null;
+			try {
+				if (typeof inputActions.getDraft === "function") return String(inputActions.getDraft() ?? "");
+				if (typeof inputActions.draft === "string") return inputActions.draft;
+				if (typeof inputActions.getState === "function") {
+					const state = inputActions.getState();
+					if (state && typeof state.draft === "string") return state.draft;
+				}
+			} catch {
+				return null;
+			}
+			return null;
+		}
+
+		/**
+		 * 是否因「已有未发送草稿」而放弃自动发送。只有确实读到非空草稿才拦截；
+		 * 读不到时不拦——否则在不暴露草稿的宿主上，点目录文件会完全打不开。
+		 */
+		function draftBlocksAutoSend(inputActions) {
+			const draft = readDraftText(inputActions);
+			return typeof draft === "string" && draft.trim() !== "";
+		}
+		//#endregion
+
+		//#region 025 子树折叠：画布视图态纯函数（不进 markdown 资产，只影响呈现）
+		/** 折叠集合切换：恒返回新集合，React 状态可直接按引用比较。 */
+		function toggleCollapsed(collapsed, id) {
+			const next = new Set(collapsed ?? []);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		}
+
+		/** 子孙节点总数：折叠后用于提示「隐藏了多少节点」。 */
+		function countDescendants(node) {
+			let total = 0;
+			const walk = (n) => {
+				for (const child of n.children ?? []) {
+					total += 1;
+					walk(child);
+				}
+			};
+			if (node) walk(node);
+			return total;
+		}
+
+		/**
+		 * 丢弃当前树里已不存在的折叠 id（AI 改写文档后旧 id 会失效）。
+		 * 没有变化时原样返回入参，避免制造新引用触发多余重渲染。
+		 */
+		function pruneCollapsed(collapsed, tree) {
+			if (!collapsed || collapsed.size === 0) return collapsed;
+			const ids = collectTreeIds(tree);
+			let changed = false;
+			const next = new Set();
+			for (const id of collapsed) {
+				if (ids.has(id)) next.add(id);
+				else changed = true;
+			}
+			return changed ? next : collapsed;
+		}
+		//#endregion
+
 		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
 		// 019 可变盒高布局：盒高按内容估行数（全量换行的导出形态），表格节点加宽；
 		// 布局契约不变——叶子自上而下占行、父节点垂直居中于其子块。
@@ -1316,7 +1385,11 @@ window.__ModuleLoader__.load({
 			swatchActive: { borderColor: "var(--dsw-alias-state-business-primary)", color: "var(--dsw-alias-label-primary)", boxShadow: "inset 0 0 0 1px var(--dsw-alias-state-business-primary)" },
 			swatchDot: { width: "10px", height: "10px", borderRadius: "50%", flex: "none" },
 			row: { display: "flex", alignItems: "center", minWidth: 0 },
-			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "40px", minWidth: 0 },
+			// 025：子列左距 16 + 折叠开关（16 宽 + 左右各 4 外距）= 折叠前的 40，
+			// 连线长度与既有版式保持一致。
+			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "16px", minWidth: 0 },
+			// 025 折叠开关：压在连线起点上的小圆钮，叶子节点不渲染。
+			collapseToggle: { flex: "none", width: "16px", height: "16px", margin: "0 4px", padding: 0, borderRadius: "50%", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-secondary)", font: "inherit", fontSize: "11px", lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 1 },
 			// 面板树连线层：正交折线（MarkGrove 的 orthogonalPath 风格），
 			// 覆盖整行、点击穿透、置于节点盒之下。
 			// 016：去掉 CSS width/height 百分比——在 auto-height 的 flex 行内，
@@ -1784,7 +1857,10 @@ window.__ModuleLoader__.load({
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel } = props;
+			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse } = props;
+			// 025 折叠：纯视图态——markdown 资产不变，导出仍取完整子树。
+			const hasChildren = Boolean(node.children && node.children.length > 0);
+			const isCollapsed = hasChildren && Boolean(collapsed && collapsed.has(node.id));
 			// 018 生长动画：本节点渐显延迟（新节点盒）与本行连线渐显延迟（有新子节点）。
 			const revealDelay = reveal && reveal.nodes ? reveal.nodes.get(node.id) : undefined;
 			const edgeRevealDelay = reveal && reveal.edges ? reveal.edges.get(node.id) : undefined;
@@ -1821,7 +1897,8 @@ window.__ModuleLoader__.load({
 					const rowRect = rowEl.getBoundingClientRect();
 					const boxRect = boxEl.getBoundingClientRect();
 					const next = [];
-					for (const ref of childRefs.current) {
+					// 折叠时子列未挂载：不量、不画线（ref 回调已置空，这里再兜一层）。
+					for (const ref of isCollapsed ? [] : childRefs.current) {
 						if (!ref) continue;
 						const c = ref.getBoundingClientRect();
 						// 视觉像素 → 行本地坐标（SVG 用户空间 = 本地空间）。
@@ -1899,13 +1976,30 @@ window.__ModuleLoader__.load({
 					} : undefined,
 					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel }),
 				}),
-				node.children && node.children.length > 0
-					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
+				// 025 折叠开关：坐在盒与子列之间的连线起点上（有子节点才出现）。
+				// stopPropagation 保证点它不触发画布的「点节点聚焦 / 点空白取消选中」。
+				hasChildren
+					? (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						"data-mindmap-collapse": "",
+						style: S.collapseToggle,
+						title: isCollapsed ? `展开子树（已隐藏 ${countDescendants(node)} 个节点）` : "折叠子树",
+						"aria-expanded": isCollapsed ? "false" : "true",
+						onClick: (e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							if (onToggleCollapse) onToggleCollapse(node.id);
+						},
+						children: isCollapsed ? "+" : "−",
+					})
+					: null,
+				hasChildren && !isCollapsed
+					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, "data-mindmap-children": "", children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
 						key: child.id,
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse }),
 					}, child.id)) })
 					: null,
 				] });
@@ -1987,6 +2081,12 @@ window.__ModuleLoader__.load({
 					};
 				}
 
+				/** 按下点是否落在画布内的交互控件上（这类按下不启动平移，留给控件自己）。 */
+				function isCanvasControl(el) {
+					if (!el || typeof el.closest !== "function") return false;
+					return Boolean(el.closest("button, a[href], input, textarea, select, [role='button']"));
+				}
+
 				/** 空格键是否落在可输入元素里（聊天框/输入框与面板同 document，不能抢空格）。 */
 				function isTextEntry(el) {
 					if (!el || typeof el.tagName !== "string") return false;
@@ -2045,6 +2145,9 @@ window.__ModuleLoader__.load({
 							const nodeMenuRef = react.useRef(null);
 							// 019 选中态：点击聚焦的节点下选选中环（002 §6 状态体系）。
 							const [selectedId, setSelectedId] = react.useState(null);
+							// 025 折叠子树：纯视图态（不写回 markdown，导出仍取完整子树）。
+							// 切换文档时全部展开；AI 改写后清掉已消失节点的折叠标记。
+							const [collapsed, setCollapsed] = react.useState(() => new Set());
 							// 019 代码块悬停浮层：{node, anchor}；null = 关闭。延迟关闭（150ms
 							// 宽限）让鼠标能从节点盒移到面板上滚动全文，不闪灭。
 							const [codePanel, setCodePanel] = react.useState(null);
@@ -2108,6 +2211,7 @@ window.__ModuleLoader__.load({
 								userZoomedRef.current = false;
 								lastNaturalRef.current = null;
 								fitStampRef.current = [];
+								setCollapsed((prev) => (prev.size > 0 ? new Set() : prev));
 								const id = requestAnimationFrame(applyFit);
 								return () => cancelAnimationFrame(id);
 							}, [fitKey]);
@@ -2204,6 +2308,10 @@ window.__ModuleLoader__.load({
 					const scroller = scrollRef.current;
 					if (!scroller || panRef.current) return;
 					const target = e.target;
+					// 025：画布内的控件（折叠开关等）必须先于平移拿到这次按下。
+					// 否则 setPointerCapture 会把随后的 click 改派到滚动区，按钮
+					// 永远收不到点击——「折叠按钮点了没反应」的根因。
+					if (isCanvasControl(target)) return;
 					const onNode = Boolean(target && typeof target.closest === "function" && target.closest("[data-mindmap-node]"));
 					if (!shouldStartPan(e.button, { onNode, spaceHeld: spaceRef.current, touch: e.pointerType === "touch" })) return;
 					// 中键：掐掉浏览器自动滚动；左键：掐掉拖选文本。
@@ -2395,7 +2503,13 @@ window.__ModuleLoader__.load({
 					setNodeMenu(null);
 					// 019：文档内容变化时同步收掉代码浮层（节点对象已失效）。
 					setCodePanel(null);
+					// 025：树重解析后丢弃已消失节点的折叠标记（无变化时保持原引用）。
+					setCollapsed((prev) => pruneCollapsed(prev, node));
 				}, [node]);
+
+				function toggleCollapse(id) {
+					setCollapsed((prev) => toggleCollapsed(prev, id));
+				}
 
 				// 017 右键节点：记录菜单锚点与目标子树（清掉上次的忙碌/错误态）。
 				function onNodeContextMenu(e, target) {
@@ -2461,7 +2575,7 @@ window.__ModuleLoader__.load({
 						children: 
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
 							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel })
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse })
 							})
 						})
 					}),
@@ -2842,7 +2956,7 @@ window.__ModuleLoader__.load({
 				if (focusPath === active) return;
 				if (focusSentRef.current === active) return; // 已发过，等 AI 结果追平
 				const rel = fsTree.cwd ? relPathWithin(fsTree.cwd, active, stemOf(active)) : active;
-				if (submitEmptyDraft(`用 mindmap_open 打开 ${rel}`)) {
+				if (submitChatCommand(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
 				}
 			}, [active, focusPath, fsTree.cwd, docs, open]);
@@ -2861,19 +2975,15 @@ window.__ModuleLoader__.load({
 			}
 
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
-			// 只有宿主能确认草稿为空时才允许替换；未知/非空均保守放行给用户，
-			// 不让目录打开或焦点同步静默丢失正在编辑的消息。
-			function draftIsEmpty() {
-				if (!inputActions || typeof inputActions.getDraft !== "function") return false;
-				try {
-					return !String(inputActions.getDraft() ?? "").trim();
-				} catch {
-					return false;
-				}
+			// 草稿保护：确实读到非空草稿才让路（改走剪贴板），读不到就按既有
+			// 行为直填直发——宿主不暴露草稿时不能把功能整个卡死。
+			function draftBlocked() {
+				return draftBlocksAutoSend(inputActions);
 			}
 
-			function submitEmptyDraft(text) {
-				if (!draftIsEmpty() || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
+			function submitChatCommand(text) {
+				if (draftBlocked()) return false;
+				if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
 				try {
 					inputActions.setDraft(text);
 					inputActions.submit();
@@ -2883,10 +2993,10 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			// 手动新建指令也不能覆盖草稿；空草稿时填入，否则复制到剪贴板。
+			// 手动新建指令同样不覆盖已有草稿；否则填入输入框。
 			function fillDraft(text) {
 				try {
-					if (draftIsEmpty() && typeof inputActions.setDraft === "function") {
+					if (!draftBlocked() && inputActions && typeof inputActions.setDraft === "function") {
 						inputActions.setDraft(text);
 						setFilledHint("指令已填入聊天输入框");
 						return;
@@ -2920,8 +3030,14 @@ window.__ModuleLoader__.load({
 			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
 			function openMindmap(entry) {
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
-				if (!submitEmptyDraft(text)) {
-					setFilledHint("为保护未发送草稿，未自动打开。请发送或清空草稿后重试");
+				// 有未发送草稿：不建占位、不抢输入框，改把指令交给用户自己发。
+				if (draftBlocked()) {
+					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+						navigator.clipboard.writeText(text).catch(() => {});
+						setFilledHint("检测到未发送的草稿，已保留；打开指令已复制到剪贴板，粘贴发送即可");
+					} else {
+						setFilledHint(`检测到未发送的草稿，已保留。请手动发送：${text}`);
+					}
 					return;
 				}
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
@@ -2943,9 +3059,19 @@ window.__ModuleLoader__.load({
 						renamedFrom: null,
 					},
 				}));
-				// 指令已在占位前提交；标记避免焦点同步对同一路径重复发送。
-				focusSentRef.current = entry.path;
-				setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
+				// ② AI 就位：填指令并直接提交（失败降级剪贴板）。
+				if (submitChatCommand(text)) {
+					// 标记已发，避免焦点同步 effect 对同一路径重复发送。
+					focusSentRef.current = entry.path;
+					setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
+					return;
+				}
+				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+					navigator.clipboard.writeText(text).catch(() => {});
+					setFilledHint("已复制指令到剪贴板，请粘贴到聊天输入框");
+					return;
+				}
+				setFilledHint(text);
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
@@ -3544,6 +3670,14 @@ window.__ModuleLoader__.load({
 			planGrowthReveal,
 			relPathWithin,
 			visibleTreeRows,
+			// 025 草稿保护：宿主草稿读取面的能力探测（供测试）。
+			readDraftText,
+			draftBlocksAutoSend,
+			// 025 子树折叠：视图态纯函数 + 节点行组件（供测试）。
+			toggleCollapsed,
+			countDescendants,
+			pruneCollapsed,
+			TreeRow,
 			// 019 皮肤层与血肉层纯函数（供测试）。
 			resolveToken,
 			resolveNodeStyle,

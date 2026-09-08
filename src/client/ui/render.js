@@ -179,7 +179,10 @@
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel } = props;
+			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse } = props;
+			// 025 折叠：纯视图态——markdown 资产不变，导出仍取完整子树。
+			const hasChildren = Boolean(node.children && node.children.length > 0);
+			const isCollapsed = hasChildren && Boolean(collapsed && collapsed.has(node.id));
 			// 018 生长动画：本节点渐显延迟（新节点盒）与本行连线渐显延迟（有新子节点）。
 			const revealDelay = reveal && reveal.nodes ? reveal.nodes.get(node.id) : undefined;
 			const edgeRevealDelay = reveal && reveal.edges ? reveal.edges.get(node.id) : undefined;
@@ -216,7 +219,8 @@
 					const rowRect = rowEl.getBoundingClientRect();
 					const boxRect = boxEl.getBoundingClientRect();
 					const next = [];
-					for (const ref of childRefs.current) {
+					// 折叠时子列未挂载：不量、不画线（ref 回调已置空，这里再兜一层）。
+					for (const ref of isCollapsed ? [] : childRefs.current) {
 						if (!ref) continue;
 						const c = ref.getBoundingClientRect();
 						// 视觉像素 → 行本地坐标（SVG 用户空间 = 本地空间）。
@@ -294,13 +298,30 @@
 					} : undefined,
 					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel }),
 				}),
-				node.children && node.children.length > 0
-					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
+				// 025 折叠开关：坐在盒与子列之间的连线起点上（有子节点才出现）。
+				// stopPropagation 保证点它不触发画布的「点节点聚焦 / 点空白取消选中」。
+				hasChildren
+					? (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						"data-mindmap-collapse": "",
+						style: S.collapseToggle,
+						title: isCollapsed ? `展开子树（已隐藏 ${countDescendants(node)} 个节点）` : "折叠子树",
+						"aria-expanded": isCollapsed ? "false" : "true",
+						onClick: (e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							if (onToggleCollapse) onToggleCollapse(node.id);
+						},
+						children: isCollapsed ? "+" : "−",
+					})
+					: null,
+				hasChildren && !isCollapsed
+					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, "data-mindmap-children": "", children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
 						key: child.id,
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse }),
 					}, child.id)) })
 					: null,
 				] });

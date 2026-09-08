@@ -4,8 +4,14 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ## [Unreleased]
 
+### Added
+
+- Collapsible subtrees: every node with children shows a small toggle on its connector. Collapsing hides the subtree and reports how many nodes are hidden, which keeps large maps navigable. The state is view-only — the markdown file is untouched and image export still covers the full subtree. Collapsed nodes reset when the document changes, and stale ids are pruned after the AI rewrites the tree.
+
 ### Fixed
 
+- 画布拖拽不再吞掉折叠开关等控件的点击。
+- 目录打开/焦点同步：宿主草稿 API 不可读时不再静默放弃；有非空草稿时指令转入剪贴板。
 - Settings now wait for a late-arriving client connection instead of permanently capturing its initial absence. The client also supports direct settings descriptors and the current positional update API, while retaining the legacy envelopes.
 - Canvas dragging remains available horizontally and vertically when the map fits inside the viewport. Native scrolling is used first; bounded offset compensation continues the drag at an edge, and Fit or node focus returns the map to center.
 - Mindmap file access now fails closed when the session working directory is unavailable. Reads are limited during streaming rather than trusting a pre-read size check, and updates use a same-directory temporary file plus atomic replacement to avoid partial writes.

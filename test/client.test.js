@@ -63,7 +63,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -763,6 +763,106 @@ test('buildExportSvg renders any subtree as its own rooted export', () => {
   assert.ok(!leaf.svg.includes('<path'))
 })
 
+// —— 025 草稿保护 ——
+
+test('readDraftText probes the known draft shapes and reports unknown as null', () => {
+  assert.equal(readDraftText({ getDraft: () => '写到一半' }), '写到一半')
+  assert.equal(readDraftText({ draft: '写到一半' }), '写到一半')
+  assert.equal(readDraftText({ getState: () => ({ draft: '写到一半' }) }), '写到一半')
+  // 宿主没有暴露草稿：不可知，必须是 null 而不是空串
+  assert.equal(readDraftText({ setDraft() {}, submit() {} }), null)
+  assert.equal(readDraftText(null), null)
+  // 读取抛错同样按不可知处理
+  assert.equal(readDraftText({ getDraft() { throw new Error('nope') } }), null)
+})
+
+test('draftBlocksAutoSend only blocks on a draft it can actually read', () => {
+  // 关键回归：宿主不暴露草稿时不得拦截，否则点目录文件永远打不开
+  assert.equal(draftBlocksAutoSend({ setDraft() {}, submit() {} }), false)
+  assert.equal(draftBlocksAutoSend(undefined), false)
+  // 可读且为空 → 放行；可读且非空 → 拦截
+  assert.equal(draftBlocksAutoSend({ getDraft: () => '   ' }), false)
+  assert.equal(draftBlocksAutoSend({ getDraft: () => '写到一半' }), true)
+})
+
+// —— 025 子树折叠 ——
+
+test('toggleCollapsed adds and removes ids without mutating the input set', () => {
+  const base = new Set(['a'])
+  const added = toggleCollapsed(base, 'b')
+  assert.deepEqual([...added].sort(), ['a', 'b'])
+  assert.deepEqual([...base], ['a'], '入参集合不可被就地改写')
+  const removed = toggleCollapsed(added, 'a')
+  assert.deepEqual([...removed], ['b'])
+  // 缺省入参（首次折叠）照常成集
+  assert.deepEqual([...toggleCollapsed(undefined, 'x')], ['x'])
+})
+
+test('countDescendants counts the whole subtree below a node', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n  - deep\n- y', 'doc')
+  const heading = tree.children[0]
+  assert.equal(countDescendants(heading), 3)
+  assert.equal(countDescendants(heading.children[0]), 1)
+  assert.equal(countDescendants(heading.children[1]), 0)
+  assert.equal(countDescendants(null), 0)
+})
+
+test('pruneCollapsed drops ids the reparsed tree no longer has', () => {
+  const before = parseMarkdownToTree('# A\n- x\n- gone', 'doc')
+  const after = parseMarkdownToTree('# A\n- x', 'doc')
+  const kept = before.children[0].children[0].id
+  const dropped = before.children[0].children[1].id
+  const pruned = pruneCollapsed(new Set([kept, dropped]), after)
+  assert.deepEqual([...pruned], [kept])
+  // 无变化时返回同一引用，避免制造多余重渲染
+  const stable = new Set([kept])
+  assert.equal(pruneCollapsed(stable, after), stable)
+  const empty = new Set()
+  assert.equal(pruneCollapsed(empty, after), empty)
+})
+
+// TreeRow 用 jsx 桩渲染：子组件不递归执行，直接检查本行返回的 props 树。
+function treeRowParts(node, collapsed, onToggleCollapse) {
+  const row = TreeRow({ node, theme: null, collapsed, onToggleCollapse })
+  const children = row.props.children.filter(Boolean)
+  return {
+    toggle: children.find((el) => el.props && el.props['data-mindmap-collapse'] !== undefined) ?? null,
+    childrenColumn: children.find((el) => el.props && el.props['data-mindmap-children'] !== undefined) ?? null,
+  }
+}
+
+test('TreeRow renders a collapse toggle only for parents and hides the subtree when collapsed', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n  - deep', 'doc')
+  const heading = tree.children[0]
+  const leaf = heading.children[0].children[0]
+
+  const expanded = treeRowParts(heading, new Set(), () => {})
+  assert.ok(expanded.toggle, '有子节点的行应渲染折叠开关')
+  assert.equal(expanded.toggle.props.children, '−')
+  assert.ok(expanded.childrenColumn, '展开态应渲染子列')
+
+  const folded = treeRowParts(heading, new Set([heading.id]), () => {})
+  assert.equal(folded.toggle.props.children, '+')
+  assert.equal(folded.childrenColumn, null, '折叠态不得渲染子列')
+  assert.ok(folded.toggle.props.title.includes('2'), '提示应说明隐藏了多少节点')
+
+  // 叶子没有开关
+  assert.equal(treeRowParts(leaf, new Set(), () => {}).toggle, null)
+})
+
+test('TreeRow collapse toggle reports the node id and never reaches the canvas click handler', () => {
+  const tree = parseMarkdownToTree('# A\n- x', 'doc')
+  const heading = tree.children[0]
+  const toggled = []
+  const { toggle } = treeRowParts(heading, new Set(), (id) => toggled.push(id))
+  let stopped = 0
+  let prevented = 0
+  toggle.props.onClick({ stopPropagation: () => { stopped += 1 }, preventDefault: () => { prevented += 1 } })
+  assert.deepEqual(toggled, [heading.id])
+  assert.equal(stopped, 1, '必须阻断冒泡，否则会连带触发聚焦/取消选中')
+  assert.equal(prevented, 1)
+})
+
 test('apply registers the header M slot and the settings section, and takes no other slot', () => {
   const registered = []
   const ctx = {
@@ -1264,7 +1364,9 @@ function fakeScroller(left, top) {
 }
 
 // 021 事件工厂：字段给全，免得漏字段误触发防御分支（buttons 尤其关键）。
-const ON_NODE = { closest: () => ({}) }
+// closest 按选择器区分：真实 DOM 里节点盒不会命中「button 等控件」选择器，
+// 桩若一律命中会掩盖「按在控件上是否启动平移」这类判定。
+const ON_NODE = { closest: (sel) => (String(sel).includes('data-mindmap-node') ? {} : null) }
 const BLANK = { closest: () => null }
 function pointer(overrides) {
   return {
@@ -1422,6 +1524,26 @@ test('MindmapCanvas ignores a second pointer driving an existing pan', () => {
   assert.equal(fake.scrollLeft, -40)
   assert.equal(fake.scrollTop, 0)
   scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 21 }))
+})
+
+test('MindmapCanvas leaves canvas controls alone so their click is not captured by panning', () => {
+  // 回归：折叠开关按下若被平移接管，setPointerCapture 会把 click 改派到滚动区，
+  // 按钮永远收不到点击（实测「折叠按钮点了没反应」）。
+  const scroller = renderCanvasScroller()
+  const fake = fakeScroller(10, 10)
+  let captured = 0
+  fake.setPointerCapture = () => { captured += 1 }
+  capturedRefs[0].current = fake
+  const onControl = { closest: (sel) => (String(sel).includes('button') ? {} : null) }
+  let prevented = 0
+  scroller.props.onPointerDown(pointer({
+    button: 0, pointerId: 41, target: onControl, preventDefault: () => { prevented += 1 },
+  }))
+  scroller.props.onPointerMove(pointer({ button: 0, pointerId: 41, clientX: 90, clientY: 90 }))
+  assert.equal(fake.scrollLeft, 10, '按在控件上不得平移画布')
+  assert.equal(fake.scrollTop, 10)
+  assert.equal(captured, 0, '不得抢占指针，否则 click 不会落到控件上')
+  assert.equal(prevented, 0, '不得拦默认行为，否则控件的点击语义被吞')
 })
 
 test('MindmapCanvas keeps panning in both directions after native scroll reaches an edge', () => {

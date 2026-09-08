@@ -1,18 +1,14 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
-			// 只有宿主能确认草稿为空时才允许替换；未知/非空均保守放行给用户，
-			// 不让目录打开或焦点同步静默丢失正在编辑的消息。
-			function draftIsEmpty() {
-				if (!inputActions || typeof inputActions.getDraft !== "function") return false;
-				try {
-					return !String(inputActions.getDraft() ?? "").trim();
-				} catch {
-					return false;
-				}
+			// 草稿保护：确实读到非空草稿才让路（改走剪贴板），读不到就按既有
+			// 行为直填直发——宿主不暴露草稿时不能把功能整个卡死。
+			function draftBlocked() {
+				return draftBlocksAutoSend(inputActions);
 			}
 
-			function submitEmptyDraft(text) {
-				if (!draftIsEmpty() || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
+			function submitChatCommand(text) {
+				if (draftBlocked()) return false;
+				if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
 				try {
 					inputActions.setDraft(text);
 					inputActions.submit();
@@ -22,10 +18,10 @@
 				}
 			}
 
-			// 手动新建指令也不能覆盖草稿；空草稿时填入，否则复制到剪贴板。
+			// 手动新建指令同样不覆盖已有草稿；否则填入输入框。
 			function fillDraft(text) {
 				try {
-					if (draftIsEmpty() && typeof inputActions.setDraft === "function") {
+					if (!draftBlocked() && inputActions && typeof inputActions.setDraft === "function") {
 						inputActions.setDraft(text);
 						setFilledHint("指令已填入聊天输入框");
 						return;
@@ -59,8 +55,14 @@
 			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
 			function openMindmap(entry) {
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
-				if (!submitEmptyDraft(text)) {
-					setFilledHint("为保护未发送草稿，未自动打开。请发送或清空草稿后重试");
+				// 有未发送草稿：不建占位、不抢输入框，改把指令交给用户自己发。
+				if (draftBlocked()) {
+					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+						navigator.clipboard.writeText(text).catch(() => {});
+						setFilledHint("检测到未发送的草稿，已保留；打开指令已复制到剪贴板，粘贴发送即可");
+					} else {
+						setFilledHint(`检测到未发送的草稿，已保留。请手动发送：${text}`);
+					}
 					return;
 				}
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
@@ -82,9 +84,19 @@
 						renamedFrom: null,
 					},
 				}));
-				// 指令已在占位前提交；标记避免焦点同步对同一路径重复发送。
-				focusSentRef.current = entry.path;
-				setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
+				// ② AI 就位：填指令并直接提交（失败降级剪贴板）。
+				if (submitChatCommand(text)) {
+					// 标记已发，避免焦点同步 effect 对同一路径重复发送。
+					focusSentRef.current = entry.path;
+					setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
+					return;
+				}
+				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+					navigator.clipboard.writeText(text).catch(() => {});
+					setFilledHint("已复制指令到剪贴板，请粘贴到聊天输入框");
+					return;
+				}
+				setFilledHint(text);
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */

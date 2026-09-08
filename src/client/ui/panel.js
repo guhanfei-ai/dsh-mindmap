@@ -273,7 +273,7 @@
 				if (focusPath === active) return;
 				if (focusSentRef.current === active) return; // 已发过，等 AI 结果追平
 				const rel = fsTree.cwd ? relPathWithin(fsTree.cwd, active, stemOf(active)) : active;
-				if (submitEmptyDraft(`用 mindmap_open 打开 ${rel}`)) {
+				if (submitChatCommand(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
 				}
 			}, [active, focusPath, fsTree.cwd, docs, open]);

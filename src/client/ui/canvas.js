@@ -75,6 +75,12 @@
 					};
 				}
 
+				/** 按下点是否落在画布内的交互控件上（这类按下不启动平移，留给控件自己）。 */
+				function isCanvasControl(el) {
+					if (!el || typeof el.closest !== "function") return false;
+					return Boolean(el.closest("button, a[href], input, textarea, select, [role='button']"));
+				}
+
 				/** 空格键是否落在可输入元素里（聊天框/输入框与面板同 document，不能抢空格）。 */
 				function isTextEntry(el) {
 					if (!el || typeof el.tagName !== "string") return false;
@@ -133,6 +139,9 @@
 							const nodeMenuRef = react.useRef(null);
 							// 019 选中态：点击聚焦的节点下选选中环（002 §6 状态体系）。
 							const [selectedId, setSelectedId] = react.useState(null);
+							// 025 折叠子树：纯视图态（不写回 markdown，导出仍取完整子树）。
+							// 切换文档时全部展开；AI 改写后清掉已消失节点的折叠标记。
+							const [collapsed, setCollapsed] = react.useState(() => new Set());
 							// 019 代码块悬停浮层：{node, anchor}；null = 关闭。延迟关闭（150ms
 							// 宽限）让鼠标能从节点盒移到面板上滚动全文，不闪灭。
 							const [codePanel, setCodePanel] = react.useState(null);
@@ -196,6 +205,7 @@
 								userZoomedRef.current = false;
 								lastNaturalRef.current = null;
 								fitStampRef.current = [];
+								setCollapsed((prev) => (prev.size > 0 ? new Set() : prev));
 								const id = requestAnimationFrame(applyFit);
 								return () => cancelAnimationFrame(id);
 							}, [fitKey]);
@@ -292,6 +302,10 @@
 					const scroller = scrollRef.current;
 					if (!scroller || panRef.current) return;
 					const target = e.target;
+					// 025：画布内的控件（折叠开关等）必须先于平移拿到这次按下。
+					// 否则 setPointerCapture 会把随后的 click 改派到滚动区，按钮
+					// 永远收不到点击——「折叠按钮点了没反应」的根因。
+					if (isCanvasControl(target)) return;
 					const onNode = Boolean(target && typeof target.closest === "function" && target.closest("[data-mindmap-node]"));
 					if (!shouldStartPan(e.button, { onNode, spaceHeld: spaceRef.current, touch: e.pointerType === "touch" })) return;
 					// 中键：掐掉浏览器自动滚动；左键：掐掉拖选文本。
@@ -483,7 +497,13 @@
 					setNodeMenu(null);
 					// 019：文档内容变化时同步收掉代码浮层（节点对象已失效）。
 					setCodePanel(null);
+					// 025：树重解析后丢弃已消失节点的折叠标记（无变化时保持原引用）。
+					setCollapsed((prev) => pruneCollapsed(prev, node));
 				}, [node]);
+
+				function toggleCollapse(id) {
+					setCollapsed((prev) => toggleCollapsed(prev, id));
+				}
 
 				// 017 右键节点：记录菜单锚点与目标子树（清掉上次的忙碌/错误态）。
 				function onNodeContextMenu(e, target) {
@@ -549,7 +569,7 @@
 						children: 
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
 							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel })
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse })
 							})
 						})
 					}),

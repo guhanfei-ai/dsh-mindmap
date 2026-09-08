@@ -40,4 +40,73 @@
 		}
 		//#endregion
 
+		//#region 025 草稿保护：能力探测（宿主是否让插件读到聊天草稿）
+		/**
+		 * 读取当前聊天草稿。宿主契约只保证 setDraft/submit，读取面属可选能力：
+		 * 逐个探测已知形态，读不到返回 null（= 不可知，不等于空草稿）。
+		 */
+		function readDraftText(inputActions) {
+			if (!inputActions) return null;
+			try {
+				if (typeof inputActions.getDraft === "function") return String(inputActions.getDraft() ?? "");
+				if (typeof inputActions.draft === "string") return inputActions.draft;
+				if (typeof inputActions.getState === "function") {
+					const state = inputActions.getState();
+					if (state && typeof state.draft === "string") return state.draft;
+				}
+			} catch {
+				return null;
+			}
+			return null;
+		}
+
+		/**
+		 * 是否因「已有未发送草稿」而放弃自动发送。只有确实读到非空草稿才拦截；
+		 * 读不到时不拦——否则在不暴露草稿的宿主上，点目录文件会完全打不开。
+		 */
+		function draftBlocksAutoSend(inputActions) {
+			const draft = readDraftText(inputActions);
+			return typeof draft === "string" && draft.trim() !== "";
+		}
+		//#endregion
+
+		//#region 025 子树折叠：画布视图态纯函数（不进 markdown 资产，只影响呈现）
+		/** 折叠集合切换：恒返回新集合，React 状态可直接按引用比较。 */
+		function toggleCollapsed(collapsed, id) {
+			const next = new Set(collapsed ?? []);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		}
+
+		/** 子孙节点总数：折叠后用于提示「隐藏了多少节点」。 */
+		function countDescendants(node) {
+			let total = 0;
+			const walk = (n) => {
+				for (const child of n.children ?? []) {
+					total += 1;
+					walk(child);
+				}
+			};
+			if (node) walk(node);
+			return total;
+		}
+
+		/**
+		 * 丢弃当前树里已不存在的折叠 id（AI 改写文档后旧 id 会失效）。
+		 * 没有变化时原样返回入参，避免制造新引用触发多余重渲染。
+		 */
+		function pruneCollapsed(collapsed, tree) {
+			if (!collapsed || collapsed.size === 0) return collapsed;
+			const ids = collectTreeIds(tree);
+			let changed = false;
+			const next = new Set();
+			for (const id of collapsed) {
+				if (ids.has(id)) next.add(id);
+				else changed = true;
+			}
+			return changed ? next : collapsed;
+		}
+		//#endregion
+
 
