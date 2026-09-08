@@ -63,7 +63,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -86,12 +86,15 @@ test('conversationNodesOf reads legacy.nodes (0.1.2-rc.1+) first and falls back 
   assert.equal(conversationNodesOf(undefined).length, 0)
 })
 
-test('settingsNamespacesOf parses the array envelope (0.1.2-rc.1+) and the namespaces aggregate (≤0.1.1)', () => {
+test('settingsNamespacesOf parses direct and wrapped array envelopes plus the legacy namespaces aggregate', () => {
   // 023 双代信封：0.1.2-rc.1 的 describe 直接返回描述符数组；≤0.1.1 聚合在
   // result.value.namespaces。描述符条目字段 ns/value 两代同名。
   const descriptors = [{ ns: 'mindmap', value: { requireApproval: false } }, { ns: 'other', value: {} }]
+  assert.deepEqual(settingsNamespacesOf(descriptors), descriptors)
+  assert.deepEqual(settingsNamespacesOf({ value: descriptors }), descriptors)
   assert.deepEqual(settingsNamespacesOf({ result: { value: descriptors } }), descriptors)
   assert.deepEqual(settingsNamespacesOf({ result: { value: { namespaces: descriptors } } }), descriptors)
+  assert.deepEqual(settingsNamespacesOf({ ok: true, value: { namespaces: descriptors } }), descriptors)
   // 空值/畸形应答回退空数组（面板降级路径，不抛错）。
   // 断言形状而非 deepEqual([])：vm realm 造出的 [] 与本 realm 的 []
   // 结构相等但原型不同源，deepStrictEqual 会误报 not reference-equal。
@@ -134,6 +137,13 @@ test('lists nest by indentation and empty items become placeholders', () => {
   assert.equal(placeholder.kind, 'placeholder')
   assert.equal(placeholder.topic, '')
   assert.equal(d.topic, 'd')
+})
+
+test('placeholder list items need no trailing space at any depth', () => {
+  // 反馈清单第 6 条的实证：占位节点不要求尾随空格，缩进层级同样成立。
+  const tree = parseMarkdownToTree('- a\n-\n  -\n- b', 'doc')
+  assert.deepEqual([...tree.children.map((n) => n.kind)], ['list', 'placeholder', 'list'])
+  assert.equal(tree.children[1].children[0].kind, 'placeholder')
 })
 
 test('ordered list items keep their numbers in the topic', () => {
@@ -293,6 +303,23 @@ test('nodeFullText returns the complete own content per kind (020 copy full text
   // 引用块取整块引用源码。
   assert.equal(nodeFullText(quote), 'q1\nq2')
   assert.equal(nodeFullText(null), '')
+})
+
+test('nodeFullText round-trips escaped table cells without changing their columns', () => {
+  const table = parseMarkdownToTree('| value |\n| --- |\n| a \\| b |', 'doc').children[0]
+  const copied = nodeFullText(table)
+  const reparsed = parseMarkdownToTree(copied, 'doc').children[0]
+  assert.deepEqual([...reparsed.data.rows.map((row) => [...row])], [['value'], ['a | b']])
+})
+
+test('table parsing limits pathological grid expansion', () => {
+  const cols = Array.from({ length: 101 }, () => '---').join(' | ')
+  const rows = Array.from({ length: 1200 }, () => '| x |').join('\n')
+  const table = parseMarkdownToTree(`| h |\n| ${cols} |\n${rows}`, 'doc').children[0]
+  assert.equal(table.kind, 'table')
+  assert.equal(table.data.truncated, true)
+  assert.ok(table.data.rows.length * table.data.rows[0].length <= 10000)
+  assert.equal(table.data.rows[0].length, 100)
 })
 
 test('node ids stay stable when siblings are inserted or removed', () => {
@@ -771,6 +798,87 @@ test('apply registers the header M slot and the settings section, and takes no o
   assert.equal(typeof face.mindmapFace.updateSettings, 'function')
 })
 
+test('settings face looks up a late connection for direct descriptors and positional updates', async () => {
+  const registered = []
+  let connection
+  const ctx = {
+    get() { return connection },
+    slots: {
+      inject(_key, factory) { factory() },
+      register(options) {
+        registered.push(options)
+        return () => {}
+      },
+    },
+  }
+  runtime.apply(ctx)
+  const face = registered.find((options) => options.name === 'conversation.session.header.actions').inject().mindmapFace
+  assert.equal(await face.readSettings(), null)
+
+  const writes = []
+  connection = {
+    api: {
+      settings: {
+        async describe() {
+          return [{ ns: 'mindmap', value: { colorTheme: 'forest' } }]
+        },
+        async update(ns, patch) {
+          writes.push({ ns, patch })
+        },
+      },
+    },
+  }
+  assert.equal((await face.readSettings()).colorTheme, 'forest')
+  await face.updateSettings({ colorTheme: 'ocean' })
+  assert.deepEqual(writes, [{ ns: 'mindmap', patch: { colorTheme: 'ocean' } }])
+})
+
+test('settings face uses the current remote settings API when connection is unavailable', async () => {
+  const registered = []
+  const writes = []
+  // Cordis 契约：未注入的服务只能整名经 ctx.get 取。直接读 ctx.remote 会抛
+  // 「without inject」；先取 remote 再读 .settings 也会抛（remote.settings 是
+  // 独立服务名）。这里照实模拟这两道守卫。
+  const remoteSettings = {
+    async describe() {
+      return { ok: true, value: { namespaces: [{ ns: 'mindmap', value: { cardStyle: 'square' } }] } }
+    },
+    async update(ns, patch, revision) {
+      writes.push({ ns, patch, revision })
+    },
+  }
+  const guardedRemote = new Proxy({}, {
+    get(_target, prop) {
+      throw new Error(`cannot get property "remote.${String(prop)}" without inject`)
+    },
+  })
+  const ctx = {
+    get(name) {
+      if (name === 'remote.settings') return remoteSettings
+      if (name === 'remote') return guardedRemote
+      throw new Error(`cannot get property "${name}" without inject`)
+    },
+    get remote() {
+      throw new Error('cannot get property "remote" without inject')
+    },
+    slots: {
+      inject(_key, factory) { factory() },
+      register(options) {
+        registered.push(options)
+        return () => {}
+      },
+    },
+  }
+  runtime.apply(ctx)
+  const face = registered.find((options) => options.name === 'conversation.session.header.actions').inject().mindmapFace
+  assert.equal((await face.readSettings()).cardStyle, 'square')
+  await face.updateSettings({ cardStyle: 'rounded' })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].ns, 'mindmap')
+  assert.equal(writes[0].patch.cardStyle, 'rounded')
+  assert.equal(writes[0].revision, undefined)
+})
+
 test('visibleTreeRows walks only expanded directories in pre-order', () => {
   const nodes = {
     '/w': { path: '/w', name: 'w', parentPath: null, entries: [
@@ -998,6 +1106,12 @@ test('measureExportBox clamps the cell inner width so giant tables never degener
   for (const t of texts) {
     assert.ok(t.y <= bottom, `text baseline y=${t.y} overflows table box bottom ${bottom}`)
   }
+})
+
+test('exportCanvasSize rejects image dimensions that exceed the memory budget', () => {
+  assert.deepEqual({ ...exportCanvasSize(320, 200) }, { width: 320, height: 200 })
+  assert.throws(() => exportCanvasSize(8193, 1), /图片过大/)
+  assert.throws(() => exportCanvasSize(4096, 4097), /图片过大/)
 })
 
 test('clampZoom clamps to [0.25, 3] and guards non-finite or non-positive input', () => {
@@ -1308,6 +1422,68 @@ test('MindmapCanvas ignores a second pointer driving an existing pan', () => {
   assert.equal(fake.scrollLeft, -40)
   assert.equal(fake.scrollTop, 0)
   scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 21 }))
+})
+
+test('MindmapCanvas keeps panning in both directions after native scroll reaches an edge', () => {
+  const scroller = renderCanvasScroller()
+  let scrollLeft = 0
+  let scrollTop = 0
+  const fake = {
+    style: {}, clientWidth: 400, clientHeight: 300,
+    get scrollLeft() { return scrollLeft },
+    set scrollLeft(value) { scrollLeft = Math.max(0, Math.min(0, value)) },
+    get scrollTop() { return scrollTop },
+    set scrollTop(value) { scrollTop = Math.max(0, Math.min(0, value)) },
+    setPointerCapture() {}, releasePointerCapture() {},
+  }
+  const content = { style: {} }
+  capturedRefs[0].current = fake
+  capturedRefs[1].current = content
+  scroller.props.onPointerDown(pointer({ pointerId: 31, clientX: 100, clientY: 100 }))
+  // 原生 scroll 没有余量也要横纵双向跟手。
+  scroller.props.onPointerMove(pointer({ pointerId: 31, clientX: 160, clientY: 140 }))
+  assert.equal(content.style.transform, 'translate(60px, 40px)')
+  // 自由拖动仍有边界，防止把脑图永久拖离视野。
+  scroller.props.onPointerMove(pointer({ pointerId: 31, clientX: 500, clientY: 500 }))
+  assert.equal(content.style.transform, 'translate(200px, 150px)')
+  scroller.props.onPointerMove(pointer({ pointerId: 31, clientX: -500, clientY: -500 }))
+  assert.equal(content.style.transform, 'translate(-200px, -150px)')
+  scroller.props.onPointerUp(pointer({ buttons: 0, pointerId: 31 }))
+})
+
+test('settings face keeps the legacy update envelope for legacy connections', async () => {
+  const registered = []
+  const writes = []
+  const ctx = {
+    get() {
+      return {
+        api: {
+          settings: {
+            async describe() {
+              return { result: { value: { namespaces: [{ ns: 'mindmap', value: {} }] } } }
+            },
+            async update(payload) {
+              writes.push(payload)
+            },
+          },
+        },
+      }
+    },
+    slots: {
+      inject(_key, factory) { factory() },
+      register(options) {
+        registered.push(options)
+        return () => {}
+      },
+    },
+  }
+  runtime.apply(ctx)
+  const face = registered.find((options) => options.name === 'conversation.session.header.actions').inject().mindmapFace
+  await face.readSettings()
+  await face.updateSettings({ lineStyle: 'curve' })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].ns, 'mindmap')
+  assert.equal(writes[0].patch.lineStyle, 'curve')
 })
 
 test('apply wires listTree and settings faces through the mindmapFace (header slot inject)', () => {

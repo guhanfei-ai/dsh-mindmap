@@ -1,10 +1,31 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
-			// 主路径 = inputActions.setDraft（官方公共面，整串替换草稿）；
-			// 无则降级剪贴板复制 + 面板内提示。
+			// 只有宿主能确认草稿为空时才允许替换；未知/非空均保守放行给用户，
+			// 不让目录打开或焦点同步静默丢失正在编辑的消息。
+			function draftIsEmpty() {
+				if (!inputActions || typeof inputActions.getDraft !== "function") return false;
+				try {
+					return !String(inputActions.getDraft() ?? "").trim();
+				} catch {
+					return false;
+				}
+			}
+
+			function submitEmptyDraft(text) {
+				if (!draftIsEmpty() || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
+				try {
+					inputActions.setDraft(text);
+					inputActions.submit();
+					return true;
+				} catch {
+					return false;
+				}
+			}
+
+			// 手动新建指令也不能覆盖草稿；空草稿时填入，否则复制到剪贴板。
 			function fillDraft(text) {
 				try {
-					if (inputActions && typeof inputActions.setDraft === "function") {
+					if (draftIsEmpty() && typeof inputActions.setDraft === "function") {
 						inputActions.setDraft(text);
 						setFilledHint("指令已填入聊天输入框");
 						return;
@@ -37,10 +58,14 @@
 			// 就位——AI 工具结果到达后同 path 覆盖占位，节点才渲染；随后用户接着
 			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
 			function openMindmap(entry) {
+				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
+				if (!submitEmptyDraft(text)) {
+					setFilledHint("为保护未发送草稿，未自动打开。请发送或清空草稿后重试");
+					return;
+				}
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
 				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
 				localErrorBaseRef.current = errorEventKeys(merged);
-				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
 				// ① 本地占位：脑图 tab 立即切过去、内容为空（op:"local" 触发加载态）；
 				// 新打开的脑图替换旧的那颗（单脑图模式）。
 				setHiddenPath(null);
@@ -57,31 +82,9 @@
 						renamedFrom: null,
 					},
 				}));
-				// ② AI 就位：填指令并直接提交（失败降级剪贴板）。
-				let sent = false;
-				if (inputActions && typeof inputActions.setDraft === "function") {
-					try {
-						inputActions.setDraft(text);
-						if (typeof inputActions.submit === "function") {
-							inputActions.submit();
-							sent = true;
-						}
-					} catch {
-						// 落剪贴板降级
-					}
-				}
-				if (sent) {
-					// 标记已发，避免焦点同步 effect 对同一路径重复发送。
-					focusSentRef.current = entry.path;
-					setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
-					return;
-				}
-				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-					navigator.clipboard.writeText(text).catch(() => {});
-					setFilledHint("已复制指令到剪贴板，请粘贴到聊天输入框");
-					return;
-				}
-				setFilledHint(text);
+				// 指令已在占位前提交；标记避免焦点同步对同一路径重复发送。
+				focusSentRef.current = entry.path;
+				setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
@@ -96,11 +99,13 @@
 			// 只读；返回 {path, cwd, entries:[{name,path,isDir,hidden}], truncated}。
 			// 返回 true/false 供调用方决定是否标记展开（失败时不要把目录标成已展开）。
 			async function loadTree(path) {
+				const generation = treeGenerationRef.current;
 				const key = path === undefined || path === null ? "" : path;
 				setFsTree((prev) => ({ ...prev, loading: { ...prev.loading, [key]: true }, error: null }));
 				try {
 					if (!mindmapFace || typeof mindmapFace.listTree !== "function") throw new Error("目录树能力不可用");
 					const listing = await mindmapFace.listTree(sessionId, typeof path === "string" && path ? path : undefined);
+					if (generation !== treeGenerationRef.current) return false;
 					setFsTree((prev) => {
 						const nodes = { ...prev.nodes };
 						nodes[listing.path] = {
@@ -123,6 +128,7 @@
 					});
 					return true;
 				} catch (error) {
+					if (generation !== treeGenerationRef.current) return false;
 					setFsTree((prev) => ({ ...prev, loading: { ...prev.loading, [key]: false }, error: String(error?.message ?? error) }));
 					return false;
 				}
@@ -160,6 +166,7 @@
 
 			// 首次挂载：拉根目录（会话 cwd）。
 			react.useEffect(() => {
+				treeGenerationRef.current += 1;
 				if (!sessionId) return;
 				setFsTree({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
 				loadTree(undefined);

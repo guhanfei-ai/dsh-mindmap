@@ -119,6 +119,8 @@
 			const [filledHint, setFilledHint] = react.useState("");
 			// fsTree：nodes = {path → 节点}, expanded = {path → true}, loading = {path → true}。
 			const [fsTree, setFsTree] = react.useState({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
+			// 会话切换时递增，使旧请求的异步回包不能写入新会话的目录树。
+			const treeGenerationRef = react.useRef(0);
 			// 013 右键菜单：{x, y, kind: "root"|"dir", rel}；null = 关闭。
 			const [treeMenu, setTreeMenu] = react.useState(null);
 			// tab 右键菜单：{x, y, path}（path === TREE_TAB 时是「刷新目录树」）。
@@ -245,10 +247,24 @@
 			}, [merged]);
 
 			// 013「所见即所编」焦点同步：AI 焦点 = 快照里最新工具结果的文档路径；
-			// 脑图视图激活且其文档 ≠ 焦点时，自动填「用 mindmap_open 打开 <它>」
-			// 并发送，让 AI 跟上用户眼睛看的那颗脑图。
+			// 脑图视图激活且其文档 ≠ 焦点时，仅在草稿为空时自动发送，让 AI
+			// 跟上用户眼睛看的那颗脑图，又不覆盖用户正在编辑的消息。
 			const focusPath = docs.order.length > 0 ? docs.order[docs.order.length - 1] : null;
 			const focusSentRef = react.useRef(null);
+			// 所有这些状态都属于会话，不得让 A 会话的在途打开/目录结果遗留到 B。
+			react.useEffect(() => {
+				setLocalDocs({});
+				setCurrentPath(null);
+				setHiddenPath(null);
+				setView("tree");
+				setOpenTimedOut(false);
+				setTreeMenu(null);
+				setTabMenu(null);
+				setFilledHint("");
+				localErrorBaseRef.current = null;
+				focusSentRef.current = null;
+				prevIdsRef.current = { path: null, ids: null };
+			}, [sessionId]);
 			react.useEffect(() => {
 				if (!open) return; // 面板收起时不自动发消息（014 overlay 形态守卫）
 				if (!sessionId) return;
@@ -256,14 +272,9 @@
 				if (!docs.byPath[active]) return; // 本地占位：它的 open 请求已在途
 				if (focusPath === active) return;
 				if (focusSentRef.current === active) return; // 已发过，等 AI 结果追平
-				if (!inputActions || typeof inputActions.setDraft !== "function") return;
 				const rel = fsTree.cwd ? relPathWithin(fsTree.cwd, active, stemOf(active)) : active;
-				try {
-					inputActions.setDraft(`用 mindmap_open 打开 ${rel}`);
-					if (typeof inputActions.submit === "function") inputActions.submit();
+				if (submitEmptyDraft(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
-				} catch {
-					// 发送失败：下次 active/focus 变化会再试；也可手动在聊天里说。
 				}
 			}, [active, focusPath, fsTree.cwd, docs, open]);
 

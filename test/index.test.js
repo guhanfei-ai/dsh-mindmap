@@ -61,7 +61,7 @@ function createContext(config = {}) {
               const base = options.base ?? {}
               return {
                 get: () => ({
-                  requireApproval: base.requireApproval === true,
+                  requireApproval: base.requireApproval !== false,
                   defaultPanelWidth: typeof base.defaultPanelWidth === 'number' ? base.defaultPanelWidth : 42,
                   lineStyle: base.lineStyle === 'curve' ? 'curve' : 'elbow',
                   cardStyle: base.cardStyle === 'square' ? 'square' : 'rounded',
@@ -280,8 +280,8 @@ test('paths must stay inside the working directory and end with .md', async () =
   await assert.rejects(async () => resolveMindmapPath(cwd, '../escape.md'), /stay inside/)
   await assert.rejects(async () => resolveMindmapPath(cwd, '/etc/passwd.md'), /stay inside/)
   await assert.rejects(async () => resolveMindmapPath(cwd, 'notes.txt'), /\.md/)
-  // cwd 缺失时接受绝对路径
-  assert.equal(await resolveMindmapPath(null, '/tmp/x/../y.md'), '/tmp/y.md')
+  // cwd 是授权边界，缺失时不能以绝对路径退化到工作区外访问。
+  await assert.rejects(async () => resolveMindmapPath(null, '/tmp/x/../y.md'), /no working directory/)
 })
 
 test('resolveMindmapPath rejects symlink escapes out of the working directory', async () => {
@@ -314,14 +314,14 @@ test('buildResult derives rootTitle from the path', () => {
 })
 
 test('requireApproval gates mindmap_create and mindmap_update, and reads the settings namespace at runtime', async () => {
-  // 015：pre-execute 钩子常驻注册；默认（false）直接放行
-  const plain = createContext()
-  const plainListener = plain.listeners.get('tools/pre-execute')
+  // 015：pre-execute 钩子常驻注册；默认开启，只有明确关闭才直接放行。
+  const disabled = createContext({ requireApproval: false })
+  const plainListener = disabled.listeners.get('tools/pre-execute')
   assert.ok(plainListener)
   const allow = async () => ({ kind: 'allow' })
   assert.deepEqual(await plainListener({ name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }, allow), { kind: 'allow' })
 
-  const gated = createContext({ requireApproval: true })
+  const gated = createContext()
   const listener = gated.listeners.get('tools/pre-execute')
   assert.ok(listener)
   let asked = null

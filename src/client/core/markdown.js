@@ -27,6 +27,11 @@
 			};
 		}
 
+		// 表格网格会按分隔行补齐，单独限额以防小体积输入膨胀成海量单元格。
+		const MAX_TABLE_COLUMNS = 100;
+		const MAX_TABLE_ROWS = 1000;
+		const MAX_TABLE_CELLS = 10000;
+
 		/** 缩进宽度：tab 按 4 空格折算。 */
 		function indentWidth(raw) {
 			let width = 0;
@@ -72,7 +77,8 @@
 			if (node.kind === "code") return data.code || node.topic || "";
 			if (node.kind === "table" && Array.isArray(data.rows) && data.rows.length > 0) {
 				// data.rows 不含分隔行（解析时剔除）；复制时补回，粘回 Markdown 仍是合法表格。
-				const lines = data.rows.map((row) => `| ${row.join(" | ")} |`);
+				const escapeCell = (cell) => String(cell ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+				const lines = data.rows.map((row) => `| ${row.map(escapeCell).join(" | ")} |`);
 				if (data.rows.length > 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
 				return lines.join("\n");
 			}
@@ -243,30 +249,39 @@
 					// 019 表格块：连续 | 行且第二行为分隔行 → table 节点（003 §5.5，
 					// data.rows 全量保留，单元格不拆子节点）。不满足分隔行条件的 | 行
 					// 按普通段落处理。
-					if (/^\s*\|/.test(line)) {
+					if (/^\s*\|/.test(line) && i + 1 < lineList.length && isTableSeparator(lineList[i + 1])) {
 						const rows = [];
+						let truncated = false;
 						let j = i;
-						for (; j < lineList.length && /^\s*\|/.test(lineList[j]); j++) rows.push(lineList[j]);
-						if (rows.length >= 2 && isTableSeparator(rows[1])) {
+						for (; j < lineList.length && /^\s*\|/.test(lineList[j]); j++) {
+							if (rows.length < MAX_TABLE_ROWS) rows.push(lineList[j]);
+							else truncated = true;
+						}
+						if (rows.length >= 2) {
 							flushParagraph();
 							listStack = [];
 							i = j - 1;
 							// GFM 对齐契约：列数钉死在分隔行。表头与数据行同等待遇：
 							// 少列补空、多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
-							const cols = parseTableRow(rows[1]).length;
+							const detectedCols = parseTableRow(rows[1]).length;
+							const cols = Math.min(detectedCols, MAX_TABLE_COLUMNS);
+							if (detectedCols > cols) truncated = true;
+							const maxRows = Math.min(rows.length, Math.max(2, Math.floor(MAX_TABLE_CELLS / cols)));
+							if (rows.length > maxRows) truncated = true;
+							const visibleRows = rows.slice(0, maxRows);
 							const toCols = (cells) => {
 								if (cells.length >= cols) return cells.slice(0, cols);
 								return cells.concat(new Array(cols - cells.length).fill(""));
 							};
-							const header = toCols(parseTableRow(rows[0]));
-							const body = rows.slice(2).map((row) => toCols(parseTableRow(row)));
+							const header = toCols(parseTableRow(visibleRows[0]));
+							const body = visibleRows.slice(2).map((row) => toCols(parseTableRow(row)));
 							const tableRows = [header].concat(body);
 							appendNode({
 								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
 								kind: "table",
-								topic: `${tableRows.length}×${cols} 表格`,
+								topic: truncated ? `${tableRows.length}×${cols} 表格（已截断）` : `${tableRows.length}×${cols} 表格`,
 								children: [],
-								data: { rows: tableRows },
+								data: { rows: tableRows, truncated },
 							});
 							continue;
 						}
@@ -378,5 +393,4 @@
 			return { nodes, edges, totalMs: (fresh.length - 1) * step + durationMs };
 		}
 		//#endregion
-
 

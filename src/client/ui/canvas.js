@@ -41,7 +41,7 @@
 				// 阈值 4px 以内算「点击」：不写 scroll（手抖不挪画布）、不上抓手光标、
 				// 不吞随后的 click——保留点空白取消选中 / 点节点聚焦的既有行为。
 				// 触摸（触屏）不劫持——交给原生滚动，保住惯性。
-				const PAN = { threshold: 4 };
+				const PAN = { threshold: 4, freeRange: 0.5 };
 
 				/** 是否在该指针按下上启动平移。button: 0 左 / 1 中 / 2 右。 */
 				function shouldStartPan(button, options) {
@@ -60,6 +60,18 @@
 						scrollLeft: start.scrollLeft - dx,
 						scrollTop: start.scrollTop - dy,
 						moved: Math.abs(dx) >= limit || Math.abs(dy) >= limit,
+					};
+				}
+
+				/** 原生滚动到边缘后，用视口半宽/高的有界位移继续保持内容跟手。 */
+				function freePanOffset(start, dx, dy, scrollLeft, scrollTop, viewWidth, viewHeight) {
+					const limitX = Number.isFinite(viewWidth) && viewWidth > 0 ? viewWidth * PAN.freeRange : 0;
+					const limitY = Number.isFinite(viewHeight) && viewHeight > 0 ? viewHeight * PAN.freeRange : 0;
+					const actualLeft = Number.isFinite(scrollLeft) ? scrollLeft : start.scrollLeft;
+					const actualTop = Number.isFinite(scrollTop) ? scrollTop : start.scrollTop;
+					return {
+						x: Math.min(limitX, Math.max(-limitX, start.offsetX + dx + actualLeft - start.scrollLeft)),
+						y: Math.min(limitY, Math.max(-limitY, start.offsetY + dy + actualTop - start.scrollTop)),
 					};
 				}
 
@@ -142,6 +154,9 @@
 							// 都要重测一遍（O(n) 强制重排），大树上拖一下会明显顿一下。
 							// 光标与「禁用选中」直接改 DOM style，全程零重渲染。
 							const panRef = react.useRef(null);
+							// 原生滚动没有余量或已到边缘时的有界补偿位移。同样只写 DOM，
+							// 避免平移触发整棵树重渲染。
+							const panOffsetRef = react.useRef({ x: 0, y: 0 });
 							// 021 空格键：按下时左键在节点上也能拖。同样用 ref（按空格不该重渲染）。
 							const spaceRef = react.useRef(false);
 						// 021 拖过就吞掉随后那次 click（保留单击空白取消选中 / 点节点聚焦）。
@@ -157,6 +172,7 @@
 								const scroller = scrollRef.current;
 								const content = contentRef.current;
 								if (!scroller || !content) return;
+								resetPanOffset();
 								const rect = content.getBoundingClientRect();
 								if (!(rect.width > 0) || !(rect.height > 0)) return;
 								const committed = committedZoomRef.current;
@@ -169,7 +185,9 @@
 									scroller.scrollLeft = 0;
 									scroller.scrollTop = 0;
 									setZoomState(fit);
+									return true;
 								}
+								return false;
 							}
 
 							// 挂载 / 文档切换：清除「用户已手动缩放」标记与熔断计数，
@@ -203,6 +221,7 @@
 											if (Math.abs(w - last.w) <= 2 && Math.abs(h - last.h) <= 2) return;
 										}
 									}
+									if (!applyFit()) return;
 									const now = Date.now();
 									const stamps = fitStampRef.current = fitStampRef.current.filter((t) => now - t < 1500);
 									if (stamps.length >= 5) {
@@ -210,7 +229,6 @@
 										return;
 									}
 									stamps.push(now);
-									applyFit();
 								});
 								observer.observe(content);
 								observer.observe(scroller);
@@ -254,6 +272,18 @@
 					scroller.style.userSelect = active ? "none" : "";
 				}
 
+				function resetPanOffset() {
+					panOffsetRef.current = { x: 0, y: 0 };
+					const content = contentRef.current;
+					if (content) content.style.transform = "";
+				}
+
+				function applyPanOffset(offset) {
+					const content = contentRef.current;
+					if (!content) return;
+					content.style.transform = offset.x || offset.y ? `translate(${offset.x}px, ${offset.y}px)` : "";
+				}
+
 				function beginPan(e) {
 					// 吞 click 的标记一律在本轮手势的最开头清零，放在所有早退之前：
 					// 否则上轮手势留下的 true 会粘到下一次点击上——例：拖完画布后再
@@ -272,6 +302,8 @@
 						y: e.clientY,
 						scrollLeft: scroller.scrollLeft,
 						scrollTop: scroller.scrollTop,
+						offsetX: panOffsetRef.current.x,
+						offsetY: panOffsetRef.current.y,
 						moved: false,
 					};
 					// 不在按下就上抓手光标：普通点击（位移 < 阈值）不该闪一下
@@ -301,9 +333,13 @@
 					// 首次越过阈值：这才算拖拽——上抓手光标 + 锁文本选择。
 					if (!pan.moved) applyPanCursor(scroller, true);
 					if (step.moved) pan.moved = true;
-					// 越界交给浏览器钳制（不自己算 scrollWidth，省一次重排）。
+					// 先交给浏览器钳制；到边缘后把未被 scroll 消耗的位移补到内容
+					// transform，上下左右始终可拖，且不读 scrollWidth 造成强制重排。
 					scroller.scrollLeft = step.scrollLeft;
 					scroller.scrollTop = step.scrollTop;
+					const offset = freePanOffset(pan, e.clientX - pan.x, e.clientY - pan.y, scroller.scrollLeft, scroller.scrollTop, scroller.clientWidth, scroller.clientHeight);
+					panOffsetRef.current = offset;
+					applyPanOffset(offset);
 				}
 
 				function endPan() {
@@ -325,7 +361,7 @@
 				function setZoom(next, anchorViewport) {
 					const value = clampZoom(next);
 					anchorRef.current = anchorViewport && scrollRef.current
-						? { prevZoom: zoomRef.current, scrollLeft: scrollRef.current.scrollLeft, scrollTop: scrollRef.current.scrollTop }
+						? { prevZoom: zoomRef.current, scrollLeft: scrollRef.current.scrollLeft, scrollTop: scrollRef.current.scrollTop, offsetX: panOffsetRef.current.x, offsetY: panOffsetRef.current.y }
 						: null;
 					zoomRef.current = value;
 					setZoomState(value);
@@ -346,8 +382,8 @@
 					anchorRef.current = null;
 					const ratio = anchor.prevZoom > 0 ? zoom / anchor.prevZoom : 1;
 					if (!(ratio > 0) || ratio === 1) return;
-					scroller.scrollLeft = (anchor.scrollLeft + scroller.clientWidth / 2) * ratio - scroller.clientWidth / 2;
-					scroller.scrollTop = (anchor.scrollTop + scroller.clientHeight / 2) * ratio - scroller.clientHeight / 2;
+					scroller.scrollLeft = (anchor.scrollLeft + scroller.clientWidth / 2 - anchor.offsetX) * ratio + anchor.offsetX - scroller.clientWidth / 2;
+					scroller.scrollTop = (anchor.scrollTop + scroller.clientHeight / 2 - anchor.offsetY) * ratio + anchor.offsetY - scroller.clientHeight / 2;
 				}, [zoom]);
 
 				function zoomIn() {
@@ -412,6 +448,7 @@
 					focusRef.current = null;
 					const scroller = scrollRef.current;
 					if (!scroller || !focus || !focus.boxEl || !focus.boxEl.isConnected) return;
+					resetPanOffset();
 					const boxRect = focus.boxEl.getBoundingClientRect();
 					const scrollerRect = scroller.getBoundingClientRect();
 					const curX = boxRect.left + boxRect.width / 2 - scrollerRect.left;

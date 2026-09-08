@@ -19,7 +19,7 @@ If private reporting is unavailable, contact the repository owner privately befo
 
 ## Security model
 
-- The plugin edits plain markdown files inside the DSH working directory only; it never writes outside the allowed workspace.
-- Every tool call that writes or deletes a file enters DSH's native approval flow and fails closed when approval is unavailable.
+- The plugin edits plain markdown files inside the DSH working directory only; it refuses all file access when that working directory is unavailable.
+- Native approval is enabled by default. Operators may explicitly opt out with `requireApproval: false` for trusted automation.
 - Document paths are resolved and contained within the working directory before any write.
 - Operators remain responsible for file permissions, network routing, and model-provider data policy.

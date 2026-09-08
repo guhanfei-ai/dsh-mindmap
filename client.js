@@ -264,6 +264,11 @@ window.__ModuleLoader__.load({
 			};
 		}
 
+		// 表格网格会按分隔行补齐，单独限额以防小体积输入膨胀成海量单元格。
+		const MAX_TABLE_COLUMNS = 100;
+		const MAX_TABLE_ROWS = 1000;
+		const MAX_TABLE_CELLS = 10000;
+
 		/** 缩进宽度：tab 按 4 空格折算。 */
 		function indentWidth(raw) {
 			let width = 0;
@@ -309,7 +314,8 @@ window.__ModuleLoader__.load({
 			if (node.kind === "code") return data.code || node.topic || "";
 			if (node.kind === "table" && Array.isArray(data.rows) && data.rows.length > 0) {
 				// data.rows 不含分隔行（解析时剔除）；复制时补回，粘回 Markdown 仍是合法表格。
-				const lines = data.rows.map((row) => `| ${row.join(" | ")} |`);
+				const escapeCell = (cell) => String(cell ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+				const lines = data.rows.map((row) => `| ${row.map(escapeCell).join(" | ")} |`);
 				if (data.rows.length > 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
 				return lines.join("\n");
 			}
@@ -480,30 +486,39 @@ window.__ModuleLoader__.load({
 					// 019 表格块：连续 | 行且第二行为分隔行 → table 节点（003 §5.5，
 					// data.rows 全量保留，单元格不拆子节点）。不满足分隔行条件的 | 行
 					// 按普通段落处理。
-					if (/^\s*\|/.test(line)) {
+					if (/^\s*\|/.test(line) && i + 1 < lineList.length && isTableSeparator(lineList[i + 1])) {
 						const rows = [];
+						let truncated = false;
 						let j = i;
-						for (; j < lineList.length && /^\s*\|/.test(lineList[j]); j++) rows.push(lineList[j]);
-						if (rows.length >= 2 && isTableSeparator(rows[1])) {
+						for (; j < lineList.length && /^\s*\|/.test(lineList[j]); j++) {
+							if (rows.length < MAX_TABLE_ROWS) rows.push(lineList[j]);
+							else truncated = true;
+						}
+						if (rows.length >= 2) {
 							flushParagraph();
 							listStack = [];
 							i = j - 1;
 							// GFM 对齐契约：列数钉死在分隔行。表头与数据行同等待遇：
 							// 少列补空、多列截断——未转义竖线切碎的行顶多内容错位，网格永不参差。
-							const cols = parseTableRow(rows[1]).length;
+							const detectedCols = parseTableRow(rows[1]).length;
+							const cols = Math.min(detectedCols, MAX_TABLE_COLUMNS);
+							if (detectedCols > cols) truncated = true;
+							const maxRows = Math.min(rows.length, Math.max(2, Math.floor(MAX_TABLE_CELLS / cols)));
+							if (rows.length > maxRows) truncated = true;
+							const visibleRows = rows.slice(0, maxRows);
 							const toCols = (cells) => {
 								if (cells.length >= cols) return cells.slice(0, cols);
 								return cells.concat(new Array(cols - cells.length).fill(""));
 							};
-							const header = toCols(parseTableRow(rows[0]));
-							const body = rows.slice(2).map((row) => toCols(parseTableRow(row)));
+							const header = toCols(parseTableRow(visibleRows[0]));
+							const body = visibleRows.slice(2).map((row) => toCols(parseTableRow(row)));
 							const tableRows = [header].concat(body);
 							appendNode({
 								id: idOf("table", tableRows.map((r) => r.join("\u0001")).join("\u0002"), parentPathOf()),
 								kind: "table",
-								topic: `${tableRows.length}×${cols} 表格`,
+								topic: truncated ? `${tableRows.length}×${cols} 表格（已截断）` : `${tableRows.length}×${cols} 表格`,
 								children: [],
-								data: { rows: tableRows },
+								data: { rows: tableRows, truncated },
 							});
 							continue;
 						}
@@ -954,6 +969,8 @@ window.__ModuleLoader__.load({
 			// 列盒窄于内距时 cellInner 可能为负，钳到至少容纳一个全角字符；
 			// 测量与渲染必须共用同一钳制值（022 契约）。
 			tableCellMinInner: 12,
+			maxCanvasDimension: 8192,
+			maxCanvasPixels: 16 * 1024 * 1024,
 		};
 
 		function escapeXml(text) {
@@ -1137,8 +1154,19 @@ window.__ModuleLoader__.load({
 			return { svg: parts.join(""), width, height };
 		}
 
+		/** Canvas 分配前的硬上限，避免合法但超长的脑图耗尽浏览器内存。 */
+		function exportCanvasSize(width, height) {
+			const w = Math.max(1, Math.ceil(width));
+			const h = Math.max(1, Math.ceil(height));
+			if (!Number.isFinite(w) || !Number.isFinite(h) || w > EXPORT.maxCanvasDimension || h > EXPORT.maxCanvasDimension || w * h > EXPORT.maxCanvasPixels) {
+				throw new Error("脑图图片过大，请缩小导出范围后重试");
+			}
+			return { width: w, height: h };
+		}
+
 		/** SVG → Image → 白底 canvas（下载 / 剪贴板共用，017 抽出）。 */
 		async function renderSvgToCanvas(svg, width, height) {
+			const size = exportCanvasSize(width, height);
 			const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 			const img = new Image();
 			await new Promise((resolve, reject) => {
@@ -1147,8 +1175,8 @@ window.__ModuleLoader__.load({
 				img.src = url;
 			});
 			const canvas = document.createElement("canvas");
-			canvas.width = Math.max(1, Math.ceil(width));
-			canvas.height = Math.max(1, Math.ceil(height));
+			canvas.width = size.width;
+			canvas.height = size.height;
 			const ctx2d = canvas.getContext("2d");
 			ctx2d.fillStyle = "#ffffff";
 			ctx2d.fillRect(0, 0, canvas.width, canvas.height);
@@ -1925,7 +1953,7 @@ window.__ModuleLoader__.load({
 				// 阈值 4px 以内算「点击」：不写 scroll（手抖不挪画布）、不上抓手光标、
 				// 不吞随后的 click——保留点空白取消选中 / 点节点聚焦的既有行为。
 				// 触摸（触屏）不劫持——交给原生滚动，保住惯性。
-				const PAN = { threshold: 4 };
+				const PAN = { threshold: 4, freeRange: 0.5 };
 
 				/** 是否在该指针按下上启动平移。button: 0 左 / 1 中 / 2 右。 */
 				function shouldStartPan(button, options) {
@@ -1944,6 +1972,18 @@ window.__ModuleLoader__.load({
 						scrollLeft: start.scrollLeft - dx,
 						scrollTop: start.scrollTop - dy,
 						moved: Math.abs(dx) >= limit || Math.abs(dy) >= limit,
+					};
+				}
+
+				/** 原生滚动到边缘后，用视口半宽/高的有界位移继续保持内容跟手。 */
+				function freePanOffset(start, dx, dy, scrollLeft, scrollTop, viewWidth, viewHeight) {
+					const limitX = Number.isFinite(viewWidth) && viewWidth > 0 ? viewWidth * PAN.freeRange : 0;
+					const limitY = Number.isFinite(viewHeight) && viewHeight > 0 ? viewHeight * PAN.freeRange : 0;
+					const actualLeft = Number.isFinite(scrollLeft) ? scrollLeft : start.scrollLeft;
+					const actualTop = Number.isFinite(scrollTop) ? scrollTop : start.scrollTop;
+					return {
+						x: Math.min(limitX, Math.max(-limitX, start.offsetX + dx + actualLeft - start.scrollLeft)),
+						y: Math.min(limitY, Math.max(-limitY, start.offsetY + dy + actualTop - start.scrollTop)),
 					};
 				}
 
@@ -2026,6 +2066,9 @@ window.__ModuleLoader__.load({
 							// 都要重测一遍（O(n) 强制重排），大树上拖一下会明显顿一下。
 							// 光标与「禁用选中」直接改 DOM style，全程零重渲染。
 							const panRef = react.useRef(null);
+							// 原生滚动没有余量或已到边缘时的有界补偿位移。同样只写 DOM，
+							// 避免平移触发整棵树重渲染。
+							const panOffsetRef = react.useRef({ x: 0, y: 0 });
 							// 021 空格键：按下时左键在节点上也能拖。同样用 ref（按空格不该重渲染）。
 							const spaceRef = react.useRef(false);
 						// 021 拖过就吞掉随后那次 click（保留单击空白取消选中 / 点节点聚焦）。
@@ -2041,6 +2084,7 @@ window.__ModuleLoader__.load({
 								const scroller = scrollRef.current;
 								const content = contentRef.current;
 								if (!scroller || !content) return;
+								resetPanOffset();
 								const rect = content.getBoundingClientRect();
 								if (!(rect.width > 0) || !(rect.height > 0)) return;
 								const committed = committedZoomRef.current;
@@ -2053,7 +2097,9 @@ window.__ModuleLoader__.load({
 									scroller.scrollLeft = 0;
 									scroller.scrollTop = 0;
 									setZoomState(fit);
+									return true;
 								}
+								return false;
 							}
 
 							// 挂载 / 文档切换：清除「用户已手动缩放」标记与熔断计数，
@@ -2087,6 +2133,7 @@ window.__ModuleLoader__.load({
 											if (Math.abs(w - last.w) <= 2 && Math.abs(h - last.h) <= 2) return;
 										}
 									}
+									if (!applyFit()) return;
 									const now = Date.now();
 									const stamps = fitStampRef.current = fitStampRef.current.filter((t) => now - t < 1500);
 									if (stamps.length >= 5) {
@@ -2094,7 +2141,6 @@ window.__ModuleLoader__.load({
 										return;
 									}
 									stamps.push(now);
-									applyFit();
 								});
 								observer.observe(content);
 								observer.observe(scroller);
@@ -2138,6 +2184,18 @@ window.__ModuleLoader__.load({
 					scroller.style.userSelect = active ? "none" : "";
 				}
 
+				function resetPanOffset() {
+					panOffsetRef.current = { x: 0, y: 0 };
+					const content = contentRef.current;
+					if (content) content.style.transform = "";
+				}
+
+				function applyPanOffset(offset) {
+					const content = contentRef.current;
+					if (!content) return;
+					content.style.transform = offset.x || offset.y ? `translate(${offset.x}px, ${offset.y}px)` : "";
+				}
+
 				function beginPan(e) {
 					// 吞 click 的标记一律在本轮手势的最开头清零，放在所有早退之前：
 					// 否则上轮手势留下的 true 会粘到下一次点击上——例：拖完画布后再
@@ -2156,6 +2214,8 @@ window.__ModuleLoader__.load({
 						y: e.clientY,
 						scrollLeft: scroller.scrollLeft,
 						scrollTop: scroller.scrollTop,
+						offsetX: panOffsetRef.current.x,
+						offsetY: panOffsetRef.current.y,
 						moved: false,
 					};
 					// 不在按下就上抓手光标：普通点击（位移 < 阈值）不该闪一下
@@ -2185,9 +2245,13 @@ window.__ModuleLoader__.load({
 					// 首次越过阈值：这才算拖拽——上抓手光标 + 锁文本选择。
 					if (!pan.moved) applyPanCursor(scroller, true);
 					if (step.moved) pan.moved = true;
-					// 越界交给浏览器钳制（不自己算 scrollWidth，省一次重排）。
+					// 先交给浏览器钳制；到边缘后把未被 scroll 消耗的位移补到内容
+					// transform，上下左右始终可拖，且不读 scrollWidth 造成强制重排。
 					scroller.scrollLeft = step.scrollLeft;
 					scroller.scrollTop = step.scrollTop;
+					const offset = freePanOffset(pan, e.clientX - pan.x, e.clientY - pan.y, scroller.scrollLeft, scroller.scrollTop, scroller.clientWidth, scroller.clientHeight);
+					panOffsetRef.current = offset;
+					applyPanOffset(offset);
 				}
 
 				function endPan() {
@@ -2209,7 +2273,7 @@ window.__ModuleLoader__.load({
 				function setZoom(next, anchorViewport) {
 					const value = clampZoom(next);
 					anchorRef.current = anchorViewport && scrollRef.current
-						? { prevZoom: zoomRef.current, scrollLeft: scrollRef.current.scrollLeft, scrollTop: scrollRef.current.scrollTop }
+						? { prevZoom: zoomRef.current, scrollLeft: scrollRef.current.scrollLeft, scrollTop: scrollRef.current.scrollTop, offsetX: panOffsetRef.current.x, offsetY: panOffsetRef.current.y }
 						: null;
 					zoomRef.current = value;
 					setZoomState(value);
@@ -2230,8 +2294,8 @@ window.__ModuleLoader__.load({
 					anchorRef.current = null;
 					const ratio = anchor.prevZoom > 0 ? zoom / anchor.prevZoom : 1;
 					if (!(ratio > 0) || ratio === 1) return;
-					scroller.scrollLeft = (anchor.scrollLeft + scroller.clientWidth / 2) * ratio - scroller.clientWidth / 2;
-					scroller.scrollTop = (anchor.scrollTop + scroller.clientHeight / 2) * ratio - scroller.clientHeight / 2;
+					scroller.scrollLeft = (anchor.scrollLeft + scroller.clientWidth / 2 - anchor.offsetX) * ratio + anchor.offsetX - scroller.clientWidth / 2;
+					scroller.scrollTop = (anchor.scrollTop + scroller.clientHeight / 2 - anchor.offsetY) * ratio + anchor.offsetY - scroller.clientHeight / 2;
 				}, [zoom]);
 
 				function zoomIn() {
@@ -2296,6 +2360,7 @@ window.__ModuleLoader__.load({
 					focusRef.current = null;
 					const scroller = scrollRef.current;
 					if (!scroller || !focus || !focus.boxEl || !focus.boxEl.isConnected) return;
+					resetPanOffset();
 					const boxRect = focus.boxEl.getBoundingClientRect();
 					const scrollerRect = scroller.getBoundingClientRect();
 					const curX = boxRect.left + boxRect.width / 2 - scrollerRect.left;
@@ -2623,6 +2688,8 @@ window.__ModuleLoader__.load({
 			const [filledHint, setFilledHint] = react.useState("");
 			// fsTree：nodes = {path → 节点}, expanded = {path → true}, loading = {path → true}。
 			const [fsTree, setFsTree] = react.useState({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
+			// 会话切换时递增，使旧请求的异步回包不能写入新会话的目录树。
+			const treeGenerationRef = react.useRef(0);
 			// 013 右键菜单：{x, y, kind: "root"|"dir", rel}；null = 关闭。
 			const [treeMenu, setTreeMenu] = react.useState(null);
 			// tab 右键菜单：{x, y, path}（path === TREE_TAB 时是「刷新目录树」）。
@@ -2749,10 +2816,24 @@ window.__ModuleLoader__.load({
 			}, [merged]);
 
 			// 013「所见即所编」焦点同步：AI 焦点 = 快照里最新工具结果的文档路径；
-			// 脑图视图激活且其文档 ≠ 焦点时，自动填「用 mindmap_open 打开 <它>」
-			// 并发送，让 AI 跟上用户眼睛看的那颗脑图。
+			// 脑图视图激活且其文档 ≠ 焦点时，仅在草稿为空时自动发送，让 AI
+			// 跟上用户眼睛看的那颗脑图，又不覆盖用户正在编辑的消息。
 			const focusPath = docs.order.length > 0 ? docs.order[docs.order.length - 1] : null;
 			const focusSentRef = react.useRef(null);
+			// 所有这些状态都属于会话，不得让 A 会话的在途打开/目录结果遗留到 B。
+			react.useEffect(() => {
+				setLocalDocs({});
+				setCurrentPath(null);
+				setHiddenPath(null);
+				setView("tree");
+				setOpenTimedOut(false);
+				setTreeMenu(null);
+				setTabMenu(null);
+				setFilledHint("");
+				localErrorBaseRef.current = null;
+				focusSentRef.current = null;
+				prevIdsRef.current = { path: null, ids: null };
+			}, [sessionId]);
 			react.useEffect(() => {
 				if (!open) return; // 面板收起时不自动发消息（014 overlay 形态守卫）
 				if (!sessionId) return;
@@ -2760,14 +2841,9 @@ window.__ModuleLoader__.load({
 				if (!docs.byPath[active]) return; // 本地占位：它的 open 请求已在途
 				if (focusPath === active) return;
 				if (focusSentRef.current === active) return; // 已发过，等 AI 结果追平
-				if (!inputActions || typeof inputActions.setDraft !== "function") return;
 				const rel = fsTree.cwd ? relPathWithin(fsTree.cwd, active, stemOf(active)) : active;
-				try {
-					inputActions.setDraft(`用 mindmap_open 打开 ${rel}`);
-					if (typeof inputActions.submit === "function") inputActions.submit();
+				if (submitEmptyDraft(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
-				} catch {
-					// 发送失败：下次 active/focus 变化会再试；也可手动在聊天里说。
 				}
 			}, [active, focusPath, fsTree.cwd, docs, open]);
 
@@ -2785,11 +2861,32 @@ window.__ModuleLoader__.load({
 			}
 
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
-			// 主路径 = inputActions.setDraft（官方公共面，整串替换草稿）；
-			// 无则降级剪贴板复制 + 面板内提示。
+			// 只有宿主能确认草稿为空时才允许替换；未知/非空均保守放行给用户，
+			// 不让目录打开或焦点同步静默丢失正在编辑的消息。
+			function draftIsEmpty() {
+				if (!inputActions || typeof inputActions.getDraft !== "function") return false;
+				try {
+					return !String(inputActions.getDraft() ?? "").trim();
+				} catch {
+					return false;
+				}
+			}
+
+			function submitEmptyDraft(text) {
+				if (!draftIsEmpty() || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
+				try {
+					inputActions.setDraft(text);
+					inputActions.submit();
+					return true;
+				} catch {
+					return false;
+				}
+			}
+
+			// 手动新建指令也不能覆盖草稿；空草稿时填入，否则复制到剪贴板。
 			function fillDraft(text) {
 				try {
-					if (inputActions && typeof inputActions.setDraft === "function") {
+					if (draftIsEmpty() && typeof inputActions.setDraft === "function") {
 						inputActions.setDraft(text);
 						setFilledHint("指令已填入聊天输入框");
 						return;
@@ -2822,10 +2919,14 @@ window.__ModuleLoader__.load({
 			// 就位——AI 工具结果到达后同 path 覆盖占位，节点才渲染；随后用户接着
 			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
 			function openMindmap(entry) {
+				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
+				if (!submitEmptyDraft(text)) {
+					setFilledHint("为保护未发送草稿，未自动打开。请发送或清空草稿后重试");
+					return;
+				}
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
 				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
 				localErrorBaseRef.current = errorEventKeys(merged);
-				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
 				// ① 本地占位：脑图 tab 立即切过去、内容为空（op:"local" 触发加载态）；
 				// 新打开的脑图替换旧的那颗（单脑图模式）。
 				setHiddenPath(null);
@@ -2842,31 +2943,9 @@ window.__ModuleLoader__.load({
 						renamedFrom: null,
 					},
 				}));
-				// ② AI 就位：填指令并直接提交（失败降级剪贴板）。
-				let sent = false;
-				if (inputActions && typeof inputActions.setDraft === "function") {
-					try {
-						inputActions.setDraft(text);
-						if (typeof inputActions.submit === "function") {
-							inputActions.submit();
-							sent = true;
-						}
-					} catch {
-						// 落剪贴板降级
-					}
-				}
-				if (sent) {
-					// 标记已发，避免焦点同步 effect 对同一路径重复发送。
-					focusSentRef.current = entry.path;
-					setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
-					return;
-				}
-				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-					navigator.clipboard.writeText(text).catch(() => {});
-					setFilledHint("已复制指令到剪贴板，请粘贴到聊天输入框");
-					return;
-				}
-				setFilledHint(text);
+				// 指令已在占位前提交；标记避免焦点同步对同一路径重复发送。
+				focusSentRef.current = entry.path;
+				setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
@@ -2881,11 +2960,13 @@ window.__ModuleLoader__.load({
 			// 只读；返回 {path, cwd, entries:[{name,path,isDir,hidden}], truncated}。
 			// 返回 true/false 供调用方决定是否标记展开（失败时不要把目录标成已展开）。
 			async function loadTree(path) {
+				const generation = treeGenerationRef.current;
 				const key = path === undefined || path === null ? "" : path;
 				setFsTree((prev) => ({ ...prev, loading: { ...prev.loading, [key]: true }, error: null }));
 				try {
 					if (!mindmapFace || typeof mindmapFace.listTree !== "function") throw new Error("目录树能力不可用");
 					const listing = await mindmapFace.listTree(sessionId, typeof path === "string" && path ? path : undefined);
+					if (generation !== treeGenerationRef.current) return false;
 					setFsTree((prev) => {
 						const nodes = { ...prev.nodes };
 						nodes[listing.path] = {
@@ -2908,6 +2989,7 @@ window.__ModuleLoader__.load({
 					});
 					return true;
 				} catch (error) {
+					if (generation !== treeGenerationRef.current) return false;
 					setFsTree((prev) => ({ ...prev, loading: { ...prev.loading, [key]: false }, error: String(error?.message ?? error) }));
 					return false;
 				}
@@ -2945,6 +3027,7 @@ window.__ModuleLoader__.load({
 
 			// 首次挂载：拉根目录（会话 cwd）。
 			react.useEffect(() => {
+				treeGenerationRef.current += 1;
 				if (!sessionId) return;
 				setFsTree({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
 				loadTree(undefined);
@@ -3298,7 +3381,12 @@ window.__ModuleLoader__.load({
 		 * namespaces 兜底，两代通吃。
 		 */
 		function settingsNamespacesOf(res) {
-			const value = res?.result?.value;
+			// connection 旧代理包一层 result.value；新版远端直接返回描述符数组。
+			const value = res?.ok === true
+				? res.value
+				: Array.isArray(res) || Array.isArray(res?.value)
+				? (Array.isArray(res) ? res : res.value)
+				: res?.result?.value;
 			if (Array.isArray(value)) return value;
 			const list = value?.namespaces;
 			return Array.isArray(list) ? list : [];
@@ -3358,22 +3446,56 @@ window.__ModuleLoader__.load({
 				return parsed.value;
 			};
 
-			// 015 设置面板：settings namespace（dsh-grafana 同款读写面）。
-			// connection 走 ctx.get 可选查取（动态 ctx 契约）；缺失时设置面板降级提示。
-			const connection = ctx.get("connection");
-			const settingsApi = connection && typeof connection.api === "object" ? connection.api : null;
+			// 015 设置面板：connection/remote 在客户端插件启动后才可能就绪，不能在
+			// apply 时捕获一次 undefined；每次读写前重新查取，服务晚到也能恢复。
+			// 未声明 inject 的服务只能整名走 ctx.get 可选查取。带点号的服务
+			// （remote.settings）同样是独立服务名：先取 remote 再读 .settings 会
+			// 被守卫拒绝（cannot get property "remote.settings" without inject），
+			// 故一律传全名，并对任何守卫异常降级为「服务不可用」。
+			function serviceOf(name) {
+				if (typeof ctx.get !== "function") return null;
+				try {
+					return ctx.get(name) ?? null;
+				} catch {
+					return null;
+				}
+			}
+			function isSettingsApi(value) {
+				try {
+					return Boolean(value) && typeof value.describe === "function" && typeof value.update === "function";
+				} catch {
+					return false;
+				}
+			}
+			function settingsApiOf() {
+				const remote = serviceOf("remote.settings");
+				if (isSettingsApi(remote)) return { kind: "remote", settings: remote };
+				try {
+					const settings = serviceOf("connection")?.api?.settings;
+					if (isSettingsApi(settings)) return { kind: "connection", settings };
+				} catch {
+					// 守卫拒绝或连接形态异常：与服务缺失同样降级处理。
+				}
+				return null;
+			}
 			face.readSettings = async () => {
-				if (!settingsApi || typeof settingsApi.settings?.describe !== "function") return null;
-				const res = await settingsApi.settings.describe({});
+				const api = settingsApiOf();
+				if (!api) return null;
+				const res = api.kind === "remote" ? await api.settings.describe() : await api.settings.describe({});
 				const namespaces = settingsNamespacesOf(res);
 				const ns = namespaces.find((n) => n?.ns === "mindmap");
 				return ns?.value ?? null;
 			};
 			face.updateSettings = async (patch) => {
-				if (!settingsApi || typeof settingsApi.settings?.update !== "function") {
+				const api = settingsApiOf();
+				if (!api) {
 					throw new Error("settings service unavailable");
 				}
-				await settingsApi.settings.update({ ns: "mindmap", patch });
+				if (api.kind === "remote" || api.settings.update.length !== 1) {
+					await api.settings.update("mindmap", patch, undefined);
+				} else {
+					await api.settings.update({ ns: "mindmap", patch });
+				}
 			};
 
 			// 015 设置面板：settings.section（list 槽、root scope）——设置页左栏
@@ -3416,6 +3538,7 @@ window.__ModuleLoader__.load({
 			stemOf,
 			buildExportSvg,
 			measureExportBox,
+			exportCanvasSize,
 			createIdFactory,
 			collectTreeIds,
 			planGrowthReveal,

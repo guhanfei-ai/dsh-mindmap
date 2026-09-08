@@ -10,6 +10,8 @@
 			// 列盒窄于内距时 cellInner 可能为负，钳到至少容纳一个全角字符；
 			// 测量与渲染必须共用同一钳制值（022 契约）。
 			tableCellMinInner: 12,
+			maxCanvasDimension: 8192,
+			maxCanvasPixels: 16 * 1024 * 1024,
 		};
 
 		function escapeXml(text) {
@@ -193,8 +195,19 @@
 			return { svg: parts.join(""), width, height };
 		}
 
+		/** Canvas 分配前的硬上限，避免合法但超长的脑图耗尽浏览器内存。 */
+		function exportCanvasSize(width, height) {
+			const w = Math.max(1, Math.ceil(width));
+			const h = Math.max(1, Math.ceil(height));
+			if (!Number.isFinite(w) || !Number.isFinite(h) || w > EXPORT.maxCanvasDimension || h > EXPORT.maxCanvasDimension || w * h > EXPORT.maxCanvasPixels) {
+				throw new Error("脑图图片过大，请缩小导出范围后重试");
+			}
+			return { width: w, height: h };
+		}
+
 		/** SVG → Image → 白底 canvas（下载 / 剪贴板共用，017 抽出）。 */
 		async function renderSvgToCanvas(svg, width, height) {
+			const size = exportCanvasSize(width, height);
 			const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 			const img = new Image();
 			await new Promise((resolve, reject) => {
@@ -203,8 +216,8 @@
 				img.src = url;
 			});
 			const canvas = document.createElement("canvas");
-			canvas.width = Math.max(1, Math.ceil(width));
-			canvas.height = Math.max(1, Math.ceil(height));
+			canvas.width = size.width;
+			canvas.height = size.height;
 			const ctx2d = canvas.getContext("2d");
 			ctx2d.fillStyle = "#ffffff";
 			ctx2d.fillRect(0, 0, canvas.width, canvas.height);

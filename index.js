@@ -9,12 +9,13 @@
 // - 四工具都带 path/name 参数（决策 3：多脑图并存，作用于指定那颗）。
 // - 结果 JSON {ok, op, path, rootTitle, content, renamedFrom?}：content 全文
 //   供模型续编辑，client 用同一份重放面板（工具结果即实时通道，002 第二节）。
-// - requireApproval 配置（决策 6）：默认 false 免审批；置 true 时 mindmap_create
-//   与 mindmap_update 走原生 ask（tools/pre-execute，照 dsh-grafana 的钩子模式）。
+// - requireApproval 配置（决策 6）：默认 true；仅明确关闭时 mindmap_create 与
+//   mindmap_update 可免原生 ask（tools/pre-execute，照 dsh-grafana 的钩子模式）。
 //   015 起经 settings namespace 可在设置面板运行时切换（见 SETTINGS_NAMESPACE/Config）。
 // - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
 //   link 开发需先 npm i）。工具参数 schema 仍手写 JSON Schema（003 偏差 1）。
-import { access, opendir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { access, open, opendir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
@@ -26,7 +27,7 @@ export const inject = ['tools', 'systemPrompt', 'webServer', 'sessions']
 // defaultPanelWidth 供客户端面板取默认宽度（20-80 钳制由客户端执行）。
 export const SETTINGS_NAMESPACE = 'mindmap'
 export const Config = Schema.object({
-  requireApproval: Schema.boolean().default(false).description('Require native DSH approval for every mindmap_create and mindmap_update (including renameRoot). Files are git-managed, so it defaults to off. Hidden from the settings panel; still honored at runtime.'),
+  requireApproval: Schema.boolean().default(true).description('Require native DSH approval for every mindmap_create and mindmap_update (including renameRoot). Enabled by default and hidden from the settings panel; still honored at runtime.'),
   defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).'),
   lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).'),
   cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.'),
@@ -51,7 +52,7 @@ Tools:
 - mindmap_get(path): read the current markdown content.
 - mindmap_update(path, content, renameRoot?): write the FULL updated markdown. renameRoot renames the file to match a new root title (fails on name collision); use it only when the user asks to rename the root node.
 
-Markdown mapping (the panel's parser): headings nest by level (H1 are root children, H2 under the previous H1, ...); list items are child nodes nested by 2-space indentation; an EMPTY list item ("- " followed by nothing) renders as a placeholder node — use placeholders for planned-but-unwritten nodes; a fenced code block becomes a leaf node titled "[lang] first line"; plain paragraphs become the note text of the nearest heading.
+Markdown mapping (the panel's parser): headings nest by level (H1 are root children, H2 under the previous H1, ...); list items are child nodes nested by 2-space indentation; a list item with no text after the marker renders as a placeholder node (both "-" and "- " work; no trailing space is required) — use placeholders for planned-but-unwritten nodes; a fenced code block becomes a leaf node titled "[lang] first line"; plain paragraphs become the note text of the nearest heading.
 
 Behavior rules:
 - When the user asks to create a mindmap, call mindmap_create. When the user asks to open, view, show, or switch to an existing mindmap, call mindmap_open (do not use mindmap_get alone). Both operations bring that document to the visible mindmap panel automatically.
@@ -245,17 +246,14 @@ function sanitizeStem(input) {
 
 /**
  * 解析脑图文件路径：相对路径以会话 cwd 为基；结果必须落在 cwd 内（决策 1），
- * 且必须以 .md 结尾。cwd 缺失时仅接受绝对路径。
+ * 且必须以 .md 结尾。cwd 是文件授权边界，缺失时必须失败关闭。
  * @returns 绝对规范化路径。
  */
 async function resolveMindmapPath(cwd, input) {
   if (typeof input !== 'string' || !input.trim()) throw new Error('path is required.')
   const p = input.trim()
   if (!/\.md$/i.test(p)) throw new Error(`mindmap path must end with .md: ${JSON.stringify(p)}.`)
-  if (!cwd) {
-    if (!isAbsolute(p)) throw new Error('The session has no working directory; pass an absolute .md path.')
-    return resolvePath(p)
-  }
+  if (!cwd) throw new Error('The session has no working directory; cannot access a mindmap.')
   const resolved = resolvePath(cwd, p)
   const rel = relative(cwd, resolved)
   // realpath 兜底（#5）：写路径经符号链接越狱是安全敏感操作。
@@ -293,15 +291,53 @@ function byteLength(value) {
 }
 
 /**
- * mindmap_open / mindmap_get 共用的读取路径：先 stat 查文件大小（不为测
- * 大小读全量），超限即拒；不存在时 stat 抛 ENOENT，readFile 的原语义不变。
+ * mindmap_open / mindmap_get 共用的有界读取。句柄打开后持续分块读取，文件在
+ * 初检后增长也不会绕过上限；非常规文件直接拒绝。
  */
 async function readMindmap(path) {
-  const { size } = await stat(path)
-  if (size > MAX_READ_BYTES) {
-    throw new Error(`mindmap size exceeds the ${MAX_READ_BYTES}-byte limit.`)
+  const handle = await open(path, 'r')
+  try {
+    const info = await handle.stat()
+    if (!info.isFile()) throw new Error('mindmap path must be a regular file.')
+    if (info.size > MAX_READ_BYTES) {
+      throw new Error(`mindmap size exceeds the ${MAX_READ_BYTES}-byte limit.`)
+    }
+    const chunks = []
+    let total = 0
+    let position = 0
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_READ_BYTES + 1 - total))
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position)
+      if (bytesRead === 0) break
+      total += bytesRead
+      if (total > MAX_READ_BYTES) {
+        throw new Error(`mindmap size exceeds the ${MAX_READ_BYTES}-byte limit.`)
+      }
+      chunks.push(chunk.subarray(0, bytesRead))
+      position += bytesRead
+    }
+    return Buffer.concat(chunks, total).toString('utf8')
+  } finally {
+    await handle.close()
   }
-  return readFile(path, 'utf8')
+}
+
+/** 同目录临时文件完整落盘后再替换，任何写入失败都保留旧内容。 */
+async function writeMindmap(path, content) {
+  const temp = join(dirname(path), `.${randomUUID()}.mindmap-tmp`)
+  const { mode } = await stat(path)
+  let handle
+  try {
+    handle = await open(temp, 'wx', mode & 0o777)
+    await handle.writeFile(content, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await rename(temp, path)
+  } finally {
+    if (handle) await handle.close().catch(() => {})
+    await unlink(temp).catch(() => {})
+  }
 }
 
 /** 工具结果信封：client 面板与模型共用的唯一载体。 */
@@ -320,7 +356,7 @@ export function apply(ctx, config = {}) {
   // 入口配置作为 settings 组合层的 base：视觉三件套与默认宽度在这里
   // 透传（带 schema 同款默认值），用户设置层仍可在设置面板覆盖。
   const entryConfig = {
-    requireApproval: config.requireApproval === true,
+    requireApproval: config.requireApproval !== false,
     defaultPanelWidth: typeof config.defaultPanelWidth === 'number' ? config.defaultPanelWidth : 42,
     lineStyle: config.lineStyle === 'curve' ? 'curve' : 'elbow',
     cardStyle: config.cardStyle === 'square' ? 'square' : 'rounded',
@@ -344,7 +380,7 @@ export function apply(ctx, config = {}) {
   ctx.systemPrompt.section({ name: 'tool:mindmap', order: 106, text: GUIDANCE })
 
   // 后悔药开关（决策 6）：钩子常驻注册，运行时读 activeConfig().requireApproval
-  // ——设置面板切换立即生效；关闭时直接放行（默认 false 免审批）。
+  // ——设置面板切换立即生效；仅明确关闭时直接放行。
   // 022：create 同为写路径，一并纳入审批（CONTRIBUTING：所有写路径安全敏感）。
   ctx.on('tools/pre-execute', async (exec, next) => {
     const decision = await next()
@@ -479,8 +515,8 @@ export function apply(ctx, config = {}) {
           finalPath = target
         }
       }
-      if (hasContent) await writeFile(finalPath, args.content, 'utf8')
-      const content = hasContent ? args.content : await readFile(finalPath, 'utf8')
+      if (hasContent) await writeMindmap(finalPath, args.content)
+      const content = hasContent ? args.content : await readMindmap(finalPath)
       return buildResult('update', finalPath, { content, ...(renamedFrom ? { renamedFrom } : {}) })
     },
   }))
@@ -540,6 +576,7 @@ export const internals = Object.freeze({
   MAX_CONTENT_BYTES,
   MAX_READ_BYTES,
   readMindmap,
+  writeMindmap,
   sanitizeStem,
   resolveMindmapPath,
   sessionCwd,

@@ -6,7 +6,12 @@
 		 * namespaces 兜底，两代通吃。
 		 */
 		function settingsNamespacesOf(res) {
-			const value = res?.result?.value;
+			// connection 旧代理包一层 result.value；新版远端直接返回描述符数组。
+			const value = res?.ok === true
+				? res.value
+				: Array.isArray(res) || Array.isArray(res?.value)
+				? (Array.isArray(res) ? res : res.value)
+				: res?.result?.value;
 			if (Array.isArray(value)) return value;
 			const list = value?.namespaces;
 			return Array.isArray(list) ? list : [];
@@ -66,22 +71,56 @@
 				return parsed.value;
 			};
 
-			// 015 设置面板：settings namespace（dsh-grafana 同款读写面）。
-			// connection 走 ctx.get 可选查取（动态 ctx 契约）；缺失时设置面板降级提示。
-			const connection = ctx.get("connection");
-			const settingsApi = connection && typeof connection.api === "object" ? connection.api : null;
+			// 015 设置面板：connection/remote 在客户端插件启动后才可能就绪，不能在
+			// apply 时捕获一次 undefined；每次读写前重新查取，服务晚到也能恢复。
+			// 未声明 inject 的服务只能整名走 ctx.get 可选查取。带点号的服务
+			// （remote.settings）同样是独立服务名：先取 remote 再读 .settings 会
+			// 被守卫拒绝（cannot get property "remote.settings" without inject），
+			// 故一律传全名，并对任何守卫异常降级为「服务不可用」。
+			function serviceOf(name) {
+				if (typeof ctx.get !== "function") return null;
+				try {
+					return ctx.get(name) ?? null;
+				} catch {
+					return null;
+				}
+			}
+			function isSettingsApi(value) {
+				try {
+					return Boolean(value) && typeof value.describe === "function" && typeof value.update === "function";
+				} catch {
+					return false;
+				}
+			}
+			function settingsApiOf() {
+				const remote = serviceOf("remote.settings");
+				if (isSettingsApi(remote)) return { kind: "remote", settings: remote };
+				try {
+					const settings = serviceOf("connection")?.api?.settings;
+					if (isSettingsApi(settings)) return { kind: "connection", settings };
+				} catch {
+					// 守卫拒绝或连接形态异常：与服务缺失同样降级处理。
+				}
+				return null;
+			}
 			face.readSettings = async () => {
-				if (!settingsApi || typeof settingsApi.settings?.describe !== "function") return null;
-				const res = await settingsApi.settings.describe({});
+				const api = settingsApiOf();
+				if (!api) return null;
+				const res = api.kind === "remote" ? await api.settings.describe() : await api.settings.describe({});
 				const namespaces = settingsNamespacesOf(res);
 				const ns = namespaces.find((n) => n?.ns === "mindmap");
 				return ns?.value ?? null;
 			};
 			face.updateSettings = async (patch) => {
-				if (!settingsApi || typeof settingsApi.settings?.update !== "function") {
+				const api = settingsApiOf();
+				if (!api) {
 					throw new Error("settings service unavailable");
 				}
-				await settingsApi.settings.update({ ns: "mindmap", patch });
+				if (api.kind === "remote" || api.settings.update.length !== 1) {
+					await api.settings.update("mindmap", patch, undefined);
+				} else {
+					await api.settings.update({ ns: "mindmap", patch });
+				}
 			};
 
 			// 015 设置面板：settings.section（list 槽、root scope）——设置页左栏
@@ -124,6 +163,7 @@
 			stemOf,
 			buildExportSvg,
 			measureExportBox,
+			exportCanvasSize,
 			createIdFactory,
 			collectTreeIds,
 			planGrowthReveal,
@@ -162,6 +202,3 @@
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
 		});
-
-
-

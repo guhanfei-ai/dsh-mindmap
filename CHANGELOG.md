@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Release-specific notes are also published on GitHub Releases.
 
+## [Unreleased]
+
+### Fixed
+
+- Settings now wait for a late-arriving client connection instead of permanently capturing its initial absence. The client also supports direct settings descriptors and the current positional update API, while retaining the legacy envelopes.
+- Canvas dragging remains available horizontally and vertically when the map fits inside the viewport. Native scrolling is used first; bounded offset compensation continues the drag at an edge, and Fit or node focus returns the map to center.
+- Mindmap file access now fails closed when the session working directory is unavailable. Reads are limited during streaming rather than trusting a pre-read size check, and updates use a same-directory temporary file plus atomic replacement to avoid partial writes.
+- Pathological Markdown tables now have row, column, and total-cell limits. PNG export rejects oversized canvas allocations instead of risking a browser crash.
+- Switching sessions clears pending mindmap state and ignores stale directory responses; repeated resize events no longer disable automatic canvas fitting.
+- Writes now require native approval by default. Directory opening and focus synchronization never overwrite a non-empty or unreadable chat draft.
+- The tool guidance no longer implies that a placeholder node needs a trailing space: any list item with no text after the marker becomes a placeholder.
+
 ## [0.8.2] - 2026-09-09
 
 ### Added
