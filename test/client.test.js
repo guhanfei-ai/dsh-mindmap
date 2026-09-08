@@ -63,7 +63,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, resultTextOfBlocks, relPathWithin, visibleTreeRows, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -966,6 +966,35 @@ test('buildExportSvg measures wide-table height with the same clamped column wid
     .map((m) => ({ x: Number(m[1]), y: Number(m[2]) }))
     .filter((t) => t.x >= bx && t.x <= bx + bw)
   assert.ok(texts.length > 6)
+  for (const t of texts) {
+    assert.ok(t.y <= bottom, `text baseline y=${t.y} overflows table box bottom ${bottom}`)
+  }
+})
+
+test('measureExportBox clamps the cell inner width so giant tables never degenerate', () => {
+  // 60 列表格：列盒仅 8px 宽（480/60），减内距 16px 后 cellInner 为负——
+  // 负宽会让每个字符独立成行，表格高度爆炸；钳到 12（一个全角字符宽）后
+  // 每格 8 个半角字符 = 8 行，2 行数据 = 16 行 × 18px = 288px，高度归一。
+  const cell = 'abcdefgh'
+  const rows = [Array(60).fill(cell), Array(60).fill(cell)]
+  const table = { id: 't', kind: 'table', topic: '60×2 表格', children: [], data: { rows } }
+  const box = measureExportBox(table)
+  assert.equal(box.w, 480) // 60×110 → 钳到 tableMaxW
+  assert.equal(box.h, 288)
+  // 渲染与测量共用同一钳制宽度：文字基线不越过表格盒底
+  const tree = { id: 'r', kind: 'heading', topic: 'root', children: [table] }
+  const { svg } = buildExportSvg(tree, 'ocean')
+  const rects = [...svg.matchAll(/<rect x="([\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="7"/g)]
+  assert.equal(rects.length, 2)
+  const boxEl = rects[1]
+  const bx = Number(boxEl[1])
+  const by = Number(boxEl[2])
+  const bw = Number(boxEl[3])
+  const bottom = by + Number(boxEl[4])
+  const texts = [...svg.matchAll(/<text x="([\d.]+)" y="(-?[\d.]+)"/g)]
+    .map((m) => ({ x: Number(m[1]), y: Number(m[2]) }))
+    .filter((t) => t.x >= bx && t.x <= bx + bw)
+  assert.ok(texts.length > 60)
   for (const t of texts) {
     assert.ok(t.y <= bottom, `text baseline y=${t.y} overflows table box bottom ${bottom}`)
   }

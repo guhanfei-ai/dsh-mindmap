@@ -174,6 +174,32 @@ test('mindmap_get returns the current content', async () => {
   assert.equal(result.content, 'hello')
 })
 
+test('mindmap_open and mindmap_get reject files over the read limit', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  await writeFile(join(cwd, 'big.md'), 'x'.repeat(internals.MAX_READ_BYTES + 1), 'utf8')
+  await assert.rejects(
+    byName('mindmap_open').execute({ path: 'big.md' }, execution(cwd)),
+    /exceeds the .*-byte limit/,
+  )
+  await assert.rejects(
+    byName('mindmap_get').execute({ path: 'big.md' }, execution(cwd)),
+    /exceeds the .*-byte limit/,
+  )
+})
+
+test('mindmap_open and mindmap_get accept a file exactly at the read limit', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  await writeFile(join(cwd, 'exact.md'), 'x'.repeat(internals.MAX_READ_BYTES), 'utf8')
+  const opened = parseResult(await byName('mindmap_open').execute({ path: 'exact.md' }, execution(cwd)))
+  assert.equal(opened.op, 'open')
+  assert.equal(opened.content.length, internals.MAX_READ_BYTES)
+  const got = parseResult(await byName('mindmap_get').execute({ path: 'exact.md' }, execution(cwd)))
+  assert.equal(got.op, 'get')
+  assert.equal(got.content.length, internals.MAX_READ_BYTES)
+})
+
 test('mindmap_update writes full content and echoes it back', async () => {
   const cwd = await tmpWorkspace()
   const { byName } = createContext()

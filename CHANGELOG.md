@@ -6,14 +6,70 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
-- Step-by-step update convention for the AI (system prompt + `mindmap_update` tool description): when an edit has several parts, call `mindmap_update` as soon as each part is ready instead of one giant update at the end — each call still carries the FULL document, and the panel's growth animation makes the tree visibly grow while the AI works. The former "panel updates in one step" wording is removed as it pointed the other way.
-- Progressive growth animation for the mindmap panel: after every update, newly added/changed nodes fade in one by one (breadth-first from root to leaves, staggered up to 90ms apart) instead of the whole tree popping in at once. Diffing rides on the existing stable structural node IDs, so unchanged nodes never flicker or replay; the total duration is compressed to stay within ~2s for large documents; connector lines fade in together with their new children. The layout is computed in full up front, so the animation is compositor-only (opacity/transform) with no reflow cost. A new `growthAnimation` setting (settings panel「面板」→「生长动画」, default on) turns it off entirely, and `prefers-reduced-motion` is respected. The `mindmap_update` contract is unchanged (still full markdown).
+- Read-size guard for `mindmap_open` / `mindmap_get`: both tools `stat` the file first and refuse to read anything larger than 2 MB (`MAX_READ_BYTES`, the same cap as writes), so opening an accidentally huge document can no longer flood the model context.
+
+### Fixed
+
+- Export table rendering: the per-cell wrap width is clamped to at least 12px (`tableCellMinInner`, one full-width character) in both box measurement and SVG drawing, so extremely wide tables (e.g. 60 columns) can never degenerate into one-character-per-line stacking.
+
+### Changed
+
+- Changelog realignment: entries that had shipped with 0.5.0–0.8.1 are moved from `[Unreleased]` into their own version sections, split by the real git tag boundaries; README and README.zh-CN updated to reflect the dual dsh compatibility (`0.1.1-rc.2` + `0.1.2-rc.1`), paragraph promotion (019 block concept), and the published release tag.
+- Dependabot: major-version upgrades of `actions/checkout` and `actions/setup-node` (≥5) are ignored until evaluated separately (the two hanging PRs were closed).
+
+## [0.8.1] - 2026-09-08
+
+### Added
+
+- `@deepseek-ai/dsh-tools` peer dependency with a four-range version window (`^0.1.0-rc.6 || ^0.1.1-rc.0 || ^0.1.2-alpha.0 || ^0.1.3-alpha.0`), so plugin installs resolve cleanly across the harness tooling line.
+
+### Changed
+
+- Dependency refresh (`@deepseek-ai/cosmokit` 1.8.2 → 1.8.3, `@deepseek-ai/schemastery` 3.18.1 → 3.18.2, lockfile updated accordingly); `.gitignore` also ignores `_*` and `._*` at the repository root.
+
+## [0.8.0] - 2026-09-04
+
+### Fixed
+
+- Compatibility with dsh 0.1.2-rc.1 (statically verified, docs/023), while keeping 0.1.1-rc.2 working — all fixes are dual-path with the old path first:
+  - **Host tools**: `Agent` no longer carries a live `session` (it is reduced to `{ id }`), so `sessionCwd` now falls back from `exec.agent.session.header.cwd` (dsh ≤0.1.1) to looking the session up via `ctx.sessions.get(exec.agent.id).header.cwd` (0.1.2-rc.1). Without this, every tool failed with "the session has no working directory" on 0.1.2-rc.1.
+  - **Live panel data**: the session snapshot no longer carries a flat `nodes` array (conversation content moved to the Chat view), so the panel now reads nodes via `useChat → ChatSnapshot.legacy.nodes` (0.1.2-rc.1+) first and falls back to `useSession → SessionSnapshot.nodes` (dsh ≤0.1.1). `ToolResultNode` field names are unchanged across both, so document replay, auto-open, and error surfacing work as before.
+  - **Settings panel**: `settings.describe` over the client connection now returns the descriptor array directly (0.1.2-rc.1+) instead of an aggregate `result.value.namespaces` (dsh ≤0.1.1); both envelope shapes are parsed.
+  - **Hygiene**: `dsh.client.inject` additionally lists `@deepseek-ai/dsh-cordis-client-runner` (the 0.1.2-rc.1 browser runtime module id; `@deepseek-ai/dsh-client-runtime` is kept for 0.1.1-rc.2 — a missing id is silently skipped by the loader, so both coexist safely).
+
+## [0.7.0] - 2026-08-31
+
+### Fixed
+
+- A code-review sweep (`_issues/002`) landed 11 fixes, each with a failing regression test first:
+  - **Markdown parsing**: an unclosed `---` frontmatter fence at the top no longer swallows the whole document into an empty tree; the root-title echo merge (`firstTopH1Seen`) is set only by a top-level H1 so an earlier H2 or a heading inside a quote block no longer suppresses it; GFM table column count is pinned to the **separator row** (short rows padded, extra cells dropped) instead of the header; fenced code blocks close only on a matching fence type (`~~~` is no longer ended by a ``` line) and `parseTableRow` honors an escaped `\|` preceded by an escaped backslash (`\\|`).
+  - **Document snapshots**: `mergeDocuments` only deletes a dropped local entry when no live snapshot owns the same path, so a recreated file that a snapshot also references keeps its panel openable.
+  - **Link rendering**: the bare-URL pattern no longer swallows CJK punctuation/full-width characters (`https://a.com，然后…` stops at the comma); `[text](url)` and bare links render as plain text unless the scheme is http/https/mailto (blocking `javascript:`/`data:`), and `openLink` calls `preventDefault` only when `window.open` actually succeeds, so host-blocked popups fall back to default navigation instead of a dead click.
+  - **Host safety & approval**: the tree route and all mindmap path resolutions now reject symlink escapes out of the working directory via a `realpath` walk-up (`resolvesInsideBase`); `requireApproval` gates `mindmap_create` as well as `mindmap_update`; and `listDirectoryLevel` stops iterating once it hits the entry cap (perf) while still flagging truncation.
+  - **PNG export**: wide tables measure their box height using the same clamped per-column width the renderer uses, so wrapped cell text no longer overflows the measured box bottom.
+
+## [0.6.0] - 2026-08-30
+
+### Added
+
+- Canvas panning (021): the mindmap canvas can now be dragged around with the middle mouse button (anywhere, even over a node), the left button on blank canvas space (this is the Mac trackpad「click and drag」path), or Space + left button (even over a node, when the drag has to start on a card). Content follows the pointer 1:1, blank space shows a grab hand, and the canvas no longer chains its scroll to the host page at the edges. A 4px threshold separates drag from click, so clicking blank space still clears the selection and clicking a node still focuses it — while a real drag no longer wipes the selection ring on release. Built on pointer events with pointer capture, so the pointer keeps dragging even outside the panel; touch input is left to native scrolling so momentum survives; and the gesture never re-renders the tree (cursor and text-selection lock go straight to the DOM, because a re-render would re-measure every `TreeRow`). Refinements from review (`_issues/001`): sub-threshold jitter no longer writes `scroll` or flashes the grab cursor (a 1–3px hand tremor on a plain click used to shift the canvas, and because the formula is absolute from the press anchor, skipping those early writes still tracks the pointer 1:1 — the full displacement lands in one jump once the threshold is crossed); the grab cursor and the text-selection lock are now applied on the first crossing rather than on press; a pan whose `setPointerCapture` failed no longer hangs when the pointer is released outside the scroller (a later button-less move ends the pan instead of dragging the canvas with nothing held); the click-suppression flag is cleared at the very top of every gesture rather than after the early returns, so a finished drag can no longer leak into a later tap that takes a non-panning path (touch tap, left-press on a node) and swallow it; and a second pointer can no longer drive an existing pan's anchor.
+
+## [0.5.1] - 2026-08-26
+
+### Added
+
 - Block concept for mindmap nodes (per the 003 living spec): markdown content is now parsed into typed blocks — text, markdown (inline formatting), code (compact summary line + hover overlay for the full source), quote, and table (full grid, cells never split) — while block-level structure syntax (headings/lists/quotes) is split into child nodes and plain paragraphs are promoted to nodes instead of being stuffed into a parent's description. Inline formatting never triggers splitting.
 - Unified clickable links: any URL inside any block is rendered complete (never abbreviated), clickable, and opens in a new browser tab; links inside the hover overlay are clickable too.
+
+## [0.5.0] - 2026-08-26
+
+### Added
+
+- Step-by-step update convention for the AI (system prompt + `mindmap_update` tool description): when an edit has several parts, call `mindmap_update` as soon as each part is ready instead of one giant update at the end — each call still carries the FULL document, and the panel's growth animation makes the tree visibly grow while the AI works. The former "panel updates in one step" wording is removed as it pointed the other way.
+- Progressive growth animation for the mindmap panel: after every update, newly added/changed nodes fade in one by one (breadth-first from root to leaves, staggered up to 90ms apart) instead of the whole tree popping in at once. Diffing rides on the existing stable structural node IDs, so unchanged nodes never flicker or replay; the total duration is compressed to stay within ~2s for large documents; connector lines fade in together with their new children. The layout is computed in full up front, so the animation is compositor-only (opacity/transform) with no reflow cost. A new `growthAnimation` setting (settings panel「面板」→「生长动画」, default on) turns it off entirely, and `prefers-reduced-motion` is respected. The `mindmap_update` contract is unchanged (still full markdown).
 - Theme token system: node colors/corners/shadows/states are produced by the pure function `resolveNodeStyle` from theme tokens, so card style and color theme switch cleanly without touching layout code.
 - Node right-click menu gains「复制全文」: copies a node's complete own content to the clipboard (code blocks take the full fenced source, table blocks re-emit a valid Markdown table with the separator row restored, everything else takes the raw text), alongside the existing 复制为图片 / 导出为图片. A divider line separates the node title from the actions.
 - Hover overlay for truncated content: prose blocks cut by the line clamp and code blocks share one floating panel (fixed-positioned outside the zoom layer, scrollable full text); it always docks to the right of the node box and never flips left — clicking a node auto-focuses it into view, so hovering again always shows everything.
-- Canvas panning (021): the mindmap canvas can now be dragged around with the middle mouse button (anywhere, even over a node), the left button on blank canvas space (this is the Mac trackpad「click and drag」path), or Space + left button (even over a node, when the drag has to start on a card). Content follows the pointer 1:1, blank space shows a grab hand, and the canvas no longer chains its scroll to the host page at the edges. A 4px threshold separates drag from click, so clicking blank space still clears the selection and clicking a node still focuses it — while a real drag no longer wipes the selection ring on release. Built on pointer events with pointer capture, so the pointer keeps dragging even outside the panel; touch input is left to native scrolling so momentum survives; and the gesture never re-renders the tree (cursor and text-selection lock go straight to the DOM, because a re-render would re-measure every `TreeRow`). Refinements from review (`_issues/001`): sub-threshold jitter no longer writes `scroll` or flashes the grab cursor (a 1–3px hand tremor on a plain click used to shift the canvas, and because the formula is absolute from the press anchor, skipping those early writes still tracks the pointer 1:1 — the full displacement lands in one jump once the threshold is crossed); the grab cursor and the text-selection lock are now applied on the first crossing rather than on press; a pan whose `setPointerCapture` failed no longer hangs when the pointer is released outside the scroller (a later button-less move ends the pan instead of dragging the canvas with nothing held); the click-suppression flag is cleared at the very top of every gesture rather than after the early returns, so a finished drag can no longer leak into a later tap that takes a non-panning path (touch tap, left-press on a node) and swallow it; and a second pointer can no longer drive an existing pan's anchor.
 
 ### Changed
 
@@ -23,19 +79,8 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Fixed
 
-- Compatibility with dsh 0.1.2-rc.1 (statically verified, docs/023), while keeping 0.1.1-rc.2 working — all fixes are dual-path with the old path first:
-  - **Host tools**: `Agent` no longer carries a live `session` (it is reduced to `{ id }`), so `sessionCwd` now falls back from `exec.agent.session.header.cwd` (dsh ≤0.1.1) to looking the session up via `ctx.sessions.get(exec.agent.id).header.cwd` (0.1.2-rc.1). Without this, every tool failed with "the session has no working directory" on 0.1.2-rc.1.
-  - **Live panel data**: the session snapshot no longer carries a flat `nodes` array (conversation content moved to the Chat view), so the panel now reads nodes via `useChat → ChatSnapshot.legacy.nodes` (0.1.2-rc.1+) first and falls back to `useSession → SessionSnapshot.nodes` (dsh ≤0.1.1). `ToolResultNode` field names are unchanged across both, so document replay, auto-open, and error surfacing work as before.
-  - **Settings panel**: `settings.describe` over the client connection now returns the descriptor array directly (0.1.2-rc.1+) instead of an aggregate `result.value.namespaces` (dsh ≤0.1.1); both envelope shapes are parsed.
-  - **Hygiene**: `dsh.client.inject` additionally lists `@deepseek-ai/dsh-cordis-client-runner` (the 0.1.2-rc.1 browser runtime module id; `@deepseek-ai/dsh-client-runtime` is kept for 0.1.1-rc.2 — a missing id is silently skipped by the loader, so both coexist safely).
 - The panel now reliably auto-opens when the AI completes `mindmap_open` / `mindmap_create`. A structural fingerprint of the session nodes (`nodesFingerprint`) feeds a second `useSession` selector; its value comparison bypasses the reference-equality short-circuit that starved the auto-open effect whenever the host store mutated the nodes array in place.
 - The "AI 正在打开脑图…" loading state is no longer a dead end. Snapshot documents whose path differs from the tree-click key only by letter case (macOS case-insensitive filesystem) now merge automatically; errored mindmap tool results (`isError` or `ok !== true`) surface as an inline error; a ~30s watchdog switches to a timeout state. Both failure states offer a one-click retry that re-sends the open request.
-- A code-review sweep (`_issues/002`) landed 11 fixes, each with a failing regression test first:
-  - **Markdown parsing**: an unclosed `---` frontmatter fence at the top no longer swallows the whole document into an empty tree; the root-title echo merge (`firstTopH1Seen`) is set only by a top-level H1 so an earlier H2 or a heading inside a quote block no longer suppresses it; GFM table column count is pinned to the **separator row** (short rows padded, extra cells dropped) instead of the header; fenced code blocks close only on a matching fence type (`~~~` is no longer ended by a ``` line) and `parseTableRow` honors an escaped `\|` preceded by an escaped backslash (`\\|`).
-  - **Document snapshots**: `mergeDocuments` only deletes a dropped local entry when no live snapshot owns the same path, so a recreated file that a snapshot also references keeps its panel openable.
-  - **Link rendering**: the bare-URL pattern no longer swallows CJK punctuation/full-width characters (`https://a.com，然后…` stops at the comma); `[text](url)` and bare links render as plain text unless the scheme is http/https/mailto (blocking `javascript:`/`data:`), and `openLink` calls `preventDefault` only when `window.open` actually succeeds, so host-blocked popups fall back to default navigation instead of a dead click.
-  - **Host safety & approval**: the tree route and all mindmap path resolutions now reject symlink escapes out of the working directory via a `realpath` walk-up (`resolvesInsideBase`); `requireApproval` gates `mindmap_create` as well as `mindmap_update`; and `listDirectoryLevel` stops iterating once it hits the entry cap (perf) while still flagging truncation.
-  - **PNG export**: wide tables measure their box height using the same clamped per-column width the renderer uses, so wrapped cell text no longer overflows the measured box bottom.
 
 ## [0.4.1] - 2026-08-24
 

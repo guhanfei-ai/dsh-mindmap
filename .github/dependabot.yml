@@ -12,3 +12,10 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # 发布前暂缓大版本跳级（checkout/setup-node 4→7）：避免 CI 基建变更
+    # 混入发布窗口；大版本升级决策推到下一版单独评估。
+    ignore:
+      - dependency-name: actions/checkout
+        versions: [">=5"]
+      - dependency-name: actions/setup-node
+        versions: [">=5"]

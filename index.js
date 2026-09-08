@@ -35,6 +35,7 @@ export const Config = Schema.object({
 })
 
 const MAX_CONTENT_BYTES = 2 * 1024 * 1024
+const MAX_READ_BYTES = 2 * 1024 * 1024
 const MAX_NAME_CHARS = 80
 const TOOL_TIMEOUT_MS = 15_000
 const MAX_TREE_ENTRIES = 500
@@ -291,6 +292,18 @@ function byteLength(value) {
   return new TextEncoder().encode(value).byteLength
 }
 
+/**
+ * mindmap_open / mindmap_get 共用的读取路径：先 stat 查文件大小（不为测
+ * 大小读全量），超限即拒；不存在时 stat 抛 ENOENT，readFile 的原语义不变。
+ */
+async function readMindmap(path) {
+  const { size } = await stat(path)
+  if (size > MAX_READ_BYTES) {
+    throw new Error(`mindmap size exceeds the ${MAX_READ_BYTES}-byte limit.`)
+  }
+  return readFile(path, 'utf8')
+}
+
 /** 工具结果信封：client 面板与模型共用的唯一载体。 */
 function buildResult(op, path, extra = {}) {
   const base = String(path ?? '').split(/[\\/]/).pop() || 'mindmap'
@@ -398,7 +411,7 @@ export function apply(ctx, config = {}) {
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
       const path = await resolveMindmapPath(sessionCwd(exec, ctx.sessions), args?.path)
-      const content = await readFile(path, 'utf8')
+      const content = await readMindmap(path)
       return buildResult('open', path, { content })
     },
   }))
@@ -417,7 +430,7 @@ export function apply(ctx, config = {}) {
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
       const path = await resolveMindmapPath(sessionCwd(exec, ctx.sessions), args?.path)
-      const content = await readFile(path, 'utf8')
+      const content = await readMindmap(path)
       return buildResult('get', path, { content })
     },
   }))
@@ -525,6 +538,8 @@ export function apply(ctx, config = {}) {
 export const internals = Object.freeze({
   GUIDANCE,
   MAX_CONTENT_BYTES,
+  MAX_READ_BYTES,
+  readMindmap,
   sanitizeStem,
   resolveMindmapPath,
   sessionCwd,

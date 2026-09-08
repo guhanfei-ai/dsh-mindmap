@@ -123,6 +123,7 @@
 			resultTextOfBlocks,
 			stemOf,
 			buildExportSvg,
+			measureExportBox,
 			createIdFactory,
 			collectTreeIds,
 			planGrowthReveal,

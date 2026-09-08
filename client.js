@@ -950,6 +950,10 @@ window.__ModuleLoader__.load({
 			nodeW: 220, padX: 12, padY: 8, hGap: 48, vGap: 12, pad: 20,
 			fontSize: 13, lineHeight: 18,
 			tableCellW: 110, tableCellPad: 8, tableMinW: 140, tableMaxW: 480,
+			// 单元格折行宽下限 = 导出字号 12px 的全角宽：极宽表（如 60 列）
+			// 列盒窄于内距时 cellInner 可能为负，钳到至少容纳一个全角字符；
+			// 测量与渲染必须共用同一钳制值（022 契约）。
+			tableCellMinInner: 12,
 		};
 
 		function escapeXml(text) {
@@ -1021,7 +1025,7 @@ window.__ModuleLoader__.load({
 				const rows = (node.data && node.data.rows) || [];
 				const cols = rows.reduce((mx, row) => Math.max(mx, row.length), 0) || 1;
 				const w = Math.min(EXPORT.tableMaxW, Math.max(EXPORT.tableMinW, cols * EXPORT.tableCellW));
-				const cellInner = w / cols - EXPORT.tableCellPad * 2;
+				const cellInner = Math.max(w / cols - EXPORT.tableCellPad * 2, EXPORT.tableCellMinInner);
 				const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), cellInner, EXPORT.fontSize - 1).length), 1));
 				const h = Math.max(EXPORT.lineHeight, rowLines.reduce((a, b) => a + b, 0) * EXPORT.lineHeight);
 				return { w, h };
@@ -1101,14 +1105,15 @@ window.__ModuleLoader__.load({
 					const rows = (node.data && node.data.rows) || [];
 					const cols = rows.reduce((mx, row) => Math.max(mx, row.length), 0) || 1;
 					const colW = p.size.w / cols;
-					const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), colW - EXPORT.tableCellPad * 2, EXPORT.fontSize - 1).length), 1));
+					const innerW = Math.max(colW - EXPORT.tableCellPad * 2, EXPORT.tableCellMinInner);
+					const rowLines = rows.map((row) => row.reduce((mx, cell) => Math.max(mx, wrapExportText(stripInlineForExport(cell), innerW, EXPORT.fontSize - 1).length), 1));
 					const rowH = rowLines.map((n) => n * EXPORT.lineHeight);
 					let ry = boxY;
 					rows.forEach((row, ri) => {
 						row.forEach((cell, ci) => {
 							const cx = p.x + ci * colW;
 							parts.push(`<rect x="${cx}" y="${ry}" width="${colW}" height="${rowH[ri]}" fill="${ri === 0 ? palette.surfaceCode : "none"}" stroke="${palette.borderSubtle}" stroke-width="1"/>`);
-							const cellLines = wrapExportText(stripInlineForExport(cell), colW - EXPORT.tableCellPad * 2, EXPORT.fontSize - 1);
+							const cellLines = wrapExportText(stripInlineForExport(cell), innerW, EXPORT.fontSize - 1);
 							cellLines.forEach((ln, li) => {
 								const ty = ry + (li + 0.5) * EXPORT.lineHeight + (EXPORT.fontSize - 1) * 0.35;
 								parts.push(`<text x="${cx + EXPORT.tableCellPad}" y="${ty.toFixed(1)}" font-size="${EXPORT.fontSize - 1}" font-weight="${ri === 0 ? 600 : 400}" fill="${palette.text}">${escapeXml(ln)}</text>`);
@@ -3410,6 +3415,7 @@ window.__ModuleLoader__.load({
 			resultTextOfBlocks,
 			stemOf,
 			buildExportSvg,
+			measureExportBox,
 			createIdFactory,
 			collectTreeIds,
 			planGrowthReveal,
