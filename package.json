@@ -1,6 +1,6 @@
 {
   "name": "dsh-mindmap",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Mindmap plugin for DeepSeek Harness: a plain markdown file in the working directory IS the mindmap; the chat edits it step by step and the right-side panel follows live.",
   "repository": {
     "type": "git",
@@ -40,7 +40,9 @@
     "dsh-better-sidebar": ">=0.10.0"
   },
   "peerDependenciesMeta": {
-    "dsh-better-sidebar": { "optional": true }
+    "dsh-better-sidebar": {
+      "optional": true
+    }
   },
   "dsh": {
     "bundle": {
