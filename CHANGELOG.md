@@ -6,10 +6,14 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
+- Better Sidebar native tab coexistence: when `dsh-better-sidebar` is installed, the mindmap registers as a single-instance tab (`dsh-mindmap:mindmap`) inside Better Sidebar instead of rendering its own floating panel. The in-tab toolbar is a single compact row (mindmap list, current mindmap, export button on the same line), labeled 脑图列表; the header 思维脑图 button opens or focuses the tab. When Better Sidebar is absent, the standalone floating panel with drag-resizable width and layout-push CSS remains unchanged (labeled 目录). `dsh-better-sidebar` is declared as an optional peer dependency — no duplicate instance is bundled. The mode switch is fully reversible via a `sidebarBus`-driven reversible effect: if Better Sidebar is unloaded mid-session, the standalone panel and layout-push CSS are restored automatically. A session-scoped data bridge (`sessionStore`) passes header-slot-captured `nodes`/`inputActions` to the tab component, with cleanup on session switch and component unmount.
 - Collapsible subtrees: every node with children shows a small toggle on its connector. Collapsing hides the subtree and reports how many nodes are hidden, which keeps large maps navigable. The state is view-only — the markdown file is untouched and image export still covers the full subtree. Collapsed nodes reset when the document changes, and stale ids are pruned after the AI rewrites the tree.
 
 ### Fixed
 
+- 内嵌 M 徽标增大至 16px、字母加粗，改为透明底与跟随文件名主题色的描边，改善换肤后的辨识度。
+- 内嵌模式的 Markdown 文件恢复为紧凑 M 徽标；其他格式文件仅展示，禁用悬停反馈、打开、拖拽与右键操作，文件夹仍可展开。
+- 内嵌 Better Sidebar 的列表与标签采用宿主字体角色（正文 14px、界面 12px），目录改用 14px 线框图标，修复字号继承偏大及标签字号混杂；独立模式和脑图节点排版不变。
 - 画布拖拽不再吞掉折叠开关等控件的点击。
 - 目录打开/焦点同步：宿主草稿 API 不可读时不再静默放弃；有非空草稿时指令转入剪贴板。
 - Settings now wait for a late-arriving client connection instead of permanently capturing its initial absence. The client also supports direct settings descriptors and the current positional update API, while retaining the legacy envelopes.
@@ -135,4 +139,4 @@ First release of dsh-mindmap: a plain Markdown file in the session working direc
 
 - Manual edits to a `.md` outside the AI tools are only picked up on the next AI `mindmap_*` touch of that file.
 - The panel is unavailable in a blank (no-session) state, since it lives in a session-scoped slot.
-- Running two layout-push plugins (e.g. dsh-better-sidebar) with both panels open at once is a known boundary: both target `#root` and the later-injected rule wins.
+- ~~Running two layout-push plugins (e.g. dsh-better-sidebar) with both panels open at once is a known boundary: both target `#root` and the later-injected rule wins.~~ Resolved in `[Unreleased]`: when Better Sidebar is installed, the mindmap registers as a native tab inside it and no longer writes its own layout-push CSS.

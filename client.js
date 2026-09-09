@@ -1338,8 +1338,7 @@ window.__ModuleLoader__.load({
 			loadingErrorText: { color: "var(--dsw-alias-label-error)", fontSize: "13px", lineHeight: 1.6, margin: "0", textAlign: "center", wordBreak: "break-word", maxWidth: "90%" },
 			loadingFailMark: { flex: "none", fontSize: "22px", lineHeight: 1, color: "var(--dsw-alias-label-error)" },
 			retryBtn: { flex: "none", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", cursor: "pointer", font: "inherit", fontSize: "13px", padding: "6px 18px", borderRadius: "8px", lineHeight: "20px" },
-			// 013 目录树 tab：树容器/行样式。视觉自成一套：emoji 图标 + M 徽标 +
-			// 悬停高亮 + 激活指示条，不做 VSCode 式 chevron/线框。
+			// 013 独立目录树：emoji 图标 + M 徽标；内嵌模式在下方单独覆盖。
 			// 树容器 -2px 负边距抵消 body 16px 内距：树左缘 = 头部「目录」tab 左缘（14px）。
 			treeWrap: { display: "flex", flexDirection: "column", gap: "12px", height: "100%", minHeight: 0, marginLeft: "-2px", marginRight: "-2px" },
 			treeList: { flex: "1 1 auto", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", minHeight: 0 },
@@ -1440,7 +1439,52 @@ window.__ModuleLoader__.load({
 			// 百分比标签：tabular-nums 防数字抖动。
 			zoomLabel: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none" },
 			zoomFitBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "12px", lineHeight: "20px", height: "22px", padding: "0 8px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", flex: "none" },
+			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
+			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
+			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。
+			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
+			// 紧凑标签：比 standalone 的 tab（3px 12px）更小，贴合单行工具栏。
+			sbTab: { border: "none", background: "none", cursor: "pointer", padding: "2px 8px", lineHeight: "20px", borderRadius: "6px", font: "inherit", fontSize: "12px", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
+			sbTabActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)" },
+			// 当前脑图标签包裹：与 standalone 的 tabWrap 同构，但圆角与内距更紧凑。
+			sbTabWrap: { display: "inline-flex", alignItems: "center", borderRadius: "6px", overflow: "hidden", maxWidth: "160px", transition: "background 0.08s ease" },
+			sbTabTitle: { background: "none", border: "none", cursor: "pointer", font: "inherit", color: "inherit", padding: "2px 4px 2px 8px", lineHeight: "20px", whiteSpace: "nowrap", maxWidth: "110px", overflow: "hidden", textOverflow: "ellipsis" },
+			sbTabClose: { background: "none", border: "none", cursor: "pointer", padding: "2px 6px 2px 2px", lineHeight: "20px", color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", flex: "none" },
 		};
+
+		// 内嵌界面与 Better Sidebar 共用宿主字体角色；变量缺失时仍有完整回退。
+		// 清除字号/行高等长属性，避免覆盖 font 简写中的主题值。
+		const SIDEBAR_BODY_FONT = "var(--dsw-font-s-14, 400 14px/22px sans-serif)";
+		const SIDEBAR_UI_FONT = "var(--dsw-font-xxs-12, 400 12px/18px sans-serif)";
+		function sidebarFontStyle(style, font = SIDEBAR_UI_FONT) {
+			const { fontSize, lineHeight, fontWeight, fontFamily, ...rest } = style;
+			return { ...rest, font };
+		}
+		const SIDEBAR_STYLES = {
+			...S,
+			sbRoot: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, minWidth: 0, font: SIDEBAR_BODY_FONT },
+			sbToolbar: sidebarFontStyle(S.sbToolbar),
+			sbTab: sidebarFontStyle(S.sbTab),
+			sbTabTitle: sidebarFontStyle(S.sbTabTitle),
+			action: sidebarFontStyle(S.action),
+			emptyHint: sidebarFontStyle(S.emptyHint),
+			treeRefresh: sidebarFontStyle(S.treeRefresh),
+			treeError: sidebarFontStyle(S.treeError),
+			treeMenuItem: sidebarFontStyle(S.treeMenuItem),
+			loadingText: sidebarFontStyle(S.loadingText, SIDEBAR_BODY_FONT),
+			loadingErrorText: sidebarFontStyle(S.loadingErrorText, SIDEBAR_BODY_FONT),
+			retryBtn: sidebarFontStyle(S.retryBtn),
+			treeList: { ...S.treeList, gap: 0 },
+			treeRow: { ...sidebarFontStyle(S.treeRow, SIDEBAR_BODY_FONT), minHeight: "34px", flexShrink: 0, gap: "6px", color: "var(--dsw-alias-label-primary)" },
+			treeRootRow: { color: "var(--dsw-alias-label-primary)" },
+			treeRowMd: { color: "var(--dsw-alias-label-primary)" },
+			// M 与文件名共用主题前景色；透明底避免主题品牌色与浅底碰撞。
+			// 独立声明字号/字重，不受宿主字体简写与字体切换影响。
+			mdBadge: { ...S.mdBadge, width: "16px", height: "16px", boxSizing: "border-box", border: "1px solid currentColor", borderRadius: "3px", fontFamily: "system-ui, sans-serif", fontSize: "12px", fontWeight: 800, lineHeight: 1, background: "transparent", color: "inherit" },
+		};
+		function workspaceStyles(variant) {
+			return variant === "sidebar" ? SIDEBAR_STYLES : S;
+		}
 
 		/** 015 分段选择控件（线型/卡片风格）。 */
 		function Segmented(props) {
@@ -1602,78 +1646,6 @@ window.__ModuleLoader__.load({
 				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,
 				notice ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsNotice, children: notice }) : null,
 				error ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsError, children: error }) : null,
-			] });
-		}
-
-		/**
-		 * 会话内容节点的双代快照选择（023）：dsh ≤0.1.1 的 useSession 快照带
-		 * 平铺 nodes；0.1.2-rc.1 起 SessionSnapshot 拆成纯控制状态，会话内容
-		 * 迁入 useChat 的 ChatSnapshot.legacy.nodes（官方兼容面，ToolResultNode
-		 * 字段同名）。legacy 优先、旧 nodes 兜底，两代通吃。
-		 */
-		function conversationNodesOf(s) {
-			if (!s) return EMPTY_NODES;
-			const legacy = s.legacy;
-			if (legacy && Array.isArray(legacy.nodes)) return legacy.nodes;
-			return Array.isArray(s.nodes) ? s.nodes : EMPTY_NODES;
-		}
-
-		/**
-		 * 「思维脑图」槽位组件（014）：同一槽位渲染 M 按钮 + 悬浮面板宿主层。
-		 * session scope 的 useSession/sessionId/inputActions 直给，经 props 传给
-		 * MindmapDetailsPanel（无桥、无 useSyncExternalStore——shell.overlay 跨槽
-		 * 方案实测未渲染，弃用后顺手把桥也删了）。023：内容钩子改为
-		 * useChat（0.1.2-rc.1+）优先、useSession（≤0.1.1）兜底。
-		 */
-		function MindmapSlot(props) {
-			const { useSession, useChat, sessionId, inputActions, mindmapFace } = props;
-			const nodesHook = useChat ?? useSession;
-			const nodes = nodesHook ? nodesHook(conversationNodesOf) : EMPTY_NODES;
-			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
-			// 不变）时，nodes prop 不换、memo 命中缓存、auto-open effect 永不
-			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
-			// 值比较天然绕过引用相等短路；内容钩子不可用时回退空串。
-			const nodesVersion = nodesHook ? nodesHook((s) => nodesFingerprint(conversationNodesOf(s))) : "";
-			const [open, setOpen] = react.useState(false);
-			return (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [
-				(0, react_jsx_runtime.jsxs)("button", {
-					type: "button",
-					title: "脑图面板：展开 / 收起",
-					style: S.mButton,
-					onClick: () => setOpen((v) => !v),
-					children: [
-						(0, react_jsx_runtime.jsx)("svg", {
-							width: 14,
-							height: 14,
-							viewBox: "0 0 14 14",
-							fill: "none",
-							stroke: "currentColor",
-							strokeWidth: 1.4,
-							strokeLinecap: "round",
-							strokeLinejoin: "round",
-							"aria-hidden": "true",
-							style: { opacity: 0.7, flex: "none" },
-							children: [
-								(0, react_jsx_runtime.jsx)("circle", { cx: 2.5, cy: 7, r: 1.7 }),
-								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 3.5, r: 1.7 }),
-								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 10.5, r: 1.7 }),
-								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 6.2 L9.9 4.2" }),
-								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 7.8 L9.9 9.8" }),
-							],
-						}),
-						"思维脑图",
-					],
-				}),
-				(0, react_jsx_runtime.jsx)(MindmapDetailsPanel, {
-					open,
-					sessionId,
-					inputActions,
-					nodes,
-					nodesVersion,
-					mindmapFace,
-					onOpen: () => setOpen(true),
-					onClose: () => setOpen(false),
-				}),
 			] });
 		}
 
@@ -2682,11 +2654,23 @@ window.__ModuleLoader__.load({
 				}
 				//#endregion
 
-		function MindmapDetailsPanel(props) {
-			// 014：面板与 M 按钮同槽位（conversation.session.header.actions），
-			// 会话能力（sessionId/inputActions/nodes）与开合回调全部由 MindmapSlot
-			// 经 props 直给（无桥、无 useSyncExternalStore）。
-			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+		/**
+		 * 壳无关的脑图工作区（026 拆分）：从 MindmapDetailsPanel 提取的全部
+		 * 共享状态与逻辑——文档合并、目录树、视图切换、导出、自动展开、焦点
+		 * 同步、生长动画、加载态。不含任何壳特有几何（fixed 定位、宽度拖拽、
+		 * layout-push CSS、头部高度对齐），这些由外层壳（独立 fixed 壳 /
+		 * Better Sidebar Tab 壳）提供。
+		 *
+		 * visible：内容是否对用户可见（独立壳 = open；BS Tab = visible）。
+		 * 不可见时仍挂载——hooks 照常跑，auto-open 能在面板/Tab 收起时触发
+		 * onAutoOpen 把它拉起。onAutoOpen 在独立壳里 = setOpen(true)，在
+		 * BS Tab 里 = openTab(...)。onClose 仅独立壳提供（BS Tab 自带关闭）。
+		 * headerHeight：独立壳传入的对齐高度（null = BS Tab 模式，头部自适应）。
+		 */
+		function MindmapWorkspace(props) {
+			const { mindmapFace, visible, sessionId, inputActions, nodes, nodesVersion, onAutoOpen, onClose, headerHeight, variant } = props;
+			// 只调整工作区界面；脑图节点与导出继续使用自己的字体层级。
+			const S = workspaceStyles(variant);
 			// 016：nodesVersion（结构指纹）作副依赖——nodes 引用不变但内容已变
 			// （新工具结果原地落地）时强制重算；docs 新引用带动 merged →
 			// auto-open effect 重跑（对已消费事件幂等 no-op），面板必达展开。
@@ -2703,55 +2687,13 @@ window.__ModuleLoader__.load({
 			// AI 没调工具（S3）或任何未知成因卡住时的兜底恢复路径。
 			const OPEN_TIMEOUT_MS = 30000;
 			const [openTimedOut, setOpenTimedOut] = react.useState(false);
-			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
-			// 窗口尺寸变化时持续钳制——只在挂载时压一次的话，窗口先放大→拖宽
-			// 面板→再缩小会让面板保持旧像素宽，聊天区被挤没。
-			const WIDTH_KEY = "dsh-mindmap.overlay-width";
-			const [panelWidth, setPanelWidth] = react.useState(() => {
-				try {
-					const saved = Number(localStorage.getItem(WIDTH_KEY));
-					if (Number.isFinite(saved) && saved >= 280) return Math.min(saved, Math.round(window.innerWidth * 0.8));
-				} catch {
-					// localStorage 不可用：走默认
-				}
-				return Math.round(window.innerWidth * 0.42);
-			});
-			react.useEffect(() => {
-				const clamp = () => {
-					setPanelWidth((prev) => {
-						const max = Math.round(window.innerWidth * 0.8);
-						return prev > max ? max : prev;
-					});
-				};
-				clamp();
-				window.addEventListener("resize", clamp);
-				return () => window.removeEventListener("resize", clamp);
-			}, []);
-			// 015 设置面板：没有本地拖拽记忆时，用 settings 里的默认宽度。
-			react.useEffect(() => {
-				let hasLocal = false;
-				try {
-					hasLocal = localStorage.getItem(WIDTH_KEY) !== null;
-				} catch {
-					// 忽略
-				}
-				if (hasLocal) return;
-				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
-				mindmapFace.readSettings().then((v) => {
-					const pct = v && typeof v.defaultPanelWidth === "number" ? Math.min(80, Math.max(20, v.defaultPanelWidth)) : 42;
-					const px = Math.round(window.innerWidth * pct / 100);
-					setPanelWidth((prev) => (Math.abs(prev - px) < 2 ? prev : px));
-				}).catch(() => {
-					// 读设置失败：保持 42% 默认
-				});
-			}, [mindmapFace]);
 
-			// 015 节点主题：面板每次打开、或设置总线 bump（设置页保存）时重读
-			// settings——面板常驻不卸载，光靠 open 变化会漏掉「开着面板改设置」。
+			// 015 节点主题：面板每次可见、或设置总线 bump（设置页保存）时重读
+			// settings——面板常驻不卸载，光靠 visible 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
 			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
 			react.useEffect(() => {
-				if (!open) return;
+				if (!visible) return;
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
 				mindmapFace.readSettings().then((v) => {
 					if (!v) return;
@@ -2765,31 +2707,8 @@ window.__ModuleLoader__.load({
 				}).catch(() => {
 					// 读设置失败：保持当前主题
 				});
-			}, [open, settingsStamp, mindmapFace]);
-			const dragStateRef = react.useRef(null);
-			function startResize(e) {
-				e.preventDefault();
-				dragStateRef.current = { startX: e.clientX, startWidth: panelWidth, latestWidth: panelWidth };
-				const onMove = (ev) => {
-					if (!dragStateRef.current) return;
-					const max = Math.round(window.innerWidth * 0.8);
-					const next = Math.min(max, Math.max(280, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
-					dragStateRef.current.latestWidth = next;
-					setPanelWidth(next);
-				};
-				const onUp = () => {
-					try {
-						localStorage.setItem(WIDTH_KEY, String(dragStateRef.current ? dragStateRef.current.latestWidth : panelWidth));
-					} catch {
-						// localStorage 不可用：忽略
-					}
-					dragStateRef.current = null;
-					window.removeEventListener("mousemove", onMove);
-					window.removeEventListener("mouseup", onUp);
-				};
-				window.addEventListener("mousemove", onMove);
-				window.addEventListener("mouseup", onUp);
-			}
+			}, [visible, settingsStamp, mindmapFace]);
+
 			// 013 目录树 tab：常驻第一个 tab（TREE_TAB 哨兵，永不与绝对路径撞名）。
 			const TREE_TAB = "__tree__";
 			// 013 作者拍板「单脑图模式」：面板只有「目录」与「脑图」两个 tab，
@@ -2810,55 +2729,6 @@ window.__ModuleLoader__.load({
 			const [tabMenu, setTabMenu] = react.useState(null);
 			// 悬停高亮键：树行用 entry.path / node.path，tab 用 TREE_TAB / 文档路径。
 			const [hoverKey, setHoverKey] = react.useState(null);
-
-			// 007~010 头线对齐（overlay 版回归）：面板头部高度动态跟随聊天区头部，
-			// 让两者的底部分隔线像素对齐。面板贴视口顶（fixed 宿主层），故
-			// 头部高度 = 聊天头部 rect.bottom - 1 - 面板顶（面板顶 ≈ 视口顶）。
-			// 主选 wSkVaW_header；结构链回退；合法性钳制 [40,200]；失败回退 74（75-1）。
-			const panelRootRef = react.useRef(null);
-			const FALLBACK_HEADER_HEIGHT = 74;
-			const [headerHeight, setHeaderHeight] = react.useState(FALLBACK_HEADER_HEIGHT);
-			react.useLayoutEffect(() => {
-				const HEADER_MIN = 40;
-				const HEADER_MAX = 200;
-				const tryPaths = [
-					() => document.querySelector('[class*="wSkVaW_header"]'),
-					() => {
-						const frame = document.querySelector("[data-dsh-frame]");
-						if (!frame) return null;
-						const center = frame.querySelector('[data-pane="conversation"]');
-						return center ? center.firstElementChild : null;
-					},
-				];
-				const measure = () => {
-					for (const path of tryPaths) {
-						const el = path();
-						if (!el) continue;
-						const rect = el.getBoundingClientRect();
-						const panelTop = panelRootRef.current
-							? panelRootRef.current.getBoundingClientRect().top
-							: rect.top;
-						const h = rect.bottom - 1 - panelTop;
-						if (h >= HEADER_MIN && h <= HEADER_MAX) {
-							setHeaderHeight(Math.round(h * 10) / 10);
-							return;
-						}
-					}
-					setHeaderHeight(FALLBACK_HEADER_HEIGHT);
-				};
-				measure();
-				const target = tryPaths[0]() || tryPaths[1]();
-				let observer = null;
-				if (target && typeof ResizeObserver !== "undefined") {
-					observer = new ResizeObserver(measure);
-					observer.observe(target);
-				}
-				window.addEventListener("resize", measure);
-				return () => {
-					if (observer) observer.disconnect();
-					window.removeEventListener("resize", measure);
-				};
-			}, []);
 
 			// 单脑图模式：可见脑图 = 用户当前点选（且未被关闭）的快照/本地文档，
 			// 否则跟随最新工具结果；隐藏过的路径不自动回弹（重新点树里文件才恢复）。
@@ -2915,14 +2785,14 @@ window.__ModuleLoader__.load({
 				: null;
 
 			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
-			// 无论面板当前是否收起，都展开并切到这次意图对应的文档；首次挂载的
+			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
 			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
 			const seen = react.useRef(null);
 			react.useEffect(() => {
 				const targetPath = autoOpenTarget(merged, seen.current);
 				seen.current = openingEventKeys(merged);
 				if (targetPath) {
-					onOpen();
+					onAutoOpen();
 					setHiddenPath(null);
 					setCurrentPath(targetPath);
 					setView("mindmap");
@@ -2949,7 +2819,7 @@ window.__ModuleLoader__.load({
 				prevIdsRef.current = { path: null, ids: null };
 			}, [sessionId]);
 			react.useEffect(() => {
-				if (!open) return; // 面板收起时不自动发消息（014 overlay 形态守卫）
+				if (!visible) return; // 面板/Tab 不可见时不自动发消息
 				if (!sessionId) return;
 				if (!active || active === TREE_TAB) return;
 				if (!docs.byPath[active]) return; // 本地占位：它的 open 请求已在途
@@ -2959,7 +2829,7 @@ window.__ModuleLoader__.load({
 				if (submitChatCommand(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
 				}
-			}, [active, focusPath, fsTree.cwd, docs, open]);
+			}, [active, focusPath, fsTree.cwd, docs, visible]);
 
 			async function onExport() {
 				if (!tree || !doc || exporting) return;
@@ -2973,7 +2843,6 @@ window.__ModuleLoader__.load({
 					setExporting(false);
 				}
 			}
-
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
 			// 草稿保护：确实读到非空草稿才让路（改走剪贴板），读不到就按既有
 			// 行为直填直发——宿主不暴露草稿时不能把功能整个卡死。
@@ -3164,6 +3033,30 @@ window.__ModuleLoader__.load({
 				[fsTree.nodes, fsTree.expanded],
 			);
 
+			// 内嵌文件夹使用 14px 线框图标，Markdown 使用 M 徽标。
+			// 独立目录继续使用原有 emoji / M 徽标。
+			function sidebarTreeIcon(folder, expanded = false) {
+				const outline = folder
+					? (expanded ? "M2 6V3h4l2 2h4v2M2 6h11l-2 6H1z" : "M1.5 3h4l2 2h5v7h-11z")
+					: "M3 1.5h5l3 3V12.5H3z M8 1.5v3h3";
+				return (0, react_jsx_runtime.jsx)("svg", {
+					width: 14, height: 14, viewBox: "0 0 14 14", fill: "none",
+					stroke: "currentColor", strokeWidth: 1, strokeLinejoin: "round", strokeLinecap: "round",
+					style: { flex: "none" }, "aria-hidden": true, focusable: "false",
+					children: (0, react_jsx_runtime.jsx)("path", { d: outline }),
+				});
+			}
+			function directoryLabel(name, expanded) {
+				return (0, react_jsx_runtime.jsx)("span", {
+					style: { flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
+					children: variant === "sidebar" ? name : `${expanded ? "📂" : "📁"} ${name}`,
+				});
+			}
+			function blockFileInteraction(event) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+
 			function renderTreeRow(row) {
 				if (row.kind === "dir") {
 					const node = row.node;
@@ -3191,10 +3084,8 @@ window.__ModuleLoader__.load({
 						},
 						children: [
 							(0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, children: expandedNow ? "▾" : "▸" }),
-							(0, react_jsx_runtime.jsx)("span", {
-								style: { flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
-								children: expandedNow ? `📂 ${node.name}` : `📁 ${node.name}`,
-							}),
+							variant === "sidebar" ? sidebarTreeIcon(true, expandedNow) : null,
+							directoryLabel(node.name, expandedNow),
 							node.truncated ? (0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, children: "…" }) : null,
 							// 根行行内右侧的「刷新」（013：不占独立一行）。
 							isRoot ? (0, react_jsx_runtime.jsx)("span", { style: S.spacer }) : null,
@@ -3217,8 +3108,9 @@ window.__ModuleLoader__.load({
 				const entry = row.entry;
 				const depthPad = row.depth * 16;
 				const isMd = /\.md$/i.test(entry.name);
+				const inactiveFile = variant === "sidebar" && !entry.isDir && !isMd;
 				const expandedNow = entry.isDir && Boolean(fsTree.expanded[entry.path]);
-				const hovered = hoverKey === entry.path;
+				const hovered = !inactiveFile && hoverKey === entry.path;
 				const style = {
 					...S.treeRow,
 					paddingLeft: depthPad,
@@ -3226,6 +3118,7 @@ window.__ModuleLoader__.load({
 					...(isMd ? S.treeRowMd : entry.isDir ? {} : S.treeRowOther),
 					...(entry.hidden ? { opacity: 0.6 } : {}),
 					...(hovered ? S.treeRowHover : {}),
+					...(inactiveFile ? { userSelect: "none" } : {}),
 				};
 				if (entry.isDir) {
 					return (0, react_jsx_runtime.jsxs)("div", {
@@ -3247,25 +3140,34 @@ window.__ModuleLoader__.load({
 						},
 						children: [
 							(0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, children: expandedNow ? "▾" : "▸" }),
-							(0, react_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }, children: expandedNow ? `📂 ${entry.name}` : `📁 ${entry.name}` }),
+							variant === "sidebar" ? sidebarTreeIcon(true, expandedNow) : null,
+							directoryLabel(entry.name, expandedNow),
 						],
 					});
 				}
 				return (0, react_jsx_runtime.jsxs)("div", {
 					key: entry.path,
 					style,
-					title: isMd ? `打开脑图：${entry.path}` : entry.path,
-					onClick: isMd ? () => openMindmap(entry) : undefined,
-					onMouseEnter: () => setHoverKey(entry.path),
-					onMouseLeave: () => setHoverKey((k) => (k === entry.path ? null : k)),
+					title: inactiveFile ? undefined : isMd ? `打开脑图：${entry.path}` : entry.path,
+					"aria-disabled": inactiveFile ? true : undefined,
+					draggable: inactiveFile ? false : undefined,
+					// 纯展示文件仍接住事件，避免穿透到宿主或空白处的新建菜单。
+					onClick: inactiveFile ? blockFileInteraction : isMd ? () => openMindmap(entry) : undefined,
+					onDoubleClick: inactiveFile ? blockFileInteraction : undefined,
+					onMouseDown: inactiveFile ? blockFileInteraction : undefined,
+					onDragStart: inactiveFile ? blockFileInteraction : undefined,
+					onMouseEnter: inactiveFile ? undefined : () => setHoverKey(entry.path),
+					onMouseLeave: inactiveFile ? undefined : () => setHoverKey((k) => (k === entry.path ? null : k)),
 					// 右键：.md 不弹菜单（左键即打开）；非 .md 只拦掉默认菜单。
 					onContextMenu: (e) => {
 						e.preventDefault();
 						e.stopPropagation();
 					},
 					children: [
+						variant === "sidebar" ? (0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, "aria-hidden": true }) : null,
 						isMd
-							? (0, react_jsx_runtime.jsx)("span", { style: S.mdBadge, children: "M" })
+							? (0, react_jsx_runtime.jsx)("span", { style: S.mdBadge, "aria-hidden": true, children: "M" })
+							: variant === "sidebar" ? sidebarTreeIcon(false)
 							: (0, react_jsx_runtime.jsx)("span", { style: S.fileDot, children: (0, react_jsx_runtime.jsx)("span", { style: S.fileDotCore }) }),
 						(0, react_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }, children: entry.name }),
 					],
@@ -3386,9 +3288,331 @@ window.__ModuleLoader__.load({
 					] });
 			}
 			//#endregion
+	//#region 026 工作区渲染：壳无关的内容（头部 tab 行 + 导出 + 画布/树/加载态）
+	// 027 内嵌头部视觉对齐：variant="sidebar" 时 Better Sidebar 外层已有 Tab 头部，
+	// 内嵌只保留一行紧凑工具栏——「脑图列表」标签 + 当前脑图标签 + 导出图片按钮
+	//（导出在行尾，不再独占一行）。variant="standalone" 时保持原双层头部（headerTop
+	// spacer + 导出 + 关闭 → tabRow）不变。
+	// 不可见时仍挂载（hooks 已在上文跑完），只跳过 JSX——auto-open effect
+	// 在 visible=false 时仍能调 onAutoOpen 把壳拉起。
+	if (!visible) return null;
+	// headerHeight 由独立 fixed 壳传入（对齐聊天头部底部分隔线）；
+	// BS Tab 模式传 null → 头部高度自适应（Better Sidebar 管自己的外壳）。
+	const wsHeaderStyle = headerHeight != null ? { ...S.header, height: `${headerHeight - 1}px` } : S.header;
+
+	// 027 导出按钮（两种模式共用）：disabled 语义 = 无树 / 导出中 / 本地占位。
+	const exportBtn = (0, react_jsx_runtime.jsx)("button", {
+		type: "button",
+		style: S.action,
+		disabled: !tree || exporting || (doc && doc.op === "local"),
+		onClick: onExport,
+		children: exporting ? "导出中…" : "导出图片",
+	});
+	const exportErrorSpan = exportError
+		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
+		: null;
+
+	// 027 目录/列表标签文案：sidebar 模式叫「脑图列表」，standalone 模式叫「目录」。
+	const treeTabLabel = variant === "sidebar" ? "脑图列表" : "目录";
+
+	if (variant === "sidebar") {
+		// 027 sidebar 模式：单行紧凑工具栏。BS 外层已有 Tab 头部与关闭按钮，
+		// 内嵌不再加重复外壳标题或关闭按钮。
+		return (0, react_jsx_runtime.jsxs)("div", { style: S.sbRoot, children: [
+			(0, react_jsx_runtime.jsxs)("div", { style: S.sbToolbar, children: [
+				(0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					style: active === TREE_TAB ? { ...S.sbTab, ...S.sbTabActive } : (hoverKey === TREE_TAB ? { ...S.sbTab, ...S.tabHover } : S.sbTab),
+					title: fsTree.cwd ?? "工作目录",
+					onClick: () => setView("tree"),
+					onMouseEnter: () => setHoverKey(TREE_TAB),
+					onMouseLeave: () => setHoverKey((k) => (k === TREE_TAB ? null : k)),
+					onContextMenu: (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						setTabMenu({ x: e.clientX, y: e.clientY, path: TREE_TAB });
+					},
+					children: treeTabLabel,
+				}, TREE_TAB),
+				shown ? (0, react_jsx_runtime.jsxs)("span", {
+					key: shown,
+					style: { ...S.sbTabWrap, ...(active !== TREE_TAB ? S.sbTabActive : {}), ...(active === TREE_TAB && hoverKey === shown ? S.tabHover : {}) },
+					onMouseEnter: () => setHoverKey(shown),
+					onMouseLeave: () => setHoverKey((k) => (k === shown ? null : k)),
+					onContextMenu: (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						setTabMenu({ x: e.clientX, y: e.clientY, path: shown });
+					},
+					children: [
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							style: S.sbTabTitle,
+							title: shown,
+							onClick: () => setView("mindmap"),
+							children: merged.byPath[shown].rootTitle,
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							style: S.sbTabClose,
+							title: "关闭脑图",
+							onClick: () => closeMindmap(shown),
+							children: "✕",
+						}),
+					],
+				}, shown) : null,
+				// 导出按钮 + 错误推到行尾。
+				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
+				exportErrorSpan,
+				exportBtn,
+			] }),
+			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
+			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+			active === TREE_TAB || (doc && doc.op === "local") || !tree
+				? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
+					? renderTree()
+					: (doc && doc.op === "local")
+						? renderLoading()
+						: renderTree() })
+				: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal }),
+			tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
+				style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
+				onContextMenu: (e) => e.preventDefault(),
+				children: [
+					(0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: S.treeMenuItem,
+						onClick: () => {
+							setTabMenu(null);
+							if (tabMenu.path === TREE_TAB) loadTree(undefined);
+							else closeMindmap(tabMenu.path);
+						},
+						children: tabMenu.path === TREE_TAB ? "刷新脑图列表" : "关闭脑图",
+					}),
+				],
+			}) : null,
+		] });
+	}
+
+	// 027 standalone 模式：原双层头部（headerTop spacer + 导出 + 关闭 → tabRow）不变。
+	const wsHeaderChildren = [
+		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
+			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
+			exportBtn,
+			exportErrorSpan,
+			// 关闭按钮：仅独立 fixed 壳提供 onClose（BS Tab 自带关闭）。
+			onClose ? (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				style: S.action,
+				title: "收起脑图面板",
+				onClick: () => onClose(),
+				children: "✕",
+			}) : null,
+		] }),
+		(0, react_jsx_runtime.jsxs)("div", { style: S.tabRow, children: [
+			(0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				style: active === TREE_TAB ? { ...S.tab, ...S.tabActive } : (hoverKey === TREE_TAB ? { ...S.tab, ...S.tabHover } : S.tab),
+				title: fsTree.cwd ?? "工作目录",
+				onClick: () => setView("tree"),
+				onMouseEnter: () => setHoverKey(TREE_TAB),
+				onMouseLeave: () => setHoverKey((k) => (k === TREE_TAB ? null : k)),
+				onContextMenu: (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					setTabMenu({ x: e.clientX, y: e.clientY, path: TREE_TAB });
+				},
+				children: treeTabLabel,
+			}, TREE_TAB),
+			shown ? (0, react_jsx_runtime.jsxs)("span", {
+				key: shown,
+				style: { ...S.tabWrap, ...(active !== TREE_TAB ? S.tabActive : {}), ...(active === TREE_TAB && hoverKey === shown ? S.tabHover : {}) },
+				onMouseEnter: () => setHoverKey(shown),
+				onMouseLeave: () => setHoverKey((k) => (k === shown ? null : k)),
+				onContextMenu: (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					setTabMenu({ x: e.clientX, y: e.clientY, path: shown });
+				},
+				children: [
+					(0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: S.tabTitle,
+						title: shown,
+						onClick: () => setView("mindmap"),
+						children: merged.byPath[shown].rootTitle,
+					}),
+					(0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: S.tabClose,
+						title: "关闭脑图",
+						onClick: () => closeMindmap(shown),
+						children: "✕",
+					}),
+				],
+			}, shown) : null,
+		] }),
+	];
+	return (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }, children: [
+		(0, react_jsx_runtime.jsx)("div", { style: wsHeaderStyle, children: wsHeaderChildren }),
+		// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
+		// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+		active === TREE_TAB || (doc && doc.op === "local") || !tree
+			? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
+				? renderTree()
+				: (doc && doc.op === "local")
+					? renderLoading()
+					: renderTree() })
+			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal }),
+		tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
+			style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
+			onContextMenu: (e) => e.preventDefault(),
+			children: [
+				(0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					style: S.treeMenuItem,
+					onClick: () => {
+						setTabMenu(null);
+						if (tabMenu.path === TREE_TAB) loadTree(undefined);
+						else closeMindmap(tabMenu.path);
+					},
+					children: tabMenu.path === TREE_TAB ? "刷新目录树" : "关闭脑图",
+				}),
+			],
+		}) : null,
+	] });
+	}
+	//#endregion
+
+		/**
+		 * 独立 fixed 壳（026 拆分）：仅 Better Sidebar 未安装或服务不可用时使用。
+		 * 管理壳特有几何——右缘贴边悬浮、左缘拖拽调宽（localStorage 持久化）、
+		 * 头部高度对齐聊天区、layout-push CSS 变量（--dsh-mindmap-width）。
+		 * 壳内始终挂载 MindmapWorkspace（visible=open）：收起时 display:none 隐藏，
+		 * 但 hooks 照常跑——auto-open effect 能在面板关着时调 onAutoOpen 把它拉起。
+		 */
+		function MindmapDetailsPanel(props) {
+			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
+			// 窗口尺寸变化时持续钳制——只在挂载时压一次的话，窗口先放大→拖宽
+			// 面板→再缩小会让面板保持旧像素宽，聊天区被挤没。
+			const WIDTH_KEY = "dsh-mindmap.overlay-width";
+			const [panelWidth, setPanelWidth] = react.useState(() => {
+				try {
+					const saved = Number(localStorage.getItem(WIDTH_KEY));
+					if (Number.isFinite(saved) && saved >= 280) return Math.min(saved, Math.round(window.innerWidth * 0.8));
+				} catch {
+					// localStorage 不可用：走默认
+				}
+				return Math.round(window.innerWidth * 0.42);
+			});
+			react.useEffect(() => {
+				const clamp = () => {
+					setPanelWidth((prev) => {
+						const max = Math.round(window.innerWidth * 0.8);
+						return prev > max ? max : prev;
+					});
+				};
+				clamp();
+				window.addEventListener("resize", clamp);
+				return () => window.removeEventListener("resize", clamp);
+			}, []);
+			// 015 设置面板：没有本地拖拽记忆时，用 settings 里的默认宽度。
+			react.useEffect(() => {
+				let hasLocal = false;
+				try {
+					hasLocal = localStorage.getItem(WIDTH_KEY) !== null;
+				} catch {
+					// 忽略
+				}
+				if (hasLocal) return;
+				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
+				mindmapFace.readSettings().then((v) => {
+					const pct = v && typeof v.defaultPanelWidth === "number" ? Math.min(80, Math.max(20, v.defaultPanelWidth)) : 42;
+					const px = Math.round(window.innerWidth * pct / 100);
+					setPanelWidth((prev) => (Math.abs(prev - px) < 2 ? prev : px));
+				}).catch(() => {
+					// 读设置失败：保持 42% 默认
+				});
+			}, [mindmapFace]);
+
+			const dragStateRef = react.useRef(null);
+			function startResize(e) {
+				e.preventDefault();
+				dragStateRef.current = { startX: e.clientX, startWidth: panelWidth, latestWidth: panelWidth };
+				const onMove = (ev) => {
+					if (!dragStateRef.current) return;
+					const max = Math.round(window.innerWidth * 0.8);
+					const next = Math.min(max, Math.max(280, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
+					dragStateRef.current.latestWidth = next;
+					setPanelWidth(next);
+				};
+				const onUp = () => {
+					try {
+						localStorage.setItem(WIDTH_KEY, String(dragStateRef.current ? dragStateRef.current.latestWidth : panelWidth));
+					} catch {
+						// localStorage 不可用：忽略
+					}
+					dragStateRef.current = null;
+					window.removeEventListener("mousemove", onMove);
+					window.removeEventListener("mouseup", onUp);
+				};
+				window.addEventListener("mousemove", onMove);
+				window.addEventListener("mouseup", onUp);
+			}
+
+			// 007~010 头线对齐（overlay 版回归）：面板头部高度动态跟随聊天区头部，
+			// 让两者的底部分隔线像素对齐。面板贴视口顶（fixed 宿主层），故
+			// 头部高度 = 聊天头部 rect.bottom - 1 - 面板顶（面板顶 ≈ 视口顶）。
+			// 主选 wSkVaW_header；结构链回退；合法性钳制 [40,200]；失败回退 74（75-1）。
+			const panelRootRef = react.useRef(null);
+			const FALLBACK_HEADER_HEIGHT = 74;
+			const [headerHeight, setHeaderHeight] = react.useState(FALLBACK_HEADER_HEIGHT);
+			react.useLayoutEffect(() => {
+				const HEADER_MIN = 40;
+				const HEADER_MAX = 200;
+				const tryPaths = [
+					() => document.querySelector('[class*="wSkVaW_header"]'),
+					() => {
+						const frame = document.querySelector("[data-dsh-frame]");
+						if (!frame) return null;
+						const center = frame.querySelector('[data-pane="conversation"]');
+						return center ? center.firstElementChild : null;
+					},
+				];
+				const measure = () => {
+					for (const path of tryPaths) {
+						const el = path();
+						if (!el) continue;
+						const rect = el.getBoundingClientRect();
+						const panelTop = panelRootRef.current
+							? panelRootRef.current.getBoundingClientRect().top
+							: rect.top;
+						const h = rect.bottom - 1 - panelTop;
+						if (h >= HEADER_MIN && h <= HEADER_MAX) {
+							setHeaderHeight(Math.round(h * 10) / 10);
+							return;
+						}
+					}
+					setHeaderHeight(FALLBACK_HEADER_HEIGHT);
+				};
+				measure();
+				const target = tryPaths[0]() || tryPaths[1]();
+				let observer = null;
+				if (target && typeof ResizeObserver !== "undefined") {
+					observer = new ResizeObserver(measure);
+					observer.observe(target);
+				}
+				window.addEventListener("resize", measure);
+				return () => {
+					if (observer) observer.disconnect();
+					window.removeEventListener("resize", measure);
+				};
+			}, []);
 
 			// 014 布局让位：面板打开/拖宽时把宽度写进 CSS 变量，挤窄 #root 推走
 			// 聊天区（better-sidebar 同款）；关闭/卸载时移除变量恢复全宽。
+			// 仅独立壳模式启用——BS Tab 模式不渲染本组件，不写此变量。
 			react.useLayoutEffect(() => {
 				if (typeof document === "undefined") return;
 				if (open) {
@@ -3401,103 +3625,299 @@ window.__ModuleLoader__.load({
 				};
 			}, [open, panelWidth]);
 
-			if (!open) return null;
-			// 014 overlay 外壳：fixed 宿主层（点击穿透）套右缘贴边全高悬浮面板，
-			// 左缘拖拽调宽（[280, 视口 80%]，localStorage 持久化）；遮盖聊天区是
-			// 该形态的已知代价（作者拍板，见 docs/014）。宿主层挂在 header 槽位里，
-			// better-sidebar 同款「fixed 自举」思路。
-			return (0, react_jsx_runtime.jsx)("div", { style: S.panelHost, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: { ...S.overlayRoot, width: panelWidth }, children: [
-				(0, react_jsx_runtime.jsx)("div", { style: S.overlayHandle, onMouseDown: startResize }),
-				(0, react_jsx_runtime.jsxs)("div", { style: { ...S.header, height: `${headerHeight - 1}px` }, children: [
-					(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
-						(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
-						(0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							style: S.action,
-							disabled: !tree || exporting || (doc && doc.op === "local"),
-							onClick: onExport,
-							children: exporting ? "导出中…" : "导出图片",
-						}),
-						exportError ? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" } , children: exportError }) : null,
-						(0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							style: S.action,
-							title: "收起脑图面板",
-							onClick: () => onClose(),
-							children: "✕",
-						}),
-					] }),
-					(0, react_jsx_runtime.jsxs)("div", { style: S.tabRow, children: [
-						(0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							style: active === TREE_TAB ? { ...S.tab, ...S.tabActive } : (hoverKey === TREE_TAB ? { ...S.tab, ...S.tabHover } : S.tab),
-							title: fsTree.cwd ?? "工作目录",
-							onClick: () => setView("tree"),
-							onMouseEnter: () => setHoverKey(TREE_TAB),
-							onMouseLeave: () => setHoverKey((k) => (k === TREE_TAB ? null : k)),
-							onContextMenu: (e) => {
-								e.preventDefault();
-								e.stopPropagation();
-								setTabMenu({ x: e.clientX, y: e.clientY, path: TREE_TAB });
-							},
-							children: "目录",
-						}, TREE_TAB),
-						shown ? (0, react_jsx_runtime.jsxs)("span", {
-							key: shown,
-							style: { ...S.tabWrap, ...(active !== TREE_TAB ? S.tabActive : {}), ...(active === TREE_TAB && hoverKey === shown ? S.tabHover : {}) },
-							onMouseEnter: () => setHoverKey(shown),
-							onMouseLeave: () => setHoverKey((k) => (k === shown ? null : k)),
-							onContextMenu: (e) => {
-								e.preventDefault();
-								e.stopPropagation();
-								setTabMenu({ x: e.clientX, y: e.clientY, path: shown });
-							},
-							children: [
-								(0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									style: S.tabTitle,
-									title: shown,
-									onClick: () => setView("mindmap"),
-									children: merged.byPath[shown].rootTitle,
-								}),
-								(0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									style: S.tabClose,
-									title: "关闭脑图",
-									onClick: () => closeMindmap(shown),
-									children: "✕",
-								}),
-							],
-						}, shown) : null,
-					] }),
-				] }),
-				// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
-				// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
-				active === TREE_TAB || (doc && doc.op === "local") || !tree
-					? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
-						? renderTree()
-						: (doc && doc.op === "local")
-							? renderLoading()
-							: renderTree() })
-					: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal }),
-				tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
-					style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
-					onContextMenu: (e) => e.preventDefault(),
-					children: [
-						(0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							style: S.treeMenuItem,
-							onClick: () => {
-								setTabMenu(null);
-								if (tabMenu.path === TREE_TAB) loadTree(undefined);
-								else closeMindmap(tabMenu.path);
-							},
-							children: tabMenu.path === TREE_TAB ? "刷新目录树" : "关闭脑图",
-						}),
-					],
-				}) : null,
+			// 始终挂载 MindmapWorkspace：收起时用 display:none 隐藏外壳，
+			// 但组件实例保留——hooks（auto-open / 焦点同步 / 目录树）照常跑。
+			// 切换 open 时 MindmapWorkspace 在 children 数组里的位置不变（index 1），
+			// React 保持实例不卸载，state 不丢失。
+			const workspace = (0, react_jsx_runtime.jsx)(MindmapWorkspace, {
+				sessionId,
+				nodes,
+				nodesVersion,
+				inputActions,
+				mindmapFace,
+				visible: open,
+				onAutoOpen: onOpen,
+				onClose,
+				headerHeight,
+				variant: "standalone",
+			});
+			return (0, react_jsx_runtime.jsx)("div", { style: open ? S.panelHost : { display: "none" }, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: open ? { ...S.overlayRoot, width: panelWidth } : { display: "none" }, children: [
+				open ? (0, react_jsx_runtime.jsx)("div", { style: S.overlayHandle, onMouseDown: startResize }) : null,
+				workspace,
 			] }) });
 		}
+
+		/**
+		 * Better Sidebar Tab 壳（026）：Better Sidebar 服务可用时，apply() 注册
+		 * 此组件为单实例 Tab（id = dsh-mindmap:mindmap）。它从 sessionStore 读取
+		 * 头部槽位（MindmapSlot）捕获的 nodes/nodesVersion/inputActions/mindmapFace，
+		 * 传给壳无关的 MindmapWorkspace 渲染。
+		 *
+		 * TabComponentProps（由 Better Sidebar 传入）：{ ctx, scope, tab, visible, ... }
+		 * visible = false 时组件仍挂载（BS 性能门控），MindmapWorkspace 的 hooks
+		 * 照常跑——auto-open 能在 Tab 不可见时调 onAutoOpen → openTab 把它拉起。
+		 *
+		 * 如果 BS 卸载了不可见的 Tab 组件，MindmapSlot 的 sidebar 模式 auto-open
+		 * 兜底调 openTab；Tab 重新挂载后 MindmapWorkspace 的 seen=null 首挂载语义
+		 * 恢复最近一次打开的脑图。
+		 */
+		function MindmapSidebarTab(props) {
+			const { ctx, scope, visible } = props;
+			const sessionId = scope && scope.sessionId;
+
+			// 从 sessionStore 读头部槽位写入的会话数据（按 sessionId 隔离）。
+			// useCallback 保证 subscribe/getSnapshot 仅在 sessionId 变化时重建，
+			// 避免每帧重订阅。
+			const subscribe = react.useCallback(
+				(fn) => sessionStore.subscribe(sessionId, fn),
+				[sessionId],
+			);
+			const getSnapshot = react.useCallback(
+				() => sessionStore.get(sessionId),
+				[sessionId],
+			);
+			const data = react.useSyncExternalStore(subscribe, getSnapshot);
+
+			// auto-open 回调：新的 mindmap_create/open 到达时聚焦本 Tab。
+			const onAutoOpen = react.useCallback(() => {
+				try { ctx && ctx.betterSidebar && ctx.betterSidebar.openTab({ type: "dsh-mindmap:mindmap" }, scope); } catch { /* BS 已卸载或方法缺失 */ }
+			}, [ctx, scope]);
+
+			if (!data) {
+				// MindmapSlot 尚未写入数据（Tab 先于会话激活打开）。
+				return (0, react_jsx_runtime.jsx)("div", { style: S.loadingWrap, children:
+					(0, react_jsx_runtime.jsx)("p", { style: SIDEBAR_STYLES.loadingText, children: "等待会话数据…" })
+				});
+			}
+
+			return (0, react_jsx_runtime.jsx)(MindmapWorkspace, {
+				sessionId,
+				nodes: data.nodes,
+				nodesVersion: data.nodesVersion,
+				inputActions: data.inputActions,
+				mindmapFace: data.mindmapFace,
+				visible,
+				onAutoOpen,
+				onClose: undefined,
+				headerHeight: null,
+				variant: "sidebar",
+			});
+		}
+
+		/**
+		 * 会话内容节点的双代快照选择（023）：dsh ≤0.1.1 的 useSession 快照带
+		 * 平铺 nodes；0.1.2-rc.1 起 SessionSnapshot 拆成纯控制状态，会话内容
+		 * 迁入 useChat 的 ChatSnapshot.legacy.nodes（官方兼容面，ToolResultNode
+		 * 字段同名）。legacy 优先、旧 nodes 兜底，两代通吃。
+		 */
+		function conversationNodesOf(s) {
+			if (!s) return EMPTY_NODES;
+			const legacy = s.legacy;
+			if (legacy && Array.isArray(legacy.nodes)) return legacy.nodes;
+			return Array.isArray(s.nodes) ? s.nodes : EMPTY_NODES;
+		}
+
+		/**
+		 * 「思维脑图」槽位组件（014 + 026 双模式）：同一槽位渲染 M 按钮。
+		 * 026 起，betterSidebar 服务可用时（sidebarBus 检测）走原生 Tab 模式——
+		 * M 按钮调 openTab 聚焦 Tab，不渲染独立 fixed 面板；会话数据写入
+		 * sessionStore 供 MindmapSidebarTab 读取。服务不可用时维持头部按钮 +
+		 * 独立悬浮面板（MindmapDetailsPanel）。
+		 * session scope 的 useSession/sessionId/inputActions 直给，经 props 传给
+		 * MindmapDetailsPanel（无桥、无 useSyncExternalStore——shell.overlay 跨槽
+		 * 方案实测未渲染，弃用后顺手把桥也删了）。023：内容钩子改为
+		 * useChat（0.1.2-rc.1+）优先、useSession（≤0.1.1）兜底。
+		 */
+		function MindmapSlot(props) {
+			const { useSession, useChat, sessionId, inputActions, mindmapFace } = props;
+			const nodesHook = useChat ?? useSession;
+			const nodes = nodesHook ? nodesHook(conversationNodesOf) : EMPTY_NODES;
+			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
+			// 不变）时，nodes prop 不换、memo 命中缓存、auto-open effect 永不
+			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
+			// 值比较天然绕过引用相等短路；内容钩子不可用时回退空串。
+			const nodesVersion = nodesHook ? nodesHook((s) => nodesFingerprint(conversationNodesOf(s))) : "";
+
+			// 026 sidebar 模式检测：betterSidebar 服务可用时走原生 Tab，否则走独立面板。
+			const sidebar = react.useSyncExternalStore(sidebarBus.subscribe, sidebarBus.get);
+			const sidebarMode = sidebar !== null;
+
+		// 026 会话数据桥：sidebar 模式下把头部槽位捕获的数据写入 sessionStore，
+		// 供 MindmapSidebarTab 组件读取（Tab 组件不接收 header 槽位 props）。
+		// standalone 模式不写——数据直接经 props 传给 MindmapDetailsPanel。
+		// 028 生命周期清理：会话切换时删旧 sessionId 的快照，组件卸载时删
+		// 当前 sessionId 的快照——模块级 Map 不残留旧会话的 nodes/inputActions。
+		react.useEffect(() => {
+			if (!sidebarMode || !sessionId) return;
+			sessionStore.set(sessionId, { nodes, nodesVersion, inputActions, mindmapFace });
+		}, [sidebarMode, sessionId, nodes, nodesVersion, inputActions, mindmapFace]);
+		// 028 会话切换 / 退出 sidebar 模式时清理旧快照。
+		const lastSessionRef = react.useRef(null);
+		react.useEffect(() => {
+			if (!sidebarMode) {
+				// 退出 sidebar 模式：清理上次的快照。
+				if (lastSessionRef.current) {
+					sessionStore.delete(lastSessionRef.current);
+					lastSessionRef.current = null;
+				}
+				return;
+			}
+			// 会话切换：清理旧 sessionId 的快照。
+			if (lastSessionRef.current && lastSessionRef.current !== sessionId) {
+				sessionStore.delete(lastSessionRef.current);
+			}
+			lastSessionRef.current = sessionId;
+		}, [sidebarMode, sessionId]);
+		// 028 组件卸载时清理当前 sessionId 的快照。
+		react.useEffect(() => {
+			return () => {
+				if (lastSessionRef.current) {
+					sessionStore.delete(lastSessionRef.current);
+					lastSessionRef.current = null;
+				}
+			};
+		}, []);
+
+			// 026 sidebar auto-open 兜底：BS 可能卸载不可见的 Tab 组件，此时
+			// MindmapWorkspace 的 auto-open effect 不跑。MindmapSlot 始终在头部
+			// 挂载，在这里检测新的 create/open 结果并调 openTab 把 Tab 拉起。
+			// 首次进入 sidebar 模式时只记基线（不弹历史文档），之后只响应新事件。
+			const sidebarDocs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
+			const sidebarSeen = react.useRef(null);
+			const sidebarInitedRef = react.useRef(false);
+			react.useEffect(() => {
+				if (!sidebarMode || !sessionId) {
+					sidebarInitedRef.current = false;
+					return;
+				}
+				if (!sidebarInitedRef.current) {
+					sidebarInitedRef.current = true;
+					sidebarSeen.current = openingEventKeys(sidebarDocs);
+					return;
+				}
+				const target = autoOpenTarget(sidebarDocs, sidebarSeen.current);
+				sidebarSeen.current = openingEventKeys(sidebarDocs);
+				if (target) {
+					try { sidebar.openTab({ type: "dsh-mindmap:mindmap" }, { sessionId }); } catch { /* BS 已卸载或方法缺失 */ }
+				}
+			}, [sidebarDocs, sidebarMode, sessionId, sidebar]);
+
+			const [open, setOpen] = react.useState(false);
+
+			// M 按钮的 SVG 图标（两种模式共用）。
+			const mButtonIcon = (0, react_jsx_runtime.jsx)("svg", {
+				width: 14,
+				height: 14,
+				viewBox: "0 0 14 14",
+				fill: "none",
+				stroke: "currentColor",
+				strokeWidth: 1.4,
+				strokeLinecap: "round",
+				strokeLinejoin: "round",
+				"aria-hidden": "true",
+				style: { opacity: 0.7, flex: "none" },
+				children: [
+					(0, react_jsx_runtime.jsx)("circle", { cx: 2.5, cy: 7, r: 1.7 }),
+					(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 3.5, r: 1.7 }),
+					(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 10.5, r: 1.7 }),
+					(0, react_jsx_runtime.jsx)("path", { d: "M4.1 6.2 L9.9 4.2" }),
+					(0, react_jsx_runtime.jsx)("path", { d: "M4.1 7.8 L9.9 9.8" }),
+				],
+			});
+
+			if (sidebarMode) {
+				// sidebar 模式：M 按钮调 openTab 聚焦 Better Sidebar Tab，不渲染独立面板。
+				return (0, react_jsx_runtime.jsx)(react.Fragment, { children: (0, react_jsx_runtime.jsxs)("button", {
+					type: "button",
+					title: "脑图面板：展开 / 收起",
+					style: S.mButton,
+					onClick: () => {
+						try { sidebar.openTab({ type: "dsh-mindmap:mindmap" }, { sessionId }); } catch { /* BS 已卸载或方法缺失 */ }
+					},
+					children: [mButtonIcon, "思维脑图"],
+				}) });
+			}
+
+			// standalone 模式：M 按钮 + 独立 fixed 面板。
+			return (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [
+				(0, react_jsx_runtime.jsxs)("button", {
+					type: "button",
+					title: "脑图面板：展开 / 收起",
+					style: S.mButton,
+					onClick: () => setOpen((v) => !v),
+					children: [mButtonIcon, "思维脑图"],
+				}),
+				(0, react_jsx_runtime.jsx)(MindmapDetailsPanel, {
+					open,
+					sessionId,
+					inputActions,
+					nodes,
+					nodesVersion,
+					mindmapFace,
+					onOpen: () => setOpen(true),
+					onClose: () => setOpen(false),
+				}),
+			] });
+		}
+
+		//#region better-sidebar 共存：服务总线 + 会话数据桥
+		// sidebarBus：betterSidebar 服务引用的可观察容器。apply() 检测到服务时
+		// set(svc)，MindmapSlot 用 useSyncExternalStore 订阅，决定渲染独立面板
+		// 还是只渲染 M 按钮（面板交给 Better Sidebar Tab）。服务不可用时 get()
+		// 返回 null——独立面板照常工作，无需安装额外依赖。
+		const sidebarBus = (() => {
+			let service = null;
+			const listeners = new Set();
+			return {
+				get: () => service,
+				set(svc) {
+					service = svc || null;
+					for (const fn of listeners) fn();
+				},
+				subscribe(fn) {
+					listeners.add(fn);
+					return () => { listeners.delete(fn); };
+				},
+			};
+		})();
+
+		// sessionStore：按 sessionId 隔离的数据桥。MindmapSlot 始终在头部槽位里
+		// 调用 useChat/useSession 钩子获取 nodes/nodesVersion/inputActions，写入
+		// 对应 sessionId 的快照；MindmapSidebarTab 组件用 useSyncExternalStore
+		// 订阅自己 sessionId 的快照，拿到数据后渲染 MindmapWorkspace。
+		// 028 生命周期清理：MindmapSlot 在会话切换（sessionId 变化）和组件卸载
+		// 时删除对应 sessionId 的快照——模块级 Map 不残留旧会话的
+		// nodes/inputActions。退出 sidebar 模式（Better Sidebar 卸载）时也清理。
+		const sessionStore = (() => {
+			const sessions = new Map();
+			const listeners = new Map();
+			function notify(sessionId) {
+				const set = listeners.get(sessionId);
+				if (set) for (const fn of set) fn();
+			}
+			return {
+				get(sessionId) {
+					return sessions.get(sessionId) || null;
+				},
+				set(sessionId, data) {
+					sessions.set(sessionId, data);
+					notify(sessionId);
+				},
+				delete(sessionId) {
+					sessions.delete(sessionId);
+					notify(sessionId);
+				},
+				subscribe(sessionId, fn) {
+					let set = listeners.get(sessionId);
+					if (!set) { set = new Set(); listeners.set(sessionId, set); }
+					set.add(fn);
+					return () => {
+						set.delete(fn);
+						if (set.size === 0) listeners.delete(sessionId);
+					};
+				},
+			};
+		})();
 		//#endregion
 
 		/**
@@ -3521,29 +3941,25 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			const face = {};
 
-			// 014「布局让位」CSS（better-sidebar 同款机制）：面板打开时给 #root 挂
-			// margin-right + 宽度挤压，把聊天区推到左边、面板占右侧腾出的空间，
-			// 互不遮挡。015 修复级联冲突：它家（dsh-better-sidebar）同样注入
-			// #root 规则，后注入者胜导致我们的推挤被压掉——我们的规则加
-			// !important 且把双方变量相加（它开面板时聊天同样让位），无论注入
-			// 顺序如何都稳定生效。若它家未来也用 !important，需再评估（见 docs/014）。
-			if (typeof document !== "undefined") {
-				const style = document.createElement("style");
-				style.setAttribute("data-dsh-mindmap", "layout-push");
-				style.textContent = [
-					"#root{",
-					"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
-					"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
-					"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
-					"}",
-				].join("");
-				document.head.appendChild(style);
-			}
-
-			// 018 生长动画：新增/变化节点错峰渐显（节点盒 = 淡入 + 左移浮现，
-			// 连线 = 淡入；延迟由内联 animationDelay 提供）。fill mode both 保证
-			// 延迟期间保持隐藏；动画只挂新节点，旧节点不受影响。尊重系统减弱动效。
-			if (typeof document !== "undefined") {
+			// 026 生长动画 CSS：无论 standalone 还是 sidebar 模式都需要（节点渐显
+			// 与布局无关）。纳入 ctx.effect 清理——HMR / 插件禁用后 <head> 不残留。
+			if (typeof ctx.effect === "function") {
+				ctx.effect(() => {
+					if (typeof document === "undefined") return;
+					const animStyle = document.createElement("style");
+					animStyle.setAttribute("data-dsh-mindmap", "growth-anim");
+					animStyle.textContent = [
+						"@keyframes dsh-mm-node-in{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}",
+						".dsh-mm-reveal{opacity:0;animation:dsh-mm-node-in 320ms ease-out both}",
+						"@keyframes dsh-mm-fade-in{from{opacity:0}to{opacity:1}}",
+						".dsh-mm-edge-reveal{opacity:0;animation:dsh-mm-fade-in 320ms ease-out both}",
+						"@media (prefers-reduced-motion: reduce){.dsh-mm-reveal,.dsh-mm-edge-reveal{animation:none;opacity:1}}",
+					].join("");
+					document.head.appendChild(animStyle);
+					return () => { animStyle.remove(); };
+				});
+			} else if (typeof document !== "undefined") {
+				// ctx.effect 不可用（旧运行时 / 测试桩）：直接注入，无清理。
 				const animStyle = document.createElement("style");
 				animStyle.setAttribute("data-dsh-mindmap", "growth-anim");
 				animStyle.textContent = [
@@ -3555,6 +3971,101 @@ window.__ModuleLoader__.load({
 				].join("");
 				document.head.appendChild(animStyle);
 			}
+
+		// 026+028+029 betterSidebar 生命周期统一收口：三种状态（启动时已存在、
+		// 运行中后到达、不存在/已卸载）都走同一条 ctx.inject 路径。ctx.inject 的
+		// 语义：服务已存在时回调立即执行；后到达时等到达后执行；服务消失时
+		// inject 返回的 disposer 自动执行。把 registerTab + sidebarBus.set 放在
+		// inject 回调里，disposer 绑定到 Better Sidebar 依赖 fiber——只卸载
+		// Better Sidebar、不卸载 dsh-mindmap 时，disposer 照常执行，sidebarBus
+		// 归零，layout-push effect 自动恢复 standalone 布局。
+		if (typeof ctx.inject === "function") {
+			try {
+				ctx.inject(["betterSidebar"], (ctx2) => {
+					const svc = ctx2 && ctx2.betterSidebar;
+					if (!svc || typeof svc.registerTab !== "function") return;
+					// 029 注册 Tab 并设 sidebarBus。disposer 清 bus + 注销 Tab——
+					// 不用 ctx.effect 包裹，disposer 直接由 ctx.inject 的依赖
+					// 生命周期管理（Better Sidebar fiber 卸载时触发）。
+					const dispose = svc.registerTab({
+						id: "dsh-mindmap:mindmap",
+						title: () => "思维脑图",
+						icon: (size) => (0, react_jsx_runtime.jsx)("svg", {
+							width: size, height: size, viewBox: "0 0 14 14",
+							fill: "none", stroke: "currentColor", strokeWidth: 1.4,
+							strokeLinecap: "round", strokeLinejoin: "round",
+							children: [
+								(0, react_jsx_runtime.jsx)("circle", { cx: 2.5, cy: 7, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 3.5, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 10.5, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 6.2 L9.9 4.2" }),
+								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 7.8 L9.9 9.8" }),
+							],
+						}),
+						order: 100,
+						single: true,
+						component: MindmapSidebarTab,
+					});
+					sidebarBus.set(svc);
+					// 返回 disposer：Better Sidebar 依赖消失时执行。
+					return () => {
+						sidebarBus.set(null);
+						dispose();
+					};
+				});
+			} catch {
+				// ctx.inject 不支持或服务名未注册：standalone 模式。
+			}
+		}
+
+		// 026+028 layout-push CSS 可逆 effect：持续监听 sidebarBus——standalone
+		// 模式（bus===null）时注入 #root 推挤规则，sidebar 模式（bus!==null）
+		// 时移除。模式切换时自动翻转，不需要一次性删除。纳入 ctx.effect 清理。
+		if (typeof ctx.effect === "function") {
+			ctx.effect(() => {
+				if (typeof document === "undefined") return;
+				let layoutStyle = null;
+				function ensureLayoutPush() {
+					if (typeof document === "undefined") return;
+					if (sidebarBus.get()) {
+						// sidebar 模式：不推 #root（Better Sidebar 管自己的布局）。
+						if (layoutStyle) { layoutStyle.remove(); layoutStyle = null; }
+					} else {
+						// standalone 模式：注入推挤规则（仅一份）。
+						if (!layoutStyle) {
+							layoutStyle = document.createElement("style");
+							layoutStyle.setAttribute("data-dsh-mindmap", "layout-push");
+							layoutStyle.textContent = [
+								"#root{",
+								"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
+								"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
+								"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
+								"}",
+							].join("");
+							document.head.appendChild(layoutStyle);
+						}
+					}
+				}
+				ensureLayoutPush();
+				const unsub = sidebarBus.subscribe(ensureLayoutPush);
+				return () => {
+					unsub();
+					if (layoutStyle) { layoutStyle.remove(); layoutStyle = null; }
+				};
+			});
+		} else if (typeof document !== "undefined" && !sidebarBus.get()) {
+			// ctx.effect 不可用：直接注入（015 原始行为），standalone 模式。
+			const style = document.createElement("style");
+			style.setAttribute("data-dsh-mindmap", "layout-push");
+			style.textContent = [
+				"#root{",
+				"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
+				"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
+				"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
+				"}",
+			].join("");
+			document.head.appendChild(style);
+		}
 
 			// 013 目录树 tab：host 自建只读路由 /mindmap/api/tree（dsh-better-sidebar
 			// 同款机制——官方 host.listDirectory 在 native picker 环境必挂，见 013）。
@@ -3640,7 +4151,8 @@ window.__ModuleLoader__.load({
 			// better-sidebar 同款「fixed 宿主层自举」思路（它的宿主层挂在
 			// conversation.chat.turnTail）；session scope 全套 props 直给，无需跨槽。
 			// details 槽已归还官方（原生「工具详情」栏恢复）；shell.overlay 方案
-			// 实测未渲染，已弃用（见 docs/014 排障）。
+			// 实测未渲染，已弃用（见 docs/014 排障）。026：MindmapSlot 内部按
+			// sidebarBus 自动切换 sidebar Tab 模式 / standalone 面板模式。
 			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
 				name: "conversation.session.header.actions",
 				id: "dsh-mindmap",
@@ -3710,6 +4222,15 @@ window.__ModuleLoader__.load({
 			settingsNamespacesOf,
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
+			// 026 better-sidebar 共存：服务总线 + 会话数据桥 + Tab 壳（供测试）。
+			sidebarBus,
+			sessionStore,
+			MindmapSidebarTab,
+			// 027 内嵌头部视觉对齐：壳无关工作区组件 + 样式表（供测试验证 variant 分支）。
+			MindmapWorkspace,
+			S,
+			// 029 会话清理组件测试：MindmapSlot 直接调用（供测试验证 store 清理）。
+			MindmapSlot,
 		});
 		return module.exports;
 	}

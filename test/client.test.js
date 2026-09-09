@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { Context as CordisContext } from '@deepseek-ai/cordis'
 
 // 照 dsh-grafana test/client.test.js 的套路：vm 里伪造 window.__ModuleLoader__
 // 捕获浏览器模块定义，再用 require 桩喂 react，拿到 exports 测纯函数。
@@ -14,7 +15,12 @@ function loadBrowserModule() {
       },
     },
   }
-  vm.runInNewContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), { URL, window })
+  // 026：vm 沙箱里的 document。apply() 用 typeof document !== "undefined"
+  // 判断是否在浏览器环境。测试需要控制 document（注入/清理 CSS 样式节点）。
+  // 用 createContext + runInContext：沙箱 context 对象保留引用，测试可后设
+  // context.document = fakeDoc 来模拟浏览器环境（初始 undefined = 非浏览器）。
+  const context = vm.createContext({ URL, window })
+  vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), context)
   assert.equal(definition.id, 'dsh-mindmap')
   const runtime = definition.factory((id) => {
     if (id === 'react/jsx-runtime') return {
@@ -24,15 +30,16 @@ function loadBrowserModule() {
       Fragment: {},
     }
     if (id === 'react') {
-      return { useState, useEffect, useLayoutEffect, useMemo, useRef }
+      return { useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, useCallback }
     }
     throw new Error(`Unexpected browser dependency: ${id}`)
   })
-  return { runtime, window }
+  return { runtime, window, context }
 }
 
 // react 桩：组件不真正渲染，只保证钩子在模块加载与 apply 时可用。
 // 021：useRef 统一登记，测试据此拿到组件内部的滚动区 ref 驱动平移手势。
+// 026：useSyncExternalStore / useCallback 供 MindmapSlot / MindmapSidebarTab 测试。
 const capturedRefs = []
 function useState(initial) {
   return [typeof initial === 'function' ? initial() : initial, () => {}]
@@ -46,6 +53,13 @@ function useRef(value) {
   const ref = { current: value }
   capturedRefs.push(ref)
   return ref
+}
+function useSyncExternalStore(subscribe, getSnapshot) {
+  if (typeof subscribe === 'function') subscribe(() => {})
+  return typeof getSnapshot === 'function' ? getSnapshot() : undefined
+}
+function useCallback(fn) {
+  return fn
 }
 
 function toolResultNode(name, payload, { isError = false, callId = `call-${Math.random().toString(36).slice(2)}` } = {}) {
@@ -62,8 +76,8 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
   return { ...toolResultNode(name, payload, options), subCalls }
 }
 
-const { runtime, window: fakeWindow } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf } = runtime.internals
+const { runtime, window: fakeWindow, context: sandboxContext } = loadBrowserModule()
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -1633,4 +1647,807 @@ test('apply wires listTree and settings faces through the mindmapFace (header sl
     assert.equal(v, null)
     return assert.rejects(() => face.mindmapFace.updateSettings({ requireApproval: true }), /settings service unavailable/)
   })
+})
+
+// —— 026 better-sidebar 共存：sidebarBus + sessionStore + apply 双模式 ——
+
+// 026 测试用桩：构造一个 apply() 调用环境，收集 slot 注册 / ctx.effect /
+// ctx.inject / betterSidebar.registerTab 调用。effects 数组按声明顺序保留，
+// disposer 在插件卸载时逆序调用。document 桩记录 style 元素的插入与移除。
+// 每个测试创建独立 fakeDoc 并注入 vm 沙箱的 context.document（apply 里
+// typeof document !== "undefined" 判断据此走浏览器分支）。
+// 029 ctx.inject 模拟 Cordis 语义：服务已存在时回调立即执行并返回 disposer；
+// 服务不存在时记录回调，供 injectDisposers 在「服务消失」时调用。
+function applySandbox(options = {}) {
+  const { betterSidebar } = options
+  const registered = []
+  const effects = []
+  const injectDisposers = [] // ctx.inject 回调返回的 disposer（BS 依赖消失时执行）
+  const headChildren = []
+  const fakeDoc = {
+    createElement(tag) {
+      const el = { tagName: tag, _removed: false, attributes: {}, textContent: '', remove() { this._removed = true } }
+      Object.defineProperty(el, 'setAttribute', { value(k, v) { this.attributes[k] = v } })
+      return el
+    },
+    head: { appendChild(el) { headChildren.push(el) } },
+    querySelectorAll(sel) { return headChildren.filter((el) => !el._removed) },
+  }
+  const ctx = {
+    get(name) {
+      if (name === 'betterSidebar') return betterSidebar || undefined
+      return undefined
+    },
+    effect(fn) { effects.push(fn) },
+    // 029 模拟 Cordis ctx.inject：服务已存在 → 回调立即执行，返回 disposer；
+    // 服务不存在 → 记录回调（不执行），返回 noop（等服务到达再执行）。
+    // Cordis 语义：inject 回调接收的 ctx2 带有注入的服务属性（ctx2.betterSidebar）。
+    inject(deps, callback) {
+      if (deps.includes('betterSidebar') && betterSidebar) {
+        const ctx2 = { ...ctx, betterSidebar }
+        const dispose = callback(ctx2)
+        if (typeof dispose === 'function') injectDisposers.push(dispose)
+        return dispose || (() => {})
+      }
+      return () => {}
+    },
+    slots: {
+      inject(_key, factory) { factory() },
+      register(opts, component) { registered.push({ key: opts.name, options: opts, component }); return () => {} },
+    },
+  }
+  return { ctx, registered, effects, injectDisposers, headChildren, fakeDoc }
+}
+
+// 在 vm 沙箱里设 document，执行 fn，结束后恢复。
+function withSandboxDoc(fakeDoc, fn) {
+  const prev = sandboxContext.document
+  sandboxContext.document = fakeDoc
+  try { return fn() } finally { sandboxContext.document = prev }
+}
+
+test('sidebarBus reports null initially and updates on set', () => {
+  assert.equal(sidebarBus.get(), null)
+  const svc = { registerTab() { return () => {} } }
+  let notified = false
+  const unsub = sidebarBus.subscribe(() => { notified = true })
+  sidebarBus.set(svc)
+  assert.equal(sidebarBus.get(), svc)
+  assert.equal(notified, true)
+  sidebarBus.set(null)
+  assert.equal(sidebarBus.get(), null)
+  unsub()
+})
+
+test('sessionStore isolates data by sessionId and notifies subscribers', () => {
+  const s1 = { nodes: [], mindmapFace: {} }
+  const s2 = { nodes: [], mindmapFace: {} }
+  let s1Notifs = 0
+  const unsub1 = sessionStore.subscribe('sess-1', () => { s1Notifs += 1 })
+  sessionStore.set('sess-1', s1)
+  sessionStore.set('sess-2', s2)
+  assert.equal(sessionStore.get('sess-1'), s1)
+  assert.equal(sessionStore.get('sess-2'), s2)
+  assert.equal(sessionStore.get('sess-3'), null)
+  // sess-1 的订阅不应被 sess-2 的写入触发
+  assert.equal(s1Notifs, 1)
+  sessionStore.delete('sess-1')
+  assert.equal(sessionStore.get('sess-1'), null)
+  assert.equal(s1Notifs, 2)
+  unsub1()
+})
+
+test('apply standalone: no betterSidebar → registers header slot + settings, injects layout-push CSS, no Tab registration', () => {
+  const sb = applySandbox({ betterSidebar: undefined })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    // ctx.effect 声明了 layout-push + growth-anim，需执行才插入
+    sb.effects.forEach((fn) => fn())
+  })
+  const button = sb.registered.find((r) => r.key === 'conversation.session.header.actions')
+  assert.ok(button, 'header slot registered in standalone')
+  assert.equal(sidebarBus.get(), null, 'sidebarBus stays null in standalone')
+  const layoutPush = sb.headChildren.find((el) => el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.ok(layoutPush, 'layout-push CSS injected in standalone')
+  const growthAnim = sb.headChildren.find((el) => el.attributes['data-dsh-mindmap'] === 'growth-anim')
+  assert.ok(growthAnim, 'growth-anim CSS injected in standalone')
+})
+
+test('apply standalone: ctx.effect cleanup removes layout-push and growth-anim CSS from <head>', () => {
+  const sb = applySandbox({ betterSidebar: undefined })
+  let disposers
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    disposers = sb.effects.map((fn) => fn())
+    assert.equal(sb.headChildren.length, 2, 'two style nodes inserted')
+  })
+  disposers.forEach((d) => typeof d === 'function' && d())
+  assert.equal(sb.headChildren.filter((el) => !el._removed).length, 0, 'all style nodes removed on cleanup')
+})
+
+test('apply sidebar mode: betterSidebar available → registers Tab via ctx.inject, sets sidebarBus, does NOT inject layout-push CSS', () => {
+  sidebarBus.set(null) // 重置前序测试残留
+  const registrations = []
+  const svc = {
+    registerTab(descriptor) {
+      registrations.push(descriptor)
+      return () => { registrations.pop() }
+    },
+  }
+  const sb = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    // 029 ctx.inject 在 apply 执行时立即执行回调（服务已存在）——sidebar 注册
+    // 已完成，不需要 effects 触发。但 layout-push effect 仍需执行。
+    sb.effects.forEach((fn) => fn())
+  })
+  // Tab 注册
+  assert.equal(registrations.length, 1, 'registerTab called exactly once')
+  assert.equal(registrations[0].id, 'dsh-mindmap:mindmap')
+  assert.equal(registrations[0].single, true)
+  assert.equal(typeof registrations[0].component, 'function')
+  // sidebarBus 已设
+  assert.equal(sidebarBus.get(), svc, 'sidebarBus set to service')
+  // layout-push CSS 未注入
+  const layoutPush = sb.headChildren.find((el) => el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.equal(layoutPush, undefined, 'layout-push CSS NOT injected in sidebar mode')
+  // growth-anim CSS 仍注入（与布局无关，两种模式都需要）
+  const growthAnim = sb.headChildren.find((el) => el.attributes['data-dsh-mindmap'] === 'growth-anim')
+  assert.ok(growthAnim, 'growth-anim CSS still injected in sidebar mode')
+  // header slot 仍注册（M 按钮始终需要）
+  const button = sb.registered.find((r) => r.key === 'conversation.session.header.actions')
+  assert.ok(button, 'header slot still registered in sidebar mode')
+})
+
+test('apply sidebar mode: BS-only dispose (inject disposer) unregisters Tab and resets sidebarBus to null', () => {
+  sidebarBus.set(null) // 重置前序测试残留
+  const disposed = []
+  const svc = {
+    registerTab() { return () => { disposed.push(true) } },
+  }
+  const sb = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn()) // layout-push effect
+  })
+  assert.equal(sidebarBus.get(), svc)
+  // 029 只调 injectDisposers（模拟只卸载 BS，不卸载 dsh-mindmap）
+  sb.injectDisposers.forEach((d) => d())
+  assert.equal(sidebarBus.get(), null, 'sidebarBus reset to null after BS-only dispose')
+  assert.equal(disposed.length, 1, 'Tab disposer called via inject lifecycle')
+})
+
+test('apply sidebar mode: duplicate registration is prevented (first inject disposer runs before second register)', () => {
+  sidebarBus.set(null) // 重置前序测试残留
+  // 模拟 HMR：apply 被调用两次。strict mock 在重复 id 注册时抛错——
+  // 只有第一次的 inject disposer 真正在第二次注册前执行，第二次才不会抛。
+  const registeredIds = new Set()
+  let registerCount = 0
+  let disposedCount = 0
+  const svc = {
+    registerTab(descriptor) {
+      if (registeredIds.has(descriptor.id)) {
+        throw new Error(`Tab "${descriptor.id}" already registered`)
+      }
+      registeredIds.add(descriptor.id)
+      registerCount += 1
+      return () => { disposedCount += 1; registeredIds.delete(descriptor.id) }
+    },
+  }
+  const sb1 = applySandbox({ betterSidebar: svc })
+  const sb2 = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb1.fakeDoc, () => {
+    runtime.apply(sb1.ctx)
+    sb1.effects.forEach((fn) => fn())
+  })
+  assert.equal(registerCount, 1, 'first registerTab called')
+  // 模拟 HMR：第一次的 inject disposer 必须在第二次 apply 前执行
+  sb1.injectDisposers.forEach((d) => d())
+  assert.equal(disposedCount, 1, 'first inject disposer executed before second apply')
+  assert.equal(sidebarBus.get(), null, 'sidebarBus cleared after first dispose')
+  withSandboxDoc(sb2.fakeDoc, () => {
+    runtime.apply(sb2.ctx)
+    sb2.effects.forEach((fn) => fn())
+  })
+  assert.equal(registerCount, 2, 'second registerTab called')
+  assert.equal(disposedCount, 1, 'second register succeeded without throwing "already registered"')
+  // 清理
+  sb2.injectDisposers.forEach((d) => d())
+})
+
+test('MindmapSidebarTab reads sessionStore data and renders workspace with visible prop', () => {
+  // MindmapSidebarTab 从 sessionStore 读数据；没有数据时显示等待态。
+  const ctx = { betterSidebar: { openTab() {} } }
+  const scope = { sessionId: 'sidebar-test-1' }
+  // 无数据：渲染等待态
+  const waiting = MindmapSidebarTab({ ctx, scope, visible: true })
+  assert.equal(waiting.type, 'div')
+  const waitingText = typeof waiting.props.children.props.children === 'string'
+    ? waiting.props.children.props.children
+    : String(waiting.props.children.props.children)
+  assert.ok(waitingText.includes('等待'), 'shows waiting state without data')
+  // 写入数据：渲染 MindmapWorkspace（jsx 桩返回元素，type = MindmapWorkspace 函数）
+  sessionStore.set('sidebar-test-1', { nodes: [], nodesVersion: '', inputActions: null, mindmapFace: null })
+  const rendered = MindmapSidebarTab({ ctx, scope, visible: true })
+  assert.equal(typeof rendered.type, 'function', 'renders MindmapWorkspace component')
+  assert.equal(rendered.type.name, 'MindmapWorkspace', 'component is MindmapWorkspace')
+  // 清理
+  sessionStore.delete('sidebar-test-1')
+})
+
+test('MindmapSidebarTab onAutoOpen is wired to betterSidebar.openTab via component callback', () => {
+  let openedTab = null
+  const ctx = {
+    betterSidebar: {
+      openTab(seed, scope) { openedTab = { seed, scope } },
+    },
+  }
+  const scope = { sessionId: 'auto-open-test' }
+  sessionStore.set('auto-open-test', { nodes: [], nodesVersion: '', inputActions: null, mindmapFace: null })
+  // MindmapSidebarTab 用 useCallback 缓存 onAutoOpen，传给 MindmapWorkspace。
+  // visible=false → MindmapWorkspace 返回 null（hooks 照跑），但 jsx 桩仍
+  // 返回 { type: MindmapWorkspace, props: { onAutoOpen, ... } }。
+  const rendered = MindmapSidebarTab({ ctx, scope, visible: false })
+  // 从组件 props 拿到 onAutoOpen 回调（不是直接调 mock 的 openTab）。
+  const onAutoOpen = rendered.props.onAutoOpen
+  assert.equal(typeof onAutoOpen, 'function', 'onAutoOpen callback present in workspace props')
+  onAutoOpen()
+  // 验证组件回调确实调了 betterSidebar.openTab，且参数正确。
+  assert.ok(openedTab, 'openTab was called via component callback')
+  assert.equal(openedTab.seed.type, 'dsh-mindmap:mindmap')
+  assert.equal(openedTab.scope.sessionId, 'auto-open-test')
+  sessionStore.delete('auto-open-test')
+})
+
+// —— 027 内嵌头部视觉对齐：sidebar 单行工具栏 + standalone 双层头部 ——
+
+// 027 渲染 MindmapWorkspace 并从 JSX 树里找头部结构的辅助函数。
+// jsx 桩返回 { type, props, key }；递归遍历 children 找匹配节点。
+function renderWorkspace(variant) {
+  const nodes = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/test.md', content: '# A\n- x', rootTitle: '测试脑图' }, { callId: 'ws-open' })]
+  const ws = MindmapWorkspace({
+    mindmapFace: null,
+    visible: true,
+    sessionId: `ws-${variant}`,
+    inputActions: null,
+    nodes,
+    nodesVersion: '',
+    onAutoOpen: () => {},
+    onClose: variant === 'standalone' ? () => {} : undefined,
+    headerHeight: variant === 'standalone' ? 74 : null,
+    variant,
+  })
+  return ws
+}
+
+// 从 JSX 树里递归找第一个 type === tag 且含指定 prop 的节点。
+function findInTree(el, testFn) {
+  if (!el || typeof el !== 'object') return null
+  if (testFn(el)) return el
+  const children = el.props && el.props.children
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const found = findInTree(child, testFn)
+      if (found) return found
+    }
+  } else if (children && typeof children === 'object') {
+    return findInTree(children, testFn)
+  }
+  return null
+}
+
+// 收集 JSX 树里所有文本节点（字符串子节点），用于检查标签文案。
+function collectTexts(el, out = []) {
+  if (!el) return out
+  if (typeof el === 'string') { out.push(el); return out }
+  if (typeof el !== 'object') return out
+  const children = el.props && el.props.children
+  if (Array.isArray(children)) {
+    for (const child of children) collectTexts(child, out)
+  } else if (children && typeof children === 'object') {
+    collectTexts(children, out)
+  } else if (typeof children === 'string') {
+    out.push(children)
+  }
+  return out
+}
+
+test('sidebar variant: toolbar is a single row with "脑图列表" label and export button on the same line', () => {
+  const ws = renderWorkspace('sidebar')
+  assert.ok(ws, 'workspace renders')
+  // 027 sidebar 模式的工具栏 = sbToolbar 样式的 div。
+  // 渲染树是 { type: 'div', props: { children: [toolbarDiv, contentDiv, ...] } }
+  const texts = collectTexts(ws)
+  assert.ok(texts.includes('脑图列表'), 'sidebar shows "脑图列表" label')
+  assert.ok(texts.includes('导出图片'), 'export button present')
+  // 不得出现 standalone 的 "目录" 文案
+  assert.ok(!texts.includes('目录'), 'sidebar must NOT show "目录" label')
+})
+
+test('sidebar variant: no standalone headerTop row (no spacer + export + close split across two rows)', () => {
+  const ws = renderWorkspace('sidebar')
+  // sidebar 模式的第一个子节点是 sbToolbar（单行），不应该有 headerTop 样式的 div。
+  // headerTop 是 standalone 独有的「spacer + 导出 + 关闭」行。
+  const hasHeaderTop = findInTree(ws, (el) => el.props && el.props.style === S.headerTop)
+  assert.equal(hasHeaderTop, null, 'sidebar must not render standalone headerTop row')
+  // sidebar 不应有关闭按钮（BS 自带关闭）
+  const hasCloseBtn = findInTree(ws, (el) => el.props && el.props.title === '收起脑图面板')
+  assert.equal(hasCloseBtn, null, 'sidebar must not render close button')
+})
+
+test('standalone variant: shows "目录" label and preserves two-row header with close button', () => {
+  const ws = renderWorkspace('standalone')
+  assert.ok(ws, 'workspace renders')
+  const texts = collectTexts(ws)
+  assert.ok(texts.includes('目录'), 'standalone shows "目录" label')
+  // 不得出现 sidebar 的 "脑图列表" 文案
+  assert.ok(!texts.includes('脑图列表'), 'standalone must NOT show "脑图列表" label')
+  // standalone 有 headerTop 行（spacer + 导出 + 关闭）
+  const hasHeaderTop = findInTree(ws, (el) => el.props && el.props.style === S.headerTop)
+  assert.ok(hasHeaderTop, 'standalone renders headerTop row')
+  // standalone 有关闭按钮
+  const hasCloseBtn = findInTree(ws, (el) => el.props && el.props.title === '收起脑图面板')
+  assert.ok(hasCloseBtn, 'standalone renders close button')
+})
+
+test('sidebar variant: MindmapSidebarTab passes variant="sidebar" to MindmapWorkspace', () => {
+  // 通过 MindmapSidebarTab 渲染的 workspace 应该是 sidebar variant。
+  const ctx = { betterSidebar: { openTab() {} } }
+  const scope = { sessionId: 'variant-check' }
+  sessionStore.set('variant-check', { nodes: [], nodesVersion: '', inputActions: null, mindmapFace: null })
+  const tab = MindmapSidebarTab({ ctx, scope, visible: true })
+  // jsx 桩返回 { type: MindmapWorkspace, props: { variant: 'sidebar', ... } }
+  assert.equal(tab.props.variant, 'sidebar', 'MindmapSidebarTab passes variant="sidebar"')
+  sessionStore.delete('variant-check')
+})
+
+// —— 028 生命周期收口：BS 晚到/消失的 layout-push CSS 可逆翻转 ——
+
+test('BS late arrival: standalone layout-push CSS is removed when sidebar service activates via bus', () => {
+  sidebarBus.set(null)
+  // 初始无 betterSidebar → standalone 模式，layout-push CSS 注入。
+  const sb = applySandbox({ betterSidebar: undefined })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  let layoutPush = sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.ok(layoutPush, 'layout-push CSS present in standalone mode')
+  // 模拟 BS 服务晚到：sidebarBus.set 触发 layout-push effect 移除 CSS。
+  // 真正的晚到路径由 ctx.inject 回调执行 set（下面的生命周期测试覆盖）。
+  withSandboxDoc(sb.fakeDoc, () => {
+    sidebarBus.set({ registerTab() { return () => {} }, openTab() {} })
+  })
+  layoutPush = sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.equal(layoutPush, undefined, 'layout-push CSS removed after BS service activates')
+  // 清理
+  withSandboxDoc(sb.fakeDoc, () => { sidebarBus.set(null) })
+})
+
+test('BS disappearance: layout-push CSS is restored when BS inject disposer runs (BS-only unload)', () => {
+  sidebarBus.set(null)
+  const svc = { registerTab() { return () => {} }, openTab() {} }
+  const sb = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn()) // layout-push effect
+  })
+  // sidebar 模式：layout-push CSS 不存在。
+  assert.equal(sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push'), undefined,
+    'layout-push CSS absent in sidebar mode')
+  // 029 模拟只卸载 BS（不卸载 dsh-mindmap）：调 injectDisposers。
+  withSandboxDoc(sb.fakeDoc, () => {
+    sb.injectDisposers.forEach((d) => d())
+  })
+  assert.equal(sidebarBus.get(), null, 'sidebarBus cleared after BS-only dispose')
+  // disposer 后 standalone 恢复：layout-push effect 监听到 bus 变化，重新注入。
+  const layoutPush = sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.ok(layoutPush, 'layout-push CSS restored after BS service disappears')
+})
+
+test('sessionStore snapshot is cleaned up when sessionId changes', () => {
+  // 028 会话切换清理：MindmapSlot 的 effect 在 sessionId 变化时删旧快照。
+  // 这里直接测 sessionStore 的 delete 语义——组件层通过 effect 调它。
+  const sid = 'cleanup-test-1'
+  sessionStore.set(sid, { nodes: [], nodesVersion: '', inputActions: null, mindmapFace: null })
+  assert.ok(sessionStore.get(sid), 'snapshot exists')
+  sessionStore.delete(sid)
+  assert.equal(sessionStore.get(sid), null, 'snapshot deleted')
+})
+
+test('sessionStore does not leak data across session switches', () => {
+  // 模拟 MindmapSlot 的会话切换清理：写新 sessionId 前删旧 sessionId。
+  const sidA = 'leak-test-a'
+  const sidB = 'leak-test-b'
+  sessionStore.set(sidA, { nodes: ['a'], nodesVersion: '1', inputActions: null, mindmapFace: null })
+  // 切换到 B：先删 A 再写 B（与 slot.js 的 lastSessionRef effect 一致）
+  sessionStore.delete(sidA)
+  sessionStore.set(sidB, { nodes: ['b'], nodesVersion: '2', inputActions: null, mindmapFace: null })
+  assert.equal(sessionStore.get(sidA), null, 'old session data cleaned')
+  assert.ok(sessionStore.get(sidB), 'new session data present')
+  assert.equal(sessionStore.get(sidB).nodes[0], 'b', 'new session has its own data')
+  sessionStore.delete(sidB)
+})
+
+// —— 029 真实 ctx.inject 生命周期：BS 单独卸载（不卸载 dsh-mindmap）——
+
+// 029 支持延迟到达的 applySandbox：服务初始不存在，后续 arrive(svc) 触发
+// ctx.inject 回调执行并收集 disposer；depart() 调 disposer 模拟 BS 卸载。
+function applySandboxDelayed() {
+  const registered = []
+  const effects = []
+  const injectDisposers = []
+  const headChildren = []
+  const fakeDoc = {
+    createElement(tag) {
+      const el = { tagName: tag, _removed: false, attributes: {}, textContent: '', remove() { this._removed = true } }
+      Object.defineProperty(el, 'setAttribute', { value(k, v) { this.attributes[k] = v } })
+      return el
+    },
+    head: { appendChild(el) { headChildren.push(el) } },
+    querySelectorAll(sel) { return headChildren.filter((el) => !el._removed) },
+  }
+  let pendingInjectCb = null
+  const ctx = {
+    get() { return undefined },
+    effect(fn) { effects.push(fn) },
+    inject(deps, callback) {
+      if (deps.includes('betterSidebar')) {
+        pendingInjectCb = callback // 服务到达时执行
+      }
+      return () => {}
+    },
+    slots: {
+      inject(_key, factory) { factory() },
+      register(opts, component) { registered.push({ key: opts.name, options: opts, component }); return () => {} },
+    },
+  }
+  return {
+    ctx, registered, effects, injectDisposers, headChildren, fakeDoc,
+    // 模拟 BS 服务到达：执行 inject 回调，收集 disposer。
+    arrive(svc) {
+      if (pendingInjectCb) {
+        const ctx2 = { ...ctx, betterSidebar: svc }
+        const dispose = pendingInjectCb(ctx2)
+        if (typeof dispose === 'function') injectDisposers.push(dispose)
+      }
+    },
+    // 模拟 BS 单独卸载：调 inject disposer。
+    depart() { injectDisposers.forEach((d) => d()); injectDisposers.length = 0 },
+  }
+}
+
+test('029 lifecycle: BS pre-existing → register Tab → BS-only unload clears bus, disposes Tab, restores layout-push', () => {
+  sidebarBus.set(null)
+  let tabDisposed = false
+  const svc = { registerTab() { return () => { tabDisposed = true } }, openTab() {} }
+  const sb = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  // sidebar 模式：Tab 已注册，bus 已设，layout-push 不存在。
+  assert.equal(sidebarBus.get(), svc, 'sidebarBus set in sidebar mode')
+  assert.ok(!tabDisposed, 'Tab not disposed while BS active')
+  assert.equal(sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push'), undefined,
+    'layout-push CSS absent in sidebar mode')
+  // 只卸载 BS（不卸载 dsh-mindmap）：调 injectDisposers。
+  withSandboxDoc(sb.fakeDoc, () => { sb.injectDisposers.forEach((d) => d()) })
+  assert.equal(sidebarBus.get(), null, 'sidebarBus cleared after BS-only unload')
+  assert.ok(tabDisposed, 'Tab disposed via inject lifecycle')
+  // layout-push 恢复。
+  const layoutPush = sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.ok(layoutPush, 'layout-push CSS restored after BS-only unload')
+})
+
+test('029 lifecycle: BS late arrival → register Tab → BS-only unload clears bus, disposes Tab, restores layout-push', () => {
+  sidebarBus.set(null)
+  let tabDisposed = false
+  const svc = { registerTab() { return () => { tabDisposed = true } }, openTab() {} }
+  const sb = applySandboxDelayed()
+  // 初始无 BS：standalone 模式，layout-push 注入。
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  assert.ok(sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push'),
+    'layout-push CSS present before BS arrives')
+  assert.equal(sidebarBus.get(), null, 'sidebarBus null before BS arrives')
+  // BS 晚到：inject 回调执行，注册 Tab，设 bus，移除 layout-push。
+  withSandboxDoc(sb.fakeDoc, () => { sb.arrive(svc) })
+  assert.equal(sidebarBus.get(), svc, 'sidebarBus set after BS arrives')
+  assert.ok(!tabDisposed, 'Tab not disposed while BS active')
+  assert.equal(sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push'), undefined,
+    'layout-push CSS removed after BS arrives')
+  // 只卸载 BS。
+  withSandboxDoc(sb.fakeDoc, () => { sb.depart() })
+  assert.equal(sidebarBus.get(), null, 'sidebarBus cleared after BS-only unload')
+  assert.ok(tabDisposed, 'Tab disposed via inject lifecycle')
+  const layoutPush = sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.ok(layoutPush, 'layout-push CSS restored after BS-only unload')
+})
+
+// —— 029 会话清理组件测试：渲染 MindmapSlot、切换 sessionId、验证 store 清理 ——
+
+test('029 session cleanup: MindmapSlot renders sidebar-mode button when sidebarBus is set', () => {
+  sidebarBus.set(null)
+  const svc = { registerTab() { return () => {} }, openTab() {} }
+  const sb = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  // sidebarBus 已设 → MindmapSlot 走 sidebar 模式。
+  const face = sb.registered.find((r) => r.key === 'conversation.session.header.actions').options.inject().mindmapFace
+  const sid = 'slot-render-test'
+  // MindmapSlot 在 sidebar 模式下只渲染一个按钮（不渲染 MindmapDetailsPanel）。
+  const rendered = MindmapSlot({ useSession: null, useChat: null, sessionId: sid, inputActions: null, mindmapFace: face })
+  // jsx 桩的 Fragment 返回 {}（桩定义 Fragment: {}）。
+  // sidebar 模式 Fragment 只有一个 child（button），standalone 模式有两个（button + panel）。
+  const children = Array.isArray(rendered.props.children) ? rendered.props.children : [rendered.props.children]
+  assert.equal(children.length, 1, 'sidebar mode renders only a button (no panel)')
+  const btn = children[0]
+  assert.ok(btn && btn.type === 'button', 'sidebar mode renders a button')
+  assert.ok(btn.props.onClick, 'button has onClick handler')
+  // 点击按钮应调 openTab（验证 sidebar 模式接线）。
+  let opened = false
+  svc.openTab = () => { opened = true }
+  btn.props.onClick()
+  assert.ok(opened, 'sidebar button click calls betterSidebar.openTab')
+  // 清理。
+  sidebarBus.set(null)
+})
+
+test('029 session cleanup: MindmapSlot renders standalone-mode button + panel when sidebarBus is null', () => {
+  sidebarBus.set(null)
+  const sb = applySandbox({ betterSidebar: undefined })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  const face = sb.registered.find((r) => r.key === 'conversation.session.header.actions').options.inject().mindmapFace
+  const sid = 'slot-standalone-test'
+  // standalone 模式：Fragment 包含 button + MindmapDetailsPanel。
+  const rendered = MindmapSlot({ useSession: null, useChat: null, sessionId: sid, inputActions: null, mindmapFace: face })
+  const children = Array.isArray(rendered.props.children) ? rendered.props.children : [rendered.props.children]
+  // 第一个是 button，第二个是 MindmapDetailsPanel（jsx 桩返回 { type: Function, ... }）。
+  assert.ok(children.length >= 2, 'standalone mode renders button + panel')
+  assert.equal(children[0].type, 'button', 'standalone mode has button')
+  assert.equal(typeof children[1].type, 'function', 'standalone mode has MindmapDetailsPanel')
+  assert.equal(children[1].type.name, 'MindmapDetailsPanel', 'panel component is MindmapDetailsPanel')
+})
+
+// —— 030 真实 Cordis Context/provider/fiber 集成测试 ——
+// 用真实 @deepseek-ai/cordis 的 Context、ctx.provide、ctx.inject、ctx.effect，
+// 不用手写桩。证明 BS provider 到达/单独卸载时 inject disposer 和 layout-push
+// effect 的真实行为。
+
+// 创建真实 Cordis Context + 手动 slots（Cordis 没有 slots 服务）。
+function createCordisCtx() {
+  const ctx = new CordisContext()
+  const registered = []
+  // slots 是 dsh 客户端运行时提供的服务，Cordis 本身没有——手动挂。
+  ctx.slots = {
+    inject(_key, factory) { factory() },
+    register(opts, component) { registered.push({ key: opts.name, options: opts, component }); return () => {} },
+  }
+  return { ctx, registered }
+}
+
+// 等待 Cordis fiber 调度稳定（effect/inject 回调是微任务 + 宏任务调度）。
+function tick(ms = 20) { return new Promise((r) => setTimeout(r, ms)) }
+
+test('030 cordis integration: BS absent → standalone; provide BS → Tab registered + bus set + layout-push removed; dispose BS → restored', async () => {
+  sidebarBus.set(null)
+  const headChildren = []
+  const fakeDoc = {
+    createElement(tag) {
+      const el = { tagName: tag, _removed: false, attributes: {}, textContent: '', remove() { this._removed = true } }
+      Object.defineProperty(el, 'setAttribute', { value(k, v) { this.attributes[k] = v } })
+      return el
+    },
+    head: { appendChild(el) { headChildren.push(el) } },
+    querySelectorAll() { return headChildren.filter((el) => !el._removed) },
+  }
+
+  const prev = sandboxContext.document
+  sandboxContext.document = fakeDoc
+  try {
+    const { ctx } = createCordisCtx()
+    runtime.apply(ctx)
+    // Cordis ctx.effect 是同步执行的。
+
+    // BS 不存在 → standalone：layout-push CSS 注入，bus 为 null。
+    assert.equal(sidebarBus.get(), null, 'standalone: sidebarBus null')
+    let layoutPush = headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+    assert.ok(layoutPush, 'standalone: layout-push CSS present')
+
+    // provide BS → inject 回调执行：Tab 注册 + bus 设值 + layout-push 移除。
+    let tabRegistered = false
+    const svc = {
+      registerTab() { tabRegistered = true; return () => { tabRegistered = false } },
+      openTab() {},
+    }
+    const provideDispose = ctx.provide('betterSidebar', svc)
+    await tick() // 等 inject fiber 执行
+
+    assert.ok(tabRegistered, 'after provide: Tab registered')
+    assert.equal(sidebarBus.get(), svc, 'after provide: sidebarBus set')
+    layoutPush = headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+    assert.equal(layoutPush, undefined, 'after provide: layout-push CSS removed')
+
+    // 只销毁 BS provider（不销毁 dsh-mindmap）。
+    provideDispose()
+    await tick() // 等 inject disposer + effect 恢复
+
+    assert.equal(tabRegistered, false, 'after BS dispose: Tab disposed')
+    assert.equal(sidebarBus.get(), null, 'after BS dispose: sidebarBus null')
+    layoutPush = headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+    assert.ok(layoutPush, 'after BS dispose: layout-push CSS restored')
+  } finally {
+    sandboxContext.document = prev
+  }
+})
+
+// —— 030 能执行 effect/cleanup 的 MindmapSlot 组件测试 ——
+// 用一个能保持 hook 状态、记录 effect 回调、支持重渲染与卸载 cleanup 的
+// react 桩，实际驱动 slot.js 里的 sessionStore 写入/清理逻辑。
+
+// 030 组件 effect 驱动桩：能保持 hook 状态、按 deps 比较决定 effect 重跑、
+// 支持 mount/update/unmount 生命周期。每次渲染收集新 effect 条目，渲染后
+// 与上一轮的条目按调用顺序索引匹配——deps 变化时先 cleanup 再跑新 callback。
+function createEffectDriver() {
+  const stateValues = []
+  let stateIdx = 0
+  const refValues = []
+  let refIdx = 0
+  let prevSlots = [] // 上一轮的 effect 条目（含 cleanup + deps）
+  let currSlots = [] // 本轮新收集的 effect 条目
+  const hooks = {
+    useState(initial) {
+      const idx = stateIdx++
+      if (stateValues[idx] === undefined) stateValues[idx] = typeof initial === 'function' ? initial() : initial
+      return [stateValues[idx], (v) => { stateValues[idx] = typeof v === 'function' ? v(stateValues[idx]) : v }]
+    },
+    useEffect(callback, deps) { currSlots.push({ callback, deps, cleanup: null }) },
+    useLayoutEffect(callback, deps) { currSlots.push({ callback, deps, cleanup: null }) },
+    useMemo(factory) { return factory() },
+    useRef(v) {
+      const idx = refIdx++
+      if (refValues[idx] === undefined) refValues[idx] = { current: v }
+      return refValues[idx]
+    },
+    useSyncExternalStore(subscribe, getSnapshot) {
+      if (typeof subscribe === 'function') subscribe(() => {})
+      return typeof getSnapshot === 'function' ? getSnapshot() : undefined
+    },
+    useCallback(fn) { return fn },
+  }
+  // 渲染前重置 hook 索引（不清 state/refs——它们跨渲染保持）。
+  function beginRender() { stateIdx = 0; refIdx = 0; currSlots = [] }
+  // mount：执行所有 effect，保存为本轮的 prev。
+  function flushMount() {
+    for (const s of currSlots) {
+      const result = s.callback()
+      s.cleanup = typeof result === 'function' ? result : null
+    }
+    prevSlots = currSlots
+  }
+  // update：按索引匹配 prev/curr，deps 变化时执行新 callback。
+  function flushUpdate() {
+    const next = []
+    for (let i = 0; i < currSlots.length; i++) {
+      const curr = currSlots[i]
+      const prev = prevSlots[i]
+      // 上一轮的 deps（用于比较）。
+      const prevDeps = prev ? prev.deps : null
+      const changed = !prev || !prevDeps || !curr.deps ||
+        curr.deps.length !== prevDeps.length ||
+        curr.deps.some((d, j) => !Object.is(d, prevDeps[j]))
+      if (changed) {
+        if (prev && prev.cleanup) prev.cleanup()
+        const result = curr.callback()
+        curr.cleanup = typeof result === 'function' ? result : null
+      } else {
+        // deps 不变：继承上一轮的 cleanup，不重跑 callback。
+        curr.cleanup = prev ? prev.cleanup : null
+      }
+      next.push(curr)
+    }
+    prevSlots = next
+  }
+  // 卸载：执行所有 effect 的 cleanup。
+  function unmount() {
+    for (const s of prevSlots) {
+      if (s.cleanup) { s.cleanup(); s.cleanup = null }
+    }
+  }
+  return { hooks, beginRender, flushMount, flushUpdate, unmount }
+}
+
+// 030 组件 effect 测试公共设施：重新加载 client.js 到独立 vm 沙箱，
+// 注入能保持 hook 状态、执行 effect/cleanup 的 driver，返回沙箱内的组件和 store。
+function loadClientWithEffectDriver() {
+  const driver = createEffectDriver()
+  let def
+  const win = { __ModuleLoader__: { load(v) { def = v } } }
+  const ctx = vm.createContext({ URL, window: win })
+  vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), ctx)
+  const rt = def.factory((id) => {
+    if (id === 'react/jsx-runtime') return { jsx(t,p,k){return{type:t,props:p||{},key:k}}, jsxs(t,p,k){return{type:t,props:p||{},key:k}}, Fragment:{} }
+    if (id === 'react') return driver.hooks
+    throw new Error('unexpected:'+id)
+  })
+  return { driver, MindmapSlot: rt.internals.MindmapSlot, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
+}
+
+// 用 applySandbox 拿到 mindmapFace（header 槽位的 inject 返回值）。
+// 用完后清理原沙箱的 sidebarBus。
+function getMindmapFace() {
+  sidebarBus.set(null)
+  const sb = applySandbox({ betterSidebar: { registerTab() { return () => {} }, openTab() {} } })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  const face = sb.registered.find((r) => r.key === 'conversation.session.header.actions').options.inject().mindmapFace
+  sidebarBus.set(null) // 清理原沙箱 bus
+  return face
+}
+
+test('030 component effects: A→B session switch deletes A, keeps B', () => {
+  const face = getMindmapFace()
+  const { driver, MindmapSlot, sessionStore, sidebarBus } = loadClientWithEffectDriver()
+  const svc = { registerTab() { return () => {} }, openTab() {} }
+  sidebarBus.set(svc)
+
+  // 会话 A（mount）。
+  driver.beginRender()
+  MindmapSlot({ sessionId: 'sw-a', inputActions: { setDraft() {}, submit() {} }, mindmapFace: face })
+  driver.flushMount()
+  assert.ok(sessionStore.get('sw-a'), 'A in store after mount')
+
+  // A→B（update）。
+  driver.beginRender()
+  MindmapSlot({ sessionId: 'sw-b', inputActions: { setDraft() {}, submit() {} }, mindmapFace: face })
+  driver.flushUpdate()
+  assert.equal(sessionStore.get('sw-a'), null, 'A deleted after switch to B')
+  assert.ok(sessionStore.get('sw-b'), 'B in store after switch')
+})
+
+test('030 component effects: sidebar→standalone deletes current session snapshot', () => {
+  const face = getMindmapFace()
+  const { driver, MindmapSlot, sessionStore, sidebarBus } = loadClientWithEffectDriver()
+  const svc = { registerTab() { return () => {} }, openTab() {} }
+  sidebarBus.set(svc)
+
+  // 会话 C（mount）。
+  driver.beginRender()
+  MindmapSlot({ sessionId: 'exit-c', inputActions: { setDraft() {}, submit() {} }, mindmapFace: face })
+  driver.flushMount()
+  assert.ok(sessionStore.get('exit-c'), 'C in store after mount')
+
+  // sidebar→standalone：sidebarBus 设 null，同一组件实例重渲染。
+  sidebarBus.set(null)
+  driver.beginRender()
+  MindmapSlot({ sessionId: 'exit-c', inputActions: { setDraft() {}, submit() {} }, mindmapFace: face })
+  driver.flushUpdate()
+  assert.equal(sessionStore.get('exit-c'), null, 'C deleted after sidebar→standalone')
+})
+
+test('030 component effects: unmount deletes current session snapshot (snapshot exists before unmount)', () => {
+  const face = getMindmapFace()
+  const { driver, MindmapSlot, sessionStore, sidebarBus } = loadClientWithEffectDriver()
+  const svc = { registerTab() { return () => {} }, openTab() {} }
+  sidebarBus.set(svc)
+
+  // 会话 D（mount）——卸载前快照必须存在。
+  driver.beginRender()
+  MindmapSlot({ sessionId: 'unmount-d', inputActions: { setDraft() {}, submit() {} }, mindmapFace: face })
+  driver.flushMount()
+  assert.ok(sessionStore.get('unmount-d'), 'D in store before unmount')
+
+  // 卸载：执行 cleanup。
+  driver.unmount()
+  assert.equal(sessionStore.get('unmount-d'), null, 'D deleted after unmount')
 })

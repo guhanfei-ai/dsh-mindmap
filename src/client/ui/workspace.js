@@ -1,9 +1,21 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
-		function MindmapDetailsPanel(props) {
-			// 014：面板与 M 按钮同槽位（conversation.session.header.actions），
-			// 会话能力（sessionId/inputActions/nodes）与开合回调全部由 MindmapSlot
-			// 经 props 直给（无桥、无 useSyncExternalStore）。
-			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+		/**
+		 * 壳无关的脑图工作区（026 拆分）：从 MindmapDetailsPanel 提取的全部
+		 * 共享状态与逻辑——文档合并、目录树、视图切换、导出、自动展开、焦点
+		 * 同步、生长动画、加载态。不含任何壳特有几何（fixed 定位、宽度拖拽、
+		 * layout-push CSS、头部高度对齐），这些由外层壳（独立 fixed 壳 /
+		 * Better Sidebar Tab 壳）提供。
+		 *
+		 * visible：内容是否对用户可见（独立壳 = open；BS Tab = visible）。
+		 * 不可见时仍挂载——hooks 照常跑，auto-open 能在面板/Tab 收起时触发
+		 * onAutoOpen 把它拉起。onAutoOpen 在独立壳里 = setOpen(true)，在
+		 * BS Tab 里 = openTab(...)。onClose 仅独立壳提供（BS Tab 自带关闭）。
+		 * headerHeight：独立壳传入的对齐高度（null = BS Tab 模式，头部自适应）。
+		 */
+		function MindmapWorkspace(props) {
+			const { mindmapFace, visible, sessionId, inputActions, nodes, nodesVersion, onAutoOpen, onClose, headerHeight, variant } = props;
+			// 只调整工作区界面；脑图节点与导出继续使用自己的字体层级。
+			const S = workspaceStyles(variant);
 			// 016：nodesVersion（结构指纹）作副依赖——nodes 引用不变但内容已变
 			// （新工具结果原地落地）时强制重算；docs 新引用带动 merged →
 			// auto-open effect 重跑（对已消费事件幂等 no-op），面板必达展开。
@@ -20,55 +32,13 @@
 			// AI 没调工具（S3）或任何未知成因卡住时的兜底恢复路径。
 			const OPEN_TIMEOUT_MS = 30000;
 			const [openTimedOut, setOpenTimedOut] = react.useState(false);
-			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
-			// 窗口尺寸变化时持续钳制——只在挂载时压一次的话，窗口先放大→拖宽
-			// 面板→再缩小会让面板保持旧像素宽，聊天区被挤没。
-			const WIDTH_KEY = "dsh-mindmap.overlay-width";
-			const [panelWidth, setPanelWidth] = react.useState(() => {
-				try {
-					const saved = Number(localStorage.getItem(WIDTH_KEY));
-					if (Number.isFinite(saved) && saved >= 280) return Math.min(saved, Math.round(window.innerWidth * 0.8));
-				} catch {
-					// localStorage 不可用：走默认
-				}
-				return Math.round(window.innerWidth * 0.42);
-			});
-			react.useEffect(() => {
-				const clamp = () => {
-					setPanelWidth((prev) => {
-						const max = Math.round(window.innerWidth * 0.8);
-						return prev > max ? max : prev;
-					});
-				};
-				clamp();
-				window.addEventListener("resize", clamp);
-				return () => window.removeEventListener("resize", clamp);
-			}, []);
-			// 015 设置面板：没有本地拖拽记忆时，用 settings 里的默认宽度。
-			react.useEffect(() => {
-				let hasLocal = false;
-				try {
-					hasLocal = localStorage.getItem(WIDTH_KEY) !== null;
-				} catch {
-					// 忽略
-				}
-				if (hasLocal) return;
-				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
-				mindmapFace.readSettings().then((v) => {
-					const pct = v && typeof v.defaultPanelWidth === "number" ? Math.min(80, Math.max(20, v.defaultPanelWidth)) : 42;
-					const px = Math.round(window.innerWidth * pct / 100);
-					setPanelWidth((prev) => (Math.abs(prev - px) < 2 ? prev : px));
-				}).catch(() => {
-					// 读设置失败：保持 42% 默认
-				});
-			}, [mindmapFace]);
 
-			// 015 节点主题：面板每次打开、或设置总线 bump（设置页保存）时重读
-			// settings——面板常驻不卸载，光靠 open 变化会漏掉「开着面板改设置」。
+			// 015 节点主题：面板每次可见、或设置总线 bump（设置页保存）时重读
+			// settings——面板常驻不卸载，光靠 visible 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
 			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
 			react.useEffect(() => {
-				if (!open) return;
+				if (!visible) return;
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
 				mindmapFace.readSettings().then((v) => {
 					if (!v) return;
@@ -82,31 +52,8 @@
 				}).catch(() => {
 					// 读设置失败：保持当前主题
 				});
-			}, [open, settingsStamp, mindmapFace]);
-			const dragStateRef = react.useRef(null);
-			function startResize(e) {
-				e.preventDefault();
-				dragStateRef.current = { startX: e.clientX, startWidth: panelWidth, latestWidth: panelWidth };
-				const onMove = (ev) => {
-					if (!dragStateRef.current) return;
-					const max = Math.round(window.innerWidth * 0.8);
-					const next = Math.min(max, Math.max(280, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
-					dragStateRef.current.latestWidth = next;
-					setPanelWidth(next);
-				};
-				const onUp = () => {
-					try {
-						localStorage.setItem(WIDTH_KEY, String(dragStateRef.current ? dragStateRef.current.latestWidth : panelWidth));
-					} catch {
-						// localStorage 不可用：忽略
-					}
-					dragStateRef.current = null;
-					window.removeEventListener("mousemove", onMove);
-					window.removeEventListener("mouseup", onUp);
-				};
-				window.addEventListener("mousemove", onMove);
-				window.addEventListener("mouseup", onUp);
-			}
+			}, [visible, settingsStamp, mindmapFace]);
+
 			// 013 目录树 tab：常驻第一个 tab（TREE_TAB 哨兵，永不与绝对路径撞名）。
 			const TREE_TAB = "__tree__";
 			// 013 作者拍板「单脑图模式」：面板只有「目录」与「脑图」两个 tab，
@@ -127,55 +74,6 @@
 			const [tabMenu, setTabMenu] = react.useState(null);
 			// 悬停高亮键：树行用 entry.path / node.path，tab 用 TREE_TAB / 文档路径。
 			const [hoverKey, setHoverKey] = react.useState(null);
-
-			// 007~010 头线对齐（overlay 版回归）：面板头部高度动态跟随聊天区头部，
-			// 让两者的底部分隔线像素对齐。面板贴视口顶（fixed 宿主层），故
-			// 头部高度 = 聊天头部 rect.bottom - 1 - 面板顶（面板顶 ≈ 视口顶）。
-			// 主选 wSkVaW_header；结构链回退；合法性钳制 [40,200]；失败回退 74（75-1）。
-			const panelRootRef = react.useRef(null);
-			const FALLBACK_HEADER_HEIGHT = 74;
-			const [headerHeight, setHeaderHeight] = react.useState(FALLBACK_HEADER_HEIGHT);
-			react.useLayoutEffect(() => {
-				const HEADER_MIN = 40;
-				const HEADER_MAX = 200;
-				const tryPaths = [
-					() => document.querySelector('[class*="wSkVaW_header"]'),
-					() => {
-						const frame = document.querySelector("[data-dsh-frame]");
-						if (!frame) return null;
-						const center = frame.querySelector('[data-pane="conversation"]');
-						return center ? center.firstElementChild : null;
-					},
-				];
-				const measure = () => {
-					for (const path of tryPaths) {
-						const el = path();
-						if (!el) continue;
-						const rect = el.getBoundingClientRect();
-						const panelTop = panelRootRef.current
-							? panelRootRef.current.getBoundingClientRect().top
-							: rect.top;
-						const h = rect.bottom - 1 - panelTop;
-						if (h >= HEADER_MIN && h <= HEADER_MAX) {
-							setHeaderHeight(Math.round(h * 10) / 10);
-							return;
-						}
-					}
-					setHeaderHeight(FALLBACK_HEADER_HEIGHT);
-				};
-				measure();
-				const target = tryPaths[0]() || tryPaths[1]();
-				let observer = null;
-				if (target && typeof ResizeObserver !== "undefined") {
-					observer = new ResizeObserver(measure);
-					observer.observe(target);
-				}
-				window.addEventListener("resize", measure);
-				return () => {
-					if (observer) observer.disconnect();
-					window.removeEventListener("resize", measure);
-				};
-			}, []);
 
 			// 单脑图模式：可见脑图 = 用户当前点选（且未被关闭）的快照/本地文档，
 			// 否则跟随最新工具结果；隐藏过的路径不自动回弹（重新点树里文件才恢复）。
@@ -232,14 +130,14 @@
 				: null;
 
 			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
-			// 无论面板当前是否收起，都展开并切到这次意图对应的文档；首次挂载的
+			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
 			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
 			const seen = react.useRef(null);
 			react.useEffect(() => {
 				const targetPath = autoOpenTarget(merged, seen.current);
 				seen.current = openingEventKeys(merged);
 				if (targetPath) {
-					onOpen();
+					onAutoOpen();
 					setHiddenPath(null);
 					setCurrentPath(targetPath);
 					setView("mindmap");
@@ -266,7 +164,7 @@
 				prevIdsRef.current = { path: null, ids: null };
 			}, [sessionId]);
 			react.useEffect(() => {
-				if (!open) return; // 面板收起时不自动发消息（014 overlay 形态守卫）
+				if (!visible) return; // 面板/Tab 不可见时不自动发消息
 				if (!sessionId) return;
 				if (!active || active === TREE_TAB) return;
 				if (!docs.byPath[active]) return; // 本地占位：它的 open 请求已在途
@@ -276,7 +174,7 @@
 				if (submitChatCommand(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
 				}
-			}, [active, focusPath, fsTree.cwd, docs, open]);
+			}, [active, focusPath, fsTree.cwd, docs, visible]);
 
 			async function onExport() {
 				if (!tree || !doc || exporting) return;

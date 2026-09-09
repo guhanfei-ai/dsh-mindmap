@@ -20,29 +20,25 @@
 		function apply(ctx) {
 			const face = {};
 
-			// 014「布局让位」CSS（better-sidebar 同款机制）：面板打开时给 #root 挂
-			// margin-right + 宽度挤压，把聊天区推到左边、面板占右侧腾出的空间，
-			// 互不遮挡。015 修复级联冲突：它家（dsh-better-sidebar）同样注入
-			// #root 规则，后注入者胜导致我们的推挤被压掉——我们的规则加
-			// !important 且把双方变量相加（它开面板时聊天同样让位），无论注入
-			// 顺序如何都稳定生效。若它家未来也用 !important，需再评估（见 docs/014）。
-			if (typeof document !== "undefined") {
-				const style = document.createElement("style");
-				style.setAttribute("data-dsh-mindmap", "layout-push");
-				style.textContent = [
-					"#root{",
-					"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
-					"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
-					"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
-					"}",
-				].join("");
-				document.head.appendChild(style);
-			}
-
-			// 018 生长动画：新增/变化节点错峰渐显（节点盒 = 淡入 + 左移浮现，
-			// 连线 = 淡入；延迟由内联 animationDelay 提供）。fill mode both 保证
-			// 延迟期间保持隐藏；动画只挂新节点，旧节点不受影响。尊重系统减弱动效。
-			if (typeof document !== "undefined") {
+			// 026 生长动画 CSS：无论 standalone 还是 sidebar 模式都需要（节点渐显
+			// 与布局无关）。纳入 ctx.effect 清理——HMR / 插件禁用后 <head> 不残留。
+			if (typeof ctx.effect === "function") {
+				ctx.effect(() => {
+					if (typeof document === "undefined") return;
+					const animStyle = document.createElement("style");
+					animStyle.setAttribute("data-dsh-mindmap", "growth-anim");
+					animStyle.textContent = [
+						"@keyframes dsh-mm-node-in{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}",
+						".dsh-mm-reveal{opacity:0;animation:dsh-mm-node-in 320ms ease-out both}",
+						"@keyframes dsh-mm-fade-in{from{opacity:0}to{opacity:1}}",
+						".dsh-mm-edge-reveal{opacity:0;animation:dsh-mm-fade-in 320ms ease-out both}",
+						"@media (prefers-reduced-motion: reduce){.dsh-mm-reveal,.dsh-mm-edge-reveal{animation:none;opacity:1}}",
+					].join("");
+					document.head.appendChild(animStyle);
+					return () => { animStyle.remove(); };
+				});
+			} else if (typeof document !== "undefined") {
+				// ctx.effect 不可用（旧运行时 / 测试桩）：直接注入，无清理。
 				const animStyle = document.createElement("style");
 				animStyle.setAttribute("data-dsh-mindmap", "growth-anim");
 				animStyle.textContent = [
@@ -54,6 +50,101 @@
 				].join("");
 				document.head.appendChild(animStyle);
 			}
+
+		// 026+028+029 betterSidebar 生命周期统一收口：三种状态（启动时已存在、
+		// 运行中后到达、不存在/已卸载）都走同一条 ctx.inject 路径。ctx.inject 的
+		// 语义：服务已存在时回调立即执行；后到达时等到达后执行；服务消失时
+		// inject 返回的 disposer 自动执行。把 registerTab + sidebarBus.set 放在
+		// inject 回调里，disposer 绑定到 Better Sidebar 依赖 fiber——只卸载
+		// Better Sidebar、不卸载 dsh-mindmap 时，disposer 照常执行，sidebarBus
+		// 归零，layout-push effect 自动恢复 standalone 布局。
+		if (typeof ctx.inject === "function") {
+			try {
+				ctx.inject(["betterSidebar"], (ctx2) => {
+					const svc = ctx2 && ctx2.betterSidebar;
+					if (!svc || typeof svc.registerTab !== "function") return;
+					// 029 注册 Tab 并设 sidebarBus。disposer 清 bus + 注销 Tab——
+					// 不用 ctx.effect 包裹，disposer 直接由 ctx.inject 的依赖
+					// 生命周期管理（Better Sidebar fiber 卸载时触发）。
+					const dispose = svc.registerTab({
+						id: "dsh-mindmap:mindmap",
+						title: () => "思维脑图",
+						icon: (size) => (0, react_jsx_runtime.jsx)("svg", {
+							width: size, height: size, viewBox: "0 0 14 14",
+							fill: "none", stroke: "currentColor", strokeWidth: 1.4,
+							strokeLinecap: "round", strokeLinejoin: "round",
+							children: [
+								(0, react_jsx_runtime.jsx)("circle", { cx: 2.5, cy: 7, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 3.5, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("circle", { cx: 11.5, cy: 10.5, r: 1.7 }),
+								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 6.2 L9.9 4.2" }),
+								(0, react_jsx_runtime.jsx)("path", { d: "M4.1 7.8 L9.9 9.8" }),
+							],
+						}),
+						order: 100,
+						single: true,
+						component: MindmapSidebarTab,
+					});
+					sidebarBus.set(svc);
+					// 返回 disposer：Better Sidebar 依赖消失时执行。
+					return () => {
+						sidebarBus.set(null);
+						dispose();
+					};
+				});
+			} catch {
+				// ctx.inject 不支持或服务名未注册：standalone 模式。
+			}
+		}
+
+		// 026+028 layout-push CSS 可逆 effect：持续监听 sidebarBus——standalone
+		// 模式（bus===null）时注入 #root 推挤规则，sidebar 模式（bus!==null）
+		// 时移除。模式切换时自动翻转，不需要一次性删除。纳入 ctx.effect 清理。
+		if (typeof ctx.effect === "function") {
+			ctx.effect(() => {
+				if (typeof document === "undefined") return;
+				let layoutStyle = null;
+				function ensureLayoutPush() {
+					if (typeof document === "undefined") return;
+					if (sidebarBus.get()) {
+						// sidebar 模式：不推 #root（Better Sidebar 管自己的布局）。
+						if (layoutStyle) { layoutStyle.remove(); layoutStyle = null; }
+					} else {
+						// standalone 模式：注入推挤规则（仅一份）。
+						if (!layoutStyle) {
+							layoutStyle = document.createElement("style");
+							layoutStyle.setAttribute("data-dsh-mindmap", "layout-push");
+							layoutStyle.textContent = [
+								"#root{",
+								"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
+								"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
+								"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
+								"}",
+							].join("");
+							document.head.appendChild(layoutStyle);
+						}
+					}
+				}
+				ensureLayoutPush();
+				const unsub = sidebarBus.subscribe(ensureLayoutPush);
+				return () => {
+					unsub();
+					if (layoutStyle) { layoutStyle.remove(); layoutStyle = null; }
+				};
+			});
+		} else if (typeof document !== "undefined" && !sidebarBus.get()) {
+			// ctx.effect 不可用：直接注入（015 原始行为），standalone 模式。
+			const style = document.createElement("style");
+			style.setAttribute("data-dsh-mindmap", "layout-push");
+			style.textContent = [
+				"#root{",
+				"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
+				"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
+				"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
+				"}",
+			].join("");
+			document.head.appendChild(style);
+		}
 
 			// 013 目录树 tab：host 自建只读路由 /mindmap/api/tree（dsh-better-sidebar
 			// 同款机制——官方 host.listDirectory 在 native picker 环境必挂，见 013）。
@@ -139,7 +230,8 @@
 			// better-sidebar 同款「fixed 宿主层自举」思路（它的宿主层挂在
 			// conversation.chat.turnTail）；session scope 全套 props 直给，无需跨槽。
 			// details 槽已归还官方（原生「工具详情」栏恢复）；shell.overlay 方案
-			// 实测未渲染，已弃用（见 docs/014 排障）。
+			// 实测未渲染，已弃用（见 docs/014 排障）。026：MindmapSlot 内部按
+			// sidebarBus 自动切换 sidebar Tab 模式 / standalone 面板模式。
 			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
 				name: "conversation.session.header.actions",
 				id: "dsh-mindmap",
@@ -209,4 +301,13 @@
 			settingsNamespacesOf,
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
+			// 026 better-sidebar 共存：服务总线 + 会话数据桥 + Tab 壳（供测试）。
+			sidebarBus,
+			sessionStore,
+			MindmapSidebarTab,
+			// 027 内嵌头部视觉对齐：壳无关工作区组件 + 样式表（供测试验证 variant 分支）。
+			MindmapWorkspace,
+			S,
+			// 029 会话清理组件测试：MindmapSlot 直接调用（供测试验证 store 清理）。
+			MindmapSlot,
 		});

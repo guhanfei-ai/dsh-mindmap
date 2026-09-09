@@ -29,8 +29,7 @@
 			loadingErrorText: { color: "var(--dsw-alias-label-error)", fontSize: "13px", lineHeight: 1.6, margin: "0", textAlign: "center", wordBreak: "break-word", maxWidth: "90%" },
 			loadingFailMark: { flex: "none", fontSize: "22px", lineHeight: 1, color: "var(--dsw-alias-label-error)" },
 			retryBtn: { flex: "none", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", cursor: "pointer", font: "inherit", fontSize: "13px", padding: "6px 18px", borderRadius: "8px", lineHeight: "20px" },
-			// 013 目录树 tab：树容器/行样式。视觉自成一套：emoji 图标 + M 徽标 +
-			// 悬停高亮 + 激活指示条，不做 VSCode 式 chevron/线框。
+			// 013 独立目录树：emoji 图标 + M 徽标；内嵌模式在下方单独覆盖。
 			// 树容器 -2px 负边距抵消 body 16px 内距：树左缘 = 头部「目录」tab 左缘（14px）。
 			treeWrap: { display: "flex", flexDirection: "column", gap: "12px", height: "100%", minHeight: 0, marginLeft: "-2px", marginRight: "-2px" },
 			treeList: { flex: "1 1 auto", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", minHeight: 0 },
@@ -131,7 +130,49 @@
 			// 百分比标签：tabular-nums 防数字抖动。
 			zoomLabel: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none" },
 			zoomFitBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "12px", lineHeight: "20px", height: "22px", padding: "0 8px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", flex: "none" },
+			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
+			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
+			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。
+			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
+			// 紧凑标签：比 standalone 的 tab（3px 12px）更小，贴合单行工具栏。
+			sbTab: { border: "none", background: "none", cursor: "pointer", padding: "2px 8px", lineHeight: "20px", borderRadius: "6px", font: "inherit", fontSize: "12px", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
+			sbTabActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)" },
+			// 当前脑图标签包裹：与 standalone 的 tabWrap 同构，但圆角与内距更紧凑。
+			sbTabWrap: { display: "inline-flex", alignItems: "center", borderRadius: "6px", overflow: "hidden", maxWidth: "160px", transition: "background 0.08s ease" },
+			sbTabTitle: { background: "none", border: "none", cursor: "pointer", font: "inherit", color: "inherit", padding: "2px 4px 2px 8px", lineHeight: "20px", whiteSpace: "nowrap", maxWidth: "110px", overflow: "hidden", textOverflow: "ellipsis" },
+			sbTabClose: { background: "none", border: "none", cursor: "pointer", padding: "2px 6px 2px 2px", lineHeight: "20px", color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", flex: "none" },
 		};
 
-
-
+		// 内嵌界面与 Better Sidebar 共用宿主字体角色；变量缺失时仍有完整回退。
+		// 清除字号/行高等长属性，避免覆盖 font 简写中的主题值。
+		const SIDEBAR_BODY_FONT = "var(--dsw-font-s-14, 400 14px/22px sans-serif)";
+		const SIDEBAR_UI_FONT = "var(--dsw-font-xxs-12, 400 12px/18px sans-serif)";
+		function sidebarFontStyle(style, font = SIDEBAR_UI_FONT) {
+			const { fontSize, lineHeight, fontWeight, fontFamily, ...rest } = style;
+			return { ...rest, font };
+		}
+		const SIDEBAR_STYLES = {
+			...S,
+			sbRoot: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, minWidth: 0, font: SIDEBAR_BODY_FONT },
+			sbToolbar: sidebarFontStyle(S.sbToolbar),
+			sbTab: sidebarFontStyle(S.sbTab),
+			sbTabTitle: sidebarFontStyle(S.sbTabTitle),
+			action: sidebarFontStyle(S.action),
+			emptyHint: sidebarFontStyle(S.emptyHint),
+			treeRefresh: sidebarFontStyle(S.treeRefresh),
+			treeError: sidebarFontStyle(S.treeError),
+			treeMenuItem: sidebarFontStyle(S.treeMenuItem),
+			loadingText: sidebarFontStyle(S.loadingText, SIDEBAR_BODY_FONT),
+			loadingErrorText: sidebarFontStyle(S.loadingErrorText, SIDEBAR_BODY_FONT),
+			retryBtn: sidebarFontStyle(S.retryBtn),
+			treeList: { ...S.treeList, gap: 0 },
+			treeRow: { ...sidebarFontStyle(S.treeRow, SIDEBAR_BODY_FONT), minHeight: "34px", flexShrink: 0, gap: "6px", color: "var(--dsw-alias-label-primary)" },
+			treeRootRow: { color: "var(--dsw-alias-label-primary)" },
+			treeRowMd: { color: "var(--dsw-alias-label-primary)" },
+			// M 与文件名共用主题前景色；透明底避免主题品牌色与浅底碰撞。
+			// 独立声明字号/字重，不受宿主字体简写与字体切换影响。
+			mdBadge: { ...S.mdBadge, width: "16px", height: "16px", boxSizing: "border-box", border: "1px solid currentColor", borderRadius: "3px", fontFamily: "system-ui, sans-serif", fontSize: "12px", fontWeight: 800, lineHeight: 1, background: "transparent", color: "inherit" },
+		};
+		function workspaceStyles(variant) {
+			return variant === "sidebar" ? SIDEBAR_STYLES : S;
+		}

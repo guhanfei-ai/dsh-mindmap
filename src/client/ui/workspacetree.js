@@ -189,6 +189,30 @@
 				[fsTree.nodes, fsTree.expanded],
 			);
 
+			// 内嵌文件夹使用 14px 线框图标，Markdown 使用 M 徽标。
+			// 独立目录继续使用原有 emoji / M 徽标。
+			function sidebarTreeIcon(folder, expanded = false) {
+				const outline = folder
+					? (expanded ? "M2 6V3h4l2 2h4v2M2 6h11l-2 6H1z" : "M1.5 3h4l2 2h5v7h-11z")
+					: "M3 1.5h5l3 3V12.5H3z M8 1.5v3h3";
+				return (0, react_jsx_runtime.jsx)("svg", {
+					width: 14, height: 14, viewBox: "0 0 14 14", fill: "none",
+					stroke: "currentColor", strokeWidth: 1, strokeLinejoin: "round", strokeLinecap: "round",
+					style: { flex: "none" }, "aria-hidden": true, focusable: "false",
+					children: (0, react_jsx_runtime.jsx)("path", { d: outline }),
+				});
+			}
+			function directoryLabel(name, expanded) {
+				return (0, react_jsx_runtime.jsx)("span", {
+					style: { flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
+					children: variant === "sidebar" ? name : `${expanded ? "📂" : "📁"} ${name}`,
+				});
+			}
+			function blockFileInteraction(event) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+
 			function renderTreeRow(row) {
 				if (row.kind === "dir") {
 					const node = row.node;
@@ -216,10 +240,8 @@
 						},
 						children: [
 							(0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, children: expandedNow ? "▾" : "▸" }),
-							(0, react_jsx_runtime.jsx)("span", {
-								style: { flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
-								children: expandedNow ? `📂 ${node.name}` : `📁 ${node.name}`,
-							}),
+							variant === "sidebar" ? sidebarTreeIcon(true, expandedNow) : null,
+							directoryLabel(node.name, expandedNow),
 							node.truncated ? (0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, children: "…" }) : null,
 							// 根行行内右侧的「刷新」（013：不占独立一行）。
 							isRoot ? (0, react_jsx_runtime.jsx)("span", { style: S.spacer }) : null,
@@ -242,8 +264,9 @@
 				const entry = row.entry;
 				const depthPad = row.depth * 16;
 				const isMd = /\.md$/i.test(entry.name);
+				const inactiveFile = variant === "sidebar" && !entry.isDir && !isMd;
 				const expandedNow = entry.isDir && Boolean(fsTree.expanded[entry.path]);
-				const hovered = hoverKey === entry.path;
+				const hovered = !inactiveFile && hoverKey === entry.path;
 				const style = {
 					...S.treeRow,
 					paddingLeft: depthPad,
@@ -251,6 +274,7 @@
 					...(isMd ? S.treeRowMd : entry.isDir ? {} : S.treeRowOther),
 					...(entry.hidden ? { opacity: 0.6 } : {}),
 					...(hovered ? S.treeRowHover : {}),
+					...(inactiveFile ? { userSelect: "none" } : {}),
 				};
 				if (entry.isDir) {
 					return (0, react_jsx_runtime.jsxs)("div", {
@@ -272,25 +296,34 @@
 						},
 						children: [
 							(0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, children: expandedNow ? "▾" : "▸" }),
-							(0, react_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }, children: expandedNow ? `📂 ${entry.name}` : `📁 ${entry.name}` }),
+							variant === "sidebar" ? sidebarTreeIcon(true, expandedNow) : null,
+							directoryLabel(entry.name, expandedNow),
 						],
 					});
 				}
 				return (0, react_jsx_runtime.jsxs)("div", {
 					key: entry.path,
 					style,
-					title: isMd ? `打开脑图：${entry.path}` : entry.path,
-					onClick: isMd ? () => openMindmap(entry) : undefined,
-					onMouseEnter: () => setHoverKey(entry.path),
-					onMouseLeave: () => setHoverKey((k) => (k === entry.path ? null : k)),
+					title: inactiveFile ? undefined : isMd ? `打开脑图：${entry.path}` : entry.path,
+					"aria-disabled": inactiveFile ? true : undefined,
+					draggable: inactiveFile ? false : undefined,
+					// 纯展示文件仍接住事件，避免穿透到宿主或空白处的新建菜单。
+					onClick: inactiveFile ? blockFileInteraction : isMd ? () => openMindmap(entry) : undefined,
+					onDoubleClick: inactiveFile ? blockFileInteraction : undefined,
+					onMouseDown: inactiveFile ? blockFileInteraction : undefined,
+					onDragStart: inactiveFile ? blockFileInteraction : undefined,
+					onMouseEnter: inactiveFile ? undefined : () => setHoverKey(entry.path),
+					onMouseLeave: inactiveFile ? undefined : () => setHoverKey((k) => (k === entry.path ? null : k)),
 					// 右键：.md 不弹菜单（左键即打开）；非 .md 只拦掉默认菜单。
 					onContextMenu: (e) => {
 						e.preventDefault();
 						e.stopPropagation();
 					},
 					children: [
+						variant === "sidebar" ? (0, react_jsx_runtime.jsx)("span", { style: S.treeCaret, "aria-hidden": true }) : null,
 						isMd
-							? (0, react_jsx_runtime.jsx)("span", { style: S.mdBadge, children: "M" })
+							? (0, react_jsx_runtime.jsx)("span", { style: S.mdBadge, "aria-hidden": true, children: "M" })
+							: variant === "sidebar" ? sidebarTreeIcon(false)
 							: (0, react_jsx_runtime.jsx)("span", { style: S.fileDot, children: (0, react_jsx_runtime.jsx)("span", { style: S.fileDotCore }) }),
 						(0, react_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }, children: entry.name }),
 					],

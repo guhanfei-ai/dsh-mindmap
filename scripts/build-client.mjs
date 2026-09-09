@@ -12,18 +12,29 @@ const SOURCE_FILES = [
   'src/client/core/export.js',
   'src/client/ui/styles.js',
   'src/client/ui/settings.js',
-  'src/client/ui/slot.js',
   'src/client/ui/render.js',
   'src/client/ui/canvas.js',
-  'src/client/ui/panel.js',
-  'src/client/ui/treetab.js',
-  'src/client/ui/panelbody.js',
+  // 026 拆分：panel.js/treetab.js/panelbody.js → workspace + panelshell + sidebartab
+  'src/client/ui/workspace.js',
+  'src/client/ui/workspacetree.js',
+  'src/client/ui/workspacerender.js',
+  'src/client/ui/panelshell.js',
+  'src/client/ui/sidebartab.js',
+  'src/client/ui/slot.js',
+  // 026 会话数据桥 + 服务总线（模块级单例，须在 apply 之前声明）
+  'src/client/runtime/store.js',
   'src/client/runtime/apply.js',
   'src/client/runtime/close.js',
 ]
 
 // 同一逻辑块的物理拆分（函数体跨文件续写），拼接时不额外插空行。
-const PHYSICAL_SPLITS = new Set(['src/client/runtime/close.js'])
+// workspacetree / workspacerender 是 workspace 函数体的跨文件续写。
+// close 是 ModuleLoader 工厂函数的闭合花括号。
+const PHYSICAL_SPLITS = new Set([
+  'src/client/ui/workspacetree.js',
+  'src/client/ui/workspacerender.js',
+  'src/client/runtime/close.js',
+])
 
 const fragments = []
 for (const relative of SOURCE_FILES) {
