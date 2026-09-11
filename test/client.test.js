@@ -1895,6 +1895,8 @@ test('MindmapSidebarTab onAutoOpen is wired to betterSidebar.openTab via compone
   // 验证组件回调确实调了 betterSidebar.openTab，且参数正确。
   assert.ok(openedTab, 'openTab was called via component callback')
   assert.equal(openedTab.seed.type, 'dsh-mindmap:mindmap')
+  // 031：seed 附惰性 url，让 BS 把它当「内容型 open」自动展开右栏面板。
+  assert.equal(openedTab.seed.url, 'dsh-mindmap://mindmap')
   assert.equal(openedTab.scope.sessionId, 'auto-open-test')
   sessionStore.delete('auto-open-test')
 })
@@ -2190,11 +2192,36 @@ test('029 session cleanup: MindmapSlot renders sidebar-mode button when sidebarB
   assert.ok(btn && btn.type === 'button', 'sidebar mode renders a button')
   assert.ok(btn.props.onClick, 'button has onClick handler')
   // 点击按钮应调 openTab（验证 sidebar 模式接线）。
-  let opened = false
-  svc.openTab = () => { opened = true }
+  // 031：seed 附惰性 url，让 BS 把它当「内容型 open」自动展开右栏面板。
+  let openedTab = null
+  svc.openTab = (seed, scope) => { openedTab = { seed, scope } }
   btn.props.onClick()
-  assert.ok(opened, 'sidebar button click calls betterSidebar.openTab')
+  assert.ok(openedTab, 'sidebar button click calls betterSidebar.openTab')
+  assert.equal(openedTab.seed.type, 'dsh-mindmap:mindmap')
+  assert.equal(openedTab.seed.url, 'dsh-mindmap://mindmap')
+  assert.equal(openedTab.scope.sessionId, sid)
   // 清理。
+  sidebarBus.set(null)
+})
+
+// 031 负向用例：openTab 抛异常时按钮 onClick 不抛（helper 吞错）。
+test('031 openMindmapTab swallows openTab exceptions (sidebar button click does not throw)', () => {
+  sidebarBus.set(null)
+  const svc = {
+    registerTab() { return () => {} },
+    openTab() { throw new Error('BS gone') },
+  }
+  const sb = applySandbox({ betterSidebar: svc })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  const face = sb.registered.find((r) => r.key === 'conversation.session.header.actions').options.inject().mindmapFace
+  const rendered = MindmapSlot({ useSession: null, useChat: null, sessionId: 'throw-test', inputActions: null, mindmapFace: face })
+  const children = Array.isArray(rendered.props.children) ? rendered.props.children : [rendered.props.children]
+  const btn = children[0]
+  // 不抛即通过。
+  assert.doesNotThrow(() => btn.props.onClick(), 'sidebar button click does not throw when openTab fails')
   sidebarBus.set(null)
 })
 

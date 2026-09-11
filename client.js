@@ -3678,10 +3678,11 @@ window.__ModuleLoader__.load({
 			);
 			const data = react.useSyncExternalStore(subscribe, getSnapshot);
 
-			// auto-open 回调：新的 mindmap_create/open 到达时聚焦本 Tab。
-			const onAutoOpen = react.useCallback(() => {
-				try { ctx && ctx.betterSidebar && ctx.betterSidebar.openTab({ type: "dsh-mindmap:mindmap" }, scope); } catch { /* BS 已卸载或方法缺失 */ }
-			}, [ctx, scope]);
+		// auto-open 回调：新的 mindmap_create/open 到达时聚焦本 Tab。
+		// 031：经 openMindmapTab helper 附惰性 url，让 BS 自动展开右栏面板。
+		const onAutoOpen = react.useCallback(() => {
+			openMindmapTab(ctx && ctx.betterSidebar, scope);
+		}, [ctx, scope]);
 
 			if (!data) {
 				// MindmapSlot 尚未写入数据（Tab 先于会话激活打开）。
@@ -3702,6 +3703,20 @@ window.__ModuleLoader__.load({
 				headerHeight: null,
 				variant: "sidebar",
 			});
+		}
+
+		/**
+		 * 031 嵌入模式自动展开：BS 的 openTab 只有「内容型 open」（seed 带 path/url）
+		 * 才自动展开右栏面板（service.ts 只看 seed 字段不看 type）；纯 type-only
+		 * open 永不展开。seed 附惰性 url 即可与 standalone 模式一样「点击即见」。
+		 * url 对已存在的 tab 不生效（focus 不覆盖）；旧版 BS 无此逻辑时退化为
+		 * 现状（仅激活 tab），无回归。
+		 */
+		function openMindmapTab(svc, scope) {
+			if (!svc || typeof svc.openTab !== "function") return;
+			try {
+				svc.openTab({ type: "dsh-mindmap:mindmap", url: "dsh-mindmap://mindmap" }, scope);
+			} catch { /* BS 已卸载或方法缺失 */ }
 		}
 
 		/**
@@ -3798,7 +3813,7 @@ window.__ModuleLoader__.load({
 				const target = autoOpenTarget(sidebarDocs, sidebarSeen.current);
 				sidebarSeen.current = openingEventKeys(sidebarDocs);
 				if (target) {
-					try { sidebar.openTab({ type: "dsh-mindmap:mindmap" }, { sessionId }); } catch { /* BS 已卸载或方法缺失 */ }
+					openMindmapTab(sidebar, { sessionId });
 				}
 			}, [sidebarDocs, sidebarMode, sessionId, sidebar]);
 
@@ -3832,7 +3847,7 @@ window.__ModuleLoader__.load({
 					title: "脑图面板：展开 / 收起",
 					style: S.mButton,
 					onClick: () => {
-						try { sidebar.openTab({ type: "dsh-mindmap:mindmap" }, { sessionId }); } catch { /* BS 已卸载或方法缺失 */ }
+						openMindmapTab(sidebar, { sessionId });
 					},
 					children: [mButtonIcon, "思维脑图"],
 				}) });

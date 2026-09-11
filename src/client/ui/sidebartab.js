@@ -30,10 +30,11 @@
 			);
 			const data = react.useSyncExternalStore(subscribe, getSnapshot);
 
-			// auto-open 回调：新的 mindmap_create/open 到达时聚焦本 Tab。
-			const onAutoOpen = react.useCallback(() => {
-				try { ctx && ctx.betterSidebar && ctx.betterSidebar.openTab({ type: "dsh-mindmap:mindmap" }, scope); } catch { /* BS 已卸载或方法缺失 */ }
-			}, [ctx, scope]);
+		// auto-open 回调：新的 mindmap_create/open 到达时聚焦本 Tab。
+		// 031：经 openMindmapTab helper 附惰性 url，让 BS 自动展开右栏面板。
+		const onAutoOpen = react.useCallback(() => {
+			openMindmapTab(ctx && ctx.betterSidebar, scope);
+		}, [ctx, scope]);
 
 			if (!data) {
 				// MindmapSlot 尚未写入数据（Tab 先于会话激活打开）。

@@ -1,5 +1,19 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 		/**
+		 * 031 嵌入模式自动展开：BS 的 openTab 只有「内容型 open」（seed 带 path/url）
+		 * 才自动展开右栏面板（service.ts 只看 seed 字段不看 type）；纯 type-only
+		 * open 永不展开。seed 附惰性 url 即可与 standalone 模式一样「点击即见」。
+		 * url 对已存在的 tab 不生效（focus 不覆盖）；旧版 BS 无此逻辑时退化为
+		 * 现状（仅激活 tab），无回归。
+		 */
+		function openMindmapTab(svc, scope) {
+			if (!svc || typeof svc.openTab !== "function") return;
+			try {
+				svc.openTab({ type: "dsh-mindmap:mindmap", url: "dsh-mindmap://mindmap" }, scope);
+			} catch { /* BS 已卸载或方法缺失 */ }
+		}
+
+		/**
 		 * 会话内容节点的双代快照选择（023）：dsh ≤0.1.1 的 useSession 快照带
 		 * 平铺 nodes；0.1.2-rc.1 起 SessionSnapshot 拆成纯控制状态，会话内容
 		 * 迁入 useChat 的 ChatSnapshot.legacy.nodes（官方兼容面，ToolResultNode
@@ -93,7 +107,7 @@
 				const target = autoOpenTarget(sidebarDocs, sidebarSeen.current);
 				sidebarSeen.current = openingEventKeys(sidebarDocs);
 				if (target) {
-					try { sidebar.openTab({ type: "dsh-mindmap:mindmap" }, { sessionId }); } catch { /* BS 已卸载或方法缺失 */ }
+					openMindmapTab(sidebar, { sessionId });
 				}
 			}, [sidebarDocs, sidebarMode, sessionId, sidebar]);
 
@@ -127,7 +141,7 @@
 					title: "脑图面板：展开 / 收起",
 					style: S.mButton,
 					onClick: () => {
-						try { sidebar.openTab({ type: "dsh-mindmap:mindmap" }, { sessionId }); } catch { /* BS 已卸载或方法缺失 */ }
+						openMindmapTab(sidebar, { sessionId });
 					},
 					children: [mButtonIcon, "思维脑图"],
 				}) });
