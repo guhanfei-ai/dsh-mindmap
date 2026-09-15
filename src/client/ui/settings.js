@@ -15,7 +15,7 @@
 		/**
 		 * 015 设置面板（settings.section 页面，root scope）：读写 host 的
 		 * settings namespace "mindmap"。节点主题三件套（线/卡片/颜色）+ 面板宽度；
-		 * requireApproval 按作者要求隐藏（功能保留，经 config/API 仍可设）。
+		 * 写入确认策略在这里可见；当前会话的授权状态由脑图工作区显示。
 		 */
 		function SettingsPanel(props) {
 			const { mindmapFace } = props;
@@ -32,6 +32,7 @@
 						if (!alive) return;
 						if (v === null) setError("设置服务不可用：settings namespace 未注册或 connection 缺失");
 						setValue({
+							approvalMode: v && v.requireApproval === false ? "off" : v && ["per-operation", "session", "off"].includes(v.approvalMode) ? v.approvalMode : "session",
 							lineStyle: v && v.lineStyle === "curve" ? "curve" : "elbow",
 							cardStyle: v && v.cardStyle === "square" ? "square" : "rounded",
 							colorTheme: v && COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
@@ -57,8 +58,10 @@
 					await mindmapFace.updateSettings(patch);
 					settingsBus.bump(); // 通知脑图面板重读主题（面板常驻，open 不变）
 					setNotice("已保存");
+					return true;
 				} catch (err) {
 					setError(String(err?.message ?? err));
+					return false;
 				} finally {
 					setSaving(false);
 				}
@@ -82,7 +85,6 @@
 			const commitWidth = () => {
 				save({ defaultPanelWidth: value.defaultPanelWidth });
 			};
-
 			return (0, react_jsx_runtime.jsxs)("div", { style: S.settingsWrap, children: [
 				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "节点主题" }),
 				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
@@ -155,6 +157,24 @@
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启后，脑图每次更新的新增/变化节点会逐个渐显长出（总时长不超过 2 秒）；关闭则整棵树立刻完整显示。" }),
+				] }),
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "写入确认" }),
+				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "确认频率" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [
+								{ value: "per-operation", label: "每次确认" },
+								{ value: "session", label: "本会话一次" },
+								{ value: "off", label: "关闭普通确认" },
+							],
+							value: value.approvalMode,
+							disabled: saving,
+							onChange: (v) => setField({ approvalMode: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: value.approvalMode === "session" ? "本会话首次写入当前脑图后，后续普通更新无需重复确认。切换文件或会话会重新确认。" : value.approvalMode === "off" ? "普通更新不再弹窗；重命名、删除和大范围重写仍需确认。" : "每次写入都会弹窗确认。" }),
+					value.approvalMode === "session" ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "授权状态显示在当前脑图工作区；可在那里撤销当前会话的普通写入授权。" }) : null,
 				] }),
 				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,
 				notice ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsNotice, children: notice }) : null,

@@ -49,26 +49,14 @@
 				});
 			}
 
-			// 左键点 .md（013 作者定稿）：① tab 秒建（本地占位，不显示内容，body
-			// 显示加载动效）；② 同时填「用 mindmap_open 打开 <rel>」并 submit 让 AI
-			// 就位——AI 工具结果到达后同 path 覆盖占位，节点才渲染；随后用户接着
-			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
-			function openMindmap(entry) {
+			// 左键点 .md：先通过只读 document 路由显示文件，再在草稿为空时提交
+			// mindmap_open 让 AI 接管编辑；已有草稿永不被覆盖。
+			async function openMindmap(entry) {
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
-				// 有未发送草稿：不建占位、不抢输入框，改把指令交给用户自己发。
-				if (draftBlocked()) {
-					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-						navigator.clipboard.writeText(text).catch(() => {});
-						setFilledHint("检测到未发送的草稿，已保留；打开指令已复制到剪贴板，粘贴发送即可");
-					} else {
-						setFilledHint(`检测到未发送的草稿，已保留。请手动发送：${text}`);
-					}
-					return;
-				}
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
 				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
 				localErrorBaseRef.current = errorEventKeys(merged);
-				// ① 本地占位：脑图 tab 立即切过去、内容为空（op:"local" 触发加载态）；
+				// ① 本地占位：脑图 tab 立即切过去，随后由只读路由填充内容；
 				// 新打开的脑图替换旧的那颗（单脑图模式）。
 				setHiddenPath(null);
 				setCurrentPath(entry.path);
@@ -84,19 +72,34 @@
 						renamedFrom: null,
 					},
 				}));
-				// ② AI 就位：填指令并直接提交（失败降级剪贴板）。
-				if (submitChatCommand(text)) {
-					// 标记已发，避免焦点同步 effect 对同一路径重复发送。
+				try {
+					if (!mindmapFace || typeof mindmapFace.readDocument !== "function") throw new Error("只读文档能力不可用");
+					const loaded = await mindmapFace.readDocument(sessionId, relPathWithin(fsTree.cwd, entry.path, entry.name));
+					setLocalDocs((prev) => {
+						const current = prev[entry.path];
+						if (!current || current.op !== "local") return prev;
+						return { ...prev, [entry.path]: { ...current, op: "local-read", content: String(loaded.content ?? ""), revision: loaded.revision ?? null } };
+					});
+					setFilledHint(`已直接打开「${entry.name}」；需要 AI 编辑时可继续发送打开指令`);
+				} catch (error) {
+					setLocalDocs((prev) => {
+						const current = prev[entry.path];
+						if (!current || current.op !== "local") return prev;
+						return { ...prev, [entry.path]: { ...current, error: String(error?.message ?? error) } };
+					});
+					setFilledHint("直接读取失败，可重试或让 AI 打开该文件");
+				}
+				// ② 草稿为空时再让 AI 接管焦点；已有草稿绝不覆盖。
+				if (!draftBlocked() && submitChatCommand(text)) {
 					focusSentRef.current = entry.path;
-					setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
 					return;
 				}
-				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-					navigator.clipboard.writeText(text).catch(() => {});
-					setFilledHint("已复制指令到剪贴板，请粘贴到聊天输入框");
-					return;
+				if (draftBlocked()) {
+					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+						navigator.clipboard.writeText(text).catch(() => {});
+						setFilledHint("检测到未发送的草稿，文件已打开；打开指令已复制到剪贴板");
+					} else setFilledHint(`文件已打开，请手动发送：${text}`);
 				}
-				setFilledHint(text);
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
@@ -350,9 +353,12 @@
 			function renderLoading() {
 				// 016 三态流转：加载中 →（错误 | 超时）——错误优先于超时；失败态
 				// 提供「重试」一键重发打开指令（openMindmap 同款通路 + 降级链）。
-				const failed = Boolean(docError) || openTimedOut;
+				const localReadError = doc && doc.op === "local" && doc.error ? doc.error : null;
+				const failed = Boolean(docError || localReadError) || openTimedOut;
 				const message = docError
 					? `AI 打开失败：${docError.message}`
+					: localReadError
+						? `读取失败：${localReadError}`
 					: openTimedOut
 						? "等待 AI 打开超时（约 30 秒无结果）"
 						: "AI 正在打开脑图…";

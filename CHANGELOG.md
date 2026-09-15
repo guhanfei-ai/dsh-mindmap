@@ -6,8 +6,17 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
-- Better Sidebar native tab coexistence: when `dsh-better-sidebar` is installed, the mindmap registers as a single-instance tab (`dsh-mindmap:mindmap`) inside Better Sidebar instead of rendering its own floating panel. The in-tab toolbar is a single compact row (mindmap list, current mindmap, export button on the same line), labeled 脑图列表; the header 思维脑图 button opens or focuses the tab. When Better Sidebar is absent, the standalone floating panel with drag-resizable width and layout-push CSS remains unchanged (labeled 目录). `dsh-better-sidebar` is declared as an optional peer dependency — no duplicate instance is bundled. The mode switch is fully reversible via a `sidebarBus`-driven reversible effect: if Better Sidebar is unloaded mid-session, the standalone panel and layout-push CSS are restored automatically. A session-scoped data bridge (`sessionStore`) passes header-slot-captured `nodes`/`inputActions` to the tab component, with cleanup on session switch and component unmount.
-- Collapsible subtrees: every node with children shows a small toggle on its connector. Collapsing hides the subtree and reports how many nodes are hidden, which keeps large maps navigable. The state is view-only — the markdown file is untouched and image export still covers the full subtree. Collapsed nodes reset when the document changes, and stale ids are pruned after the AI rewrites the tree.
+- Read-only document opening now renders a clicked Markdown file before asking the AI to take over editing. `mindmap_create` accepts an optional relative directory, and read/write results carry a SHA-256 revision so stale `mindmap_update` calls can be rejected instead of overwriting newer edits.
+- Standalone panel width now remains usable on narrow viewports by clamping the initial, saved, resized, and settings-derived widths together.
+- Write approval now supports `per-operation`, `session` (default), and `off` for ordinary writes. Session mode reuses a successful approval per document, while renames, empty-content deletions, and broad rewrites stay gated; the settings page exposes the policy and the current mindmap workspace shows and revokes the current-session grant.
+
+### Fixed
+
+- Fixed a session-initialization race where an AI `mindmap_create` could expand the right-side tab but leave the workspace on the directory list. Session cleanup now runs before automatic document selection, and the opening-event cursor is reset when switching sessions.
+- The broad-rewrite ratio check now applies only to documents of 4 KB or more, so rewriting a few-hundred-byte mindmap end to end no longer escalates to a fresh high-risk confirmation and the session grant stays usable. Renames, cleared content, and removed blocks above 16 KB remain gated.
+- Choosing an explicit confirmation frequency in the settings page now lifts the legacy `requireApproval: false` switch. That switch takes precedence over `approvalMode` in the engine, so the previous behaviour saved the choice and then reverted it to `off`.
+
+## [0.11.0] - 2026-09-11
 
 ### Fixed
 
@@ -15,11 +24,33 @@ All notable changes to this project are documented here. Release-specific notes 
 - Runtime verification on dsh 0.1.5-rc.1 with `dsh-better-sidebar` v0.18.1 confirms the plugin loads and renders in sidebar Tab mode: the MindmapSidebarTab registers, the mindmap settings panel (line style, card style, color theme, default width, growth animation), the directory tree tab, and the header 思维脑图 button all render and function correctly. A known timing issue causes the first directory-tree fetch to report "session has no working directory" on session switch (sessionStore write races the first fetch); clicking 刷新 restores it.
 - Sidebar auto-expand: clicking the header 思维脑图 button (or an AI `mindmap_create`/`open` auto-open) now automatically expands the Better Sidebar panel in addition to focusing the mindmap tab. Previously the tab activated but the panel stayed collapsed, requiring a manual "展开侧边栏" click. Root cause: `dsh-better-sidebar`'s `openTab(seed, scope)` only auto-expands the panel for "content-type" opens where the seed carries a `path` or `url` field (`service.ts:707`); a pure type-only open (`{ type: "dsh-mindmap:mindmap" }`) never expands. Fix: a new `openMindmapTab(svc, scope)` helper attaches an inert `url: "dsh-mindmap://mindmap"` to the seed, making it a content-type open. All three `openTab` call sites (header button click, MindmapSlot auto-open fallback, MindmapSidebarTab onAutoOpen) go through the helper. The `url` is not overwritten onto an already-existing tab (focus path), so there are no side effects; older BS versions without this logic degrade gracefully to the previous behavior (tab activates without panel expansion).
 
+## [0.10.1] - 2026-09-10
+
+### Added
+
+- Better Sidebar native tab coexistence: when `dsh-better-sidebar` is installed, the mindmap registers as a single-instance tab (`dsh-mindmap:mindmap`) inside Better Sidebar instead of rendering its own floating panel. The in-tab toolbar is a single compact row (mindmap list, current mindmap, export button on the same line), labeled 脑图列表; the header 思维脑图 button opens or focuses the tab. When Better Sidebar is absent, the standalone floating panel with drag-resizable width and layout-push CSS remains unchanged (labeled 目录). `dsh-better-sidebar` is declared as an optional peer dependency — no duplicate instance is bundled. The mode switch is fully reversible via a `sidebarBus`-driven reversible effect: if Better Sidebar is unloaded mid-session, the standalone panel and layout-push CSS are restored automatically. A session-scoped data bridge (`sessionStore`) passes header-slot-captured `nodes`/`inputActions` to the tab component, with cleanup on session switch and component unmount.
+
+### Fixed
+
 - 内嵌 M 徽标增大至 16px、字母加粗，改为透明底与跟随文件名主题色的描边，改善换肤后的辨识度。
 - 内嵌模式的 Markdown 文件恢复为紧凑 M 徽标；其他格式文件仅展示，禁用悬停反馈、打开、拖拽与右键操作，文件夹仍可展开。
 - 内嵌 Better Sidebar 的列表与标签采用宿主字体角色（正文 14px、界面 12px），目录改用 14px 线框图标，修复字号继承偏大及标签字号混杂；独立模式和脑图节点排版不变。
+
+## [0.10.0] - 2026-09-09
+
+### Added
+
+- Collapsible subtrees: every node with children shows a small toggle on its connector. Collapsing hides the subtree and reports how many nodes are hidden, which keeps large maps navigable. The state is view-only — the markdown file is untouched and image export still covers the full subtree. Collapsed nodes reset when the document changes, and stale ids are pruned after the AI rewrites the tree.
+
+### Fixed
+
 - 画布拖拽不再吞掉折叠开关等控件的点击。
 - 目录打开/焦点同步：宿主草稿 API 不可读时不再静默放弃；有非空草稿时指令转入剪贴板。
+
+## [0.9.0] - 2026-09-09
+
+### Fixed
+
 - Settings now wait for a late-arriving client connection instead of permanently capturing its initial absence. The client also supports direct settings descriptors and the current positional update API, while retaining the legacy envelopes.
 - Canvas dragging remains available horizontally and vertically when the map fits inside the viewport. Native scrolling is used first; bounded offset compensation continues the drag at an edge, and Fit or node focus returns the map to center.
 - Mindmap file access now fails closed when the session working directory is unavailable. Reads are limited during streaming rather than trusting a pre-read size check, and updates use a same-directory temporary file plus atomic replacement to avoid partial writes.
@@ -143,4 +174,4 @@ First release of dsh-mindmap: a plain Markdown file in the session working direc
 
 - Manual edits to a `.md` outside the AI tools are only picked up on the next AI `mindmap_*` touch of that file.
 - The panel is unavailable in a blank (no-session) state, since it lives in a session-scoped slot.
-- ~~Running two layout-push plugins (e.g. dsh-better-sidebar) with both panels open at once is a known boundary: both target `#root` and the later-injected rule wins.~~ Resolved in `[Unreleased]`: when Better Sidebar is installed, the mindmap registers as a native tab inside it and no longer writes its own layout-push CSS.
+- ~~Running two layout-push plugins (e.g. dsh-better-sidebar) with both panels open at once is a known boundary: both target `#root` and the later-injected rule wins.~~ Resolved in `[0.10.1]`: when Better Sidebar is installed, the mindmap registers as a native tab inside it and no longer writes its own layout-push CSS.

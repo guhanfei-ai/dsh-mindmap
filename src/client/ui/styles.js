@@ -133,7 +133,7 @@
 			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
 			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
 			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。
-			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
+			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px 7px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
 			// 紧凑标签：比 standalone 的 tab（3px 12px）更小，贴合单行工具栏。
 			sbTab: { border: "none", background: "none", cursor: "pointer", padding: "2px 8px", lineHeight: "20px", borderRadius: "6px", font: "inherit", fontSize: "12px", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
 			sbTabActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)" },

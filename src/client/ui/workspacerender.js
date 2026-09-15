@@ -22,6 +22,12 @@
 	const exportErrorSpan = exportError
 		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
 		: null;
+	const approvalControls = approvalState && approvalState.mode === "session"
+		? (0, react_jsx_runtime.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px", color: "var(--dsw-alias-label-tertiary)", fontSize: "12px" }, children: [
+			(0, react_jsx_runtime.jsx)("span", { title: "授权按当前会话与脑图文件隔离", children: approvalState.grantedDocuments > 0 ? "本会话已允许写入" : "本会话尚未授权" }),
+			(0, react_jsx_runtime.jsx)("button", { type: "button", style: S.action, disabled: approvalState.grantedDocuments === 0, onClick: revokeApproval, children: "撤销授权" }),
+		] })
+		: null;
 
 	// 027 目录/列表标签文案：sidebar 模式叫「脑图列表」，standalone 模式叫「目录」。
 	const treeTabLabel = variant === "sidebar" ? "脑图列表" : "目录";
@@ -74,6 +80,7 @@
 				}, shown) : null,
 				// 导出按钮 + 错误推到行尾。
 				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
+				approvalControls,
 				exportErrorSpan,
 				exportBtn,
 			] }),
@@ -109,6 +116,7 @@
 	const wsHeaderChildren = [
 		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
+			approvalControls,
 			exportBtn,
 			exportErrorSpan,
 			// 关闭按钮：仅独立 fixed 壳提供 onClose（BS Tab 自带关闭）。

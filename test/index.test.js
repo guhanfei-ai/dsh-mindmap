@@ -21,6 +21,7 @@ function createContext(config = {}) {
   const listeners = new Map()
   const routes = []
   const sessions = new Map()
+  let settingsState
   const ctx = {
     on(name, listener) {
       listeners.set(name, listener)
@@ -59,14 +60,16 @@ function createContext(config = {}) {
           settings: {
             register(ns, schema, options = {}) {
               const base = options.base ?? {}
+              settingsState = { ...base }
               return {
                 get: () => ({
-                  requireApproval: base.requireApproval !== false,
-                  defaultPanelWidth: typeof base.defaultPanelWidth === 'number' ? base.defaultPanelWidth : 42,
-                  lineStyle: base.lineStyle === 'curve' ? 'curve' : 'elbow',
-                  cardStyle: base.cardStyle === 'square' ? 'square' : 'rounded',
-                  colorTheme: base.colorTheme ?? 'ocean',
-                  growthAnimation: base.growthAnimation !== false,
+                  requireApproval: settingsState.requireApproval !== false,
+                  approvalMode: settingsState.approvalMode ?? 'session',
+                  defaultPanelWidth: typeof settingsState.defaultPanelWidth === 'number' ? settingsState.defaultPanelWidth : 42,
+                  lineStyle: settingsState.lineStyle === 'curve' ? 'curve' : 'elbow',
+                  cardStyle: settingsState.cardStyle === 'square' ? 'square' : 'rounded',
+                  colorTheme: settingsState.colorTheme ?? 'ocean',
+                  growthAnimation: settingsState.growthAnimation !== false,
                 }),
                 update: async () => {},
               }
@@ -86,7 +89,7 @@ function createContext(config = {}) {
     if (!tool) throw new Error(`tool not registered: ${name}`)
     return tool
   }
-  return { tools, sections, listeners, routes, sessions, byName }
+  return { tools, sections, listeners, routes, sessions, byName, get settingsState() { return settingsState } }
 }
 
 async function tmpWorkspace() {
@@ -122,6 +125,16 @@ test('mindmap_create writes an empty file and reports root title', async () => {
   assert.equal(result.rootTitle, '产品规划')
   assert.equal(result.content, '')
   assert.equal(await readFile(join(cwd, '产品规划.md'), 'utf8'), '')
+})
+
+test('mindmap_create can create inside a relative directory without escaping cwd', async () => {
+  const cwd = await tmpWorkspace()
+  await mkdir(join(cwd, 'notes'))
+  const { byName } = createContext()
+  const result = parseResult(await byName('mindmap_create').execute({ name: 'roadmap', directory: 'notes' }, execution(cwd)))
+  assert.equal(result.path, join(cwd, 'notes', 'roadmap.md'))
+  assert.equal(await readFile(join(cwd, 'notes', 'roadmap.md'), 'utf8'), '')
+  await assert.rejects(byName('mindmap_create').execute({ name: 'escape', directory: '../outside' }, execution(cwd)), /stay inside/)
 })
 
 test('mindmap_create accepts a name with .md suffix and rejects unsafe names', async () => {
@@ -209,6 +222,19 @@ test('mindmap_update writes full content and echoes it back', async () => {
   assert.equal(result.op, 'update')
   assert.equal(result.content, next)
   assert.equal(await readFile(join(cwd, 'doc.md'), 'utf8'), next)
+})
+
+test('mindmap_update rejects a stale expected revision without overwriting newer content', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  await writeFile(join(cwd, 'doc.md'), '# old\n', 'utf8')
+  const opened = parseResult(await byName('mindmap_get').execute({ path: 'doc.md' }, execution(cwd)))
+  await writeFile(join(cwd, 'doc.md'), '# newer\n', 'utf8')
+  await assert.rejects(
+    byName('mindmap_update').execute({ path: 'doc.md', content: '# ai\n', expectedRevision: opened.revision }, execution(cwd)),
+    /changed since it was read/,
+  )
+  assert.equal(await readFile(join(cwd, 'doc.md'), 'utf8'), '# newer\n')
 })
 
 test('mindmap_update renameRoot renames the file and reports renamedFrom', async () => {
@@ -340,6 +366,142 @@ test('requireApproval gates mindmap_create and mindmap_update, and reads the set
   assert.equal(await listener({ name: 'mindmap_update', arguments: {} }, async () => denied), denied)
 })
 
+test('approval hook keeps malformed create arguments on the normal tool path', async () => {
+  const { listeners } = createContext()
+  const listener = listeners.get('tools/pre-execute')
+  const result = await listener({ name: 'mindmap_create', arguments: { name: '../bad' } }, async () => ({ kind: 'allow' }))
+  assert.equal(result.kind, 'ask')
+})
+
+test('approval modes reuse a successful document grant only within the same session', async () => {
+  const cwd = await tmpWorkspace()
+  const { listeners } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const resultListener = listeners.get('tools/result')
+  const session = { header: { cwd } }
+  const first = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  const second = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  const next = async () => ({ kind: 'allow' })
+  assert.equal((await listener(first, next)).kind, 'ask')
+  resultListener(first, { isError: false })
+  assert.deepEqual(await listener(second, next), { kind: 'allow' })
+})
+
+test('approval grants use the session service when the agent carries only an id', async () => {
+  const cwd = await tmpWorkspace()
+  const { listeners, sessions } = createContext({ approvalMode: 'session' })
+  const session = { header: { cwd } }
+  sessions.set('s1', session)
+  const listener = listeners.get('tools/pre-execute')
+  const resultListener = listeners.get('tools/result')
+  const next = async () => ({ kind: 'allow' })
+  const first = { ...execution(cwd), agent: { id: 's1' }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  const second = { ...execution(cwd), agent: { id: 's1' }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'y' } }
+  assert.equal((await listener(first, next)).kind, 'ask')
+  resultListener(first, { isError: false })
+  assert.deepEqual(await listener(second, next), { kind: 'allow' })
+})
+
+test('approval policy keeps high-risk renames gated and revocation clears grants', async () => {
+  const cwd = await tmpWorkspace()
+  const session = { header: { cwd } }
+  const next = async () => ({ kind: 'allow' })
+  const gated = createContext({ approvalMode: 'session' })
+  const listener = gated.listeners.get('tools/pre-execute')
+  const resultListener = gated.listeners.get('tools/result')
+  const first = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  assert.equal((await listener(first, next)).kind, 'ask')
+  resultListener(first, { isError: false })
+  const rename = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x', renameRoot: 'b' } }
+  assert.equal((await listener(rename, next)).kind, 'ask')
+
+  const revoked = createContext({ approvalMode: 'session' })
+  revoked.sessions.set('revoke-session', session)
+  const revokedListener = revoked.listeners.get('tools/pre-execute')
+  const revokedResult = revoked.listeners.get('tools/result')
+  const approved = { ...execution(cwd), agent: { id: 'revoke-session' }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  assert.equal((await revokedListener(approved, next)).kind, 'ask')
+  revokedResult(approved, { isError: false })
+  const status = fakeRes()
+  await revoked.routes[0].handler(fakeReq({ url: '/mindmap/api/approval', headers: TRUSTED, body: JSON.stringify({ sessionId: 'revoke-session', action: 'status' }) }), status)
+  assert.equal(JSON.parse(status.body).value.grantedDocuments, 1)
+  const revoke = fakeRes()
+  await revoked.routes[0].handler(fakeReq({ url: '/mindmap/api/approval', headers: TRUSTED, body: JSON.stringify({ sessionId: 'revoke-session', action: 'revoke' }) }), revoke)
+  assert.equal(JSON.parse(revoke.body).value.grantedDocuments, 0)
+  const second = { ...execution(cwd), agent: { id: 'revoke-session' }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'y' } }
+  assert.equal((await revokedListener(second, next)).kind, 'ask')
+})
+
+test('off skips ordinary prompts while per-operation asks every time', async () => {
+  const cwd = await tmpWorkspace()
+  const session = { header: { cwd } }
+  const next = async () => ({ kind: 'allow' })
+  const off = createContext({ approvalMode: 'off' })
+  const offListener = off.listeners.get('tools/pre-execute')
+  const ordinary = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  assert.deepEqual(await offListener(ordinary, next), { kind: 'allow' })
+  const rename = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x', renameRoot: 'b' } }
+  assert.equal((await offListener(rename, next)).kind, 'ask')
+  const erase = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: '' } }
+  assert.equal((await offListener(erase, next)).kind, 'ask')
+
+  const every = createContext({ approvalMode: 'per-operation' })
+  const everyListener = every.listeners.get('tools/pre-execute')
+  const one = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  const two = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'y' } }
+  assert.equal((await everyListener(one, next)).kind, 'ask')
+  assert.equal((await everyListener(two, next)).kind, 'ask')
+})
+
+test('high-risk writes stay gated and broad rewrites do not reuse a session grant', async () => {
+  const cwd = await tmpWorkspace()
+  const path = join(cwd, 'a.md')
+  const original = 'a'.repeat(20 * 1024)
+  await writeFile(path, original, 'utf8')
+  const session = { header: { cwd } }
+  const gated = createContext({ approvalMode: 'session' })
+  const listener = gated.listeners.get('tools/pre-execute')
+  const resultListener = gated.listeners.get('tools/result')
+  const next = async () => ({ kind: 'allow' })
+  const small = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: `${original}b` } }
+  assert.equal((await listener(small, next)).kind, 'ask')
+  resultListener(small, { isError: false })
+  const broad = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'z'.repeat(20 * 1024) } }
+  assert.equal((await listener(broad, next)).kind, 'ask')
+  const erase = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: '' } }
+  assert.equal((await listener(erase, next)).kind, 'ask')
+  const disabled = createContext({ requireApproval: false })
+  const disabledListener = disabled.listeners.get('tools/pre-execute')
+  assert.equal((await disabledListener(broad, next)).kind, 'ask')
+  assert.equal((await disabledListener(erase, next)).kind, 'ask')
+})
+
+test('short documents are not treated as broad rewrites', async () => {
+  const cwd = await tmpWorkspace()
+  const original = `# Title\n- ${'x'.repeat(200)}\n`
+  await writeFile(join(cwd, 'small.md'), original, 'utf8')
+  const { listeners } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const resultListener = listeners.get('tools/result')
+  const session = { header: { cwd } }
+  const next = async () => ({ kind: 'allow' })
+  const first = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'small.md', content: `${original}- y\n` } }
+  assert.equal((await listener(first, next)).kind, 'ask')
+  resultListener(first, { isError: false })
+  // 与旧文几乎没有公共首尾，但整篇也只有几百字节：属于普通改写，不该按
+  // 「大范围重写」重新确认（旧实现按 50% 比例会误判）。
+  const rewrite = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'small.md', content: `# Other\n- ${'y'.repeat(150)}\n` } }
+  assert.deepEqual(await listener(rewrite, next), { kind: 'allow' })
+})
+
+test('approval mode aliases normalize to the three public modes', () => {
+  assert.equal(internals.normalizeApprovalMode('always'), 'per-operation')
+  assert.equal(internals.normalizeApprovalMode('once-per-document'), 'session')
+  assert.equal(internals.normalizeApprovalMode('off'), 'off')
+  assert.equal(internals.normalizeApprovalMode(undefined), 'session')
+  assert.equal(internals.normalizeApprovalMode(undefined, false), 'off')
+})
+
 test('session cwd comes from the ≤0.1.1 agent.session chain first, then the 0.1.2-rc.1 agent.id lookup', () => {
   // 023：dsh ≤0.1.1 的 Agent 直挂 live session——旧链优先，语义不变。
   assert.equal(internals.sessionCwd(execution('/w')), '/w')
@@ -432,6 +594,21 @@ test('tree route expands a subdirectory inside the cwd and rejects escapes', asy
   const relative = fakeRes()
   await routes[0].handler(fakeReq({ headers: TRUSTED, body: JSON.stringify({ sessionId: 's1', path: 'sub' }) }), relative)
   assert.equal(relative.statusCode, 400)
+})
+
+test('document route reads a markdown file without a model tool call', async () => {
+  const cwd = await tmpWorkspace()
+  await writeFile(join(cwd, 'doc.md'), '# A\n', 'utf8')
+  const { routes, sessions } = createContext()
+  sessions.set('s1', { header: { cwd } })
+  const res = fakeRes()
+  await routes[0].handler(fakeReq({ url: '/mindmap/api/document', headers: TRUSTED, body: JSON.stringify({ sessionId: 's1', path: 'doc.md' }) }), res)
+  assert.equal(res.statusCode, 200)
+  const parsed = JSON.parse(res.body)
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.value.path, join(cwd, 'doc.md'))
+  assert.equal(parsed.value.content, '# A\n')
+  assert.match(parsed.value.revision, /^[0-9a-f]{64}$/)
 })
 
 test('tree route guards: non-POST, cross-site, missing sessionId, unknown cwd', async () => {

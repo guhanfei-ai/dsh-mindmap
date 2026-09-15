@@ -37,6 +37,7 @@
 			// settings——面板常驻不卸载，光靠 visible 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
 			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
+			const [approvalState, setApprovalState] = react.useState(null);
 			react.useEffect(() => {
 				if (!visible) return;
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
@@ -53,6 +54,26 @@
 					// 读设置失败：保持当前主题
 				});
 			}, [visible, settingsStamp, mindmapFace]);
+			react.useEffect(() => {
+				let alive = true;
+				setApprovalState(null);
+				if (!visible || !sessionId || !mindmapFace || typeof mindmapFace.readApprovalStatus !== "function") return () => { alive = false; };
+				mindmapFace.readApprovalStatus(sessionId).then((value) => {
+					if (alive) setApprovalState(value);
+				}).catch(() => {
+					if (alive) setApprovalState(null);
+				});
+				return () => { alive = false; };
+			}, [visible, sessionId, mindmapFace, settingsStamp, nodesVersion]);
+			async function revokeApproval() {
+				if (!sessionId || !mindmapFace || typeof mindmapFace.revokeApproval !== "function") return;
+				try {
+					const value = await mindmapFace.revokeApproval(sessionId);
+					setApprovalState(value);
+				} catch {
+					// 撤销失败不改变当前状态，避免给出虚假的成功提示。
+				}
+			}
 
 			// 013 目录树 tab：常驻第一个 tab（TREE_TAB 哨兵，永不与绝对路径撞名）。
 			const TREE_TAB = "__tree__";
@@ -129,27 +150,15 @@
 				? matchDocError(merged, doc.path, localErrorBaseRef.current)
 				: null;
 
-			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
-			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
-			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
-			const seen = react.useRef(null);
-			react.useEffect(() => {
-				const targetPath = autoOpenTarget(merged, seen.current);
-				seen.current = openingEventKeys(merged);
-				if (targetPath) {
-					onAutoOpen();
-					setHiddenPath(null);
-					setCurrentPath(targetPath);
-					setView("mindmap");
-				}
-			}, [merged]);
-
 			// 013「所见即所编」焦点同步：AI 焦点 = 快照里最新工具结果的文档路径；
 			// 脑图视图激活且其文档 ≠ 焦点时，仅在草稿为空时自动发送，让 AI
 			// 跟上用户眼睛看的那颗脑图，又不覆盖用户正在编辑的消息。
 			const focusPath = docs.order.length > 0 ? docs.order[docs.order.length - 1] : null;
 			const focusSentRef = react.useRef(null);
 			// 所有这些状态都属于会话，不得让 A 会话的在途打开/目录结果遗留到 B。
+			// 这个 effect 必须先于自动打开 effect 声明：React 会按声明顺序运行同一轮
+			// effect，否则清理会把刚自动选中的脑图又切回「目录」。
+			const seen = react.useRef(null);
 			react.useEffect(() => {
 				setLocalDocs({});
 				setCurrentPath(null);
@@ -161,8 +170,24 @@
 				setFilledHint("");
 				localErrorBaseRef.current = null;
 				focusSentRef.current = null;
+				seen.current = null;
 				prevIdsRef.current = { path: null, ids: null };
 			}, [sessionId]);
+
+			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
+			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
+			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
+			react.useEffect(() => {
+				const targetPath = autoOpenTarget(merged, seen.current);
+				seen.current = openingEventKeys(merged);
+				if (targetPath) {
+					onAutoOpen();
+					setHiddenPath(null);
+					setCurrentPath(targetPath);
+					setView("mindmap");
+				}
+			}, [merged, sessionId]);
+
 			react.useEffect(() => {
 				if (!visible) return; // 面板/Tab 不可见时不自动发消息
 				if (!sessionId) return;

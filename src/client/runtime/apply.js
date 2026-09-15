@@ -161,6 +161,45 @@
 				}
 				return parsed.value;
 			};
+			// Read-only fast path for directory clicks. Rendering a document must not
+			// wait for a model turn just to fetch bytes; the empty-draft path may still
+			// ask the AI to take over editing after the document is visible.
+			face.readDocument = async (sessionId, path) => {
+				const response = await fetch("/mindmap/api/document", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, path }),
+				});
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true || !parsed.value) {
+					throw new Error(parsed?.error?.message ?? `HTTP ${response.status}`);
+				}
+				return parsed.value;
+			};
+			face.readApprovalStatus = async (sessionId) => {
+				const response = await fetch("/mindmap/api/approval", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, action: "status" }),
+				});
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true || !parsed.value) {
+					throw new Error(parsed?.error?.message ?? `HTTP ${response.status}`);
+				}
+				return parsed.value;
+			};
+			face.revokeApproval = async (sessionId) => {
+				const response = await fetch("/mindmap/api/approval", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, action: "revoke" }),
+				});
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true || !parsed.value) {
+					throw new Error(parsed?.error?.message ?? `HTTP ${response.status}`);
+				}
+				return parsed.value;
+			};
 
 			// 015 设置面板：connection/remote 在客户端插件启动后才可能就绪，不能在
 			// apply 时捕获一次 undefined；每次读写前重新查取，服务晚到也能恢复。
@@ -207,10 +246,16 @@
 				if (!api) {
 					throw new Error("settings service unavailable");
 				}
+				// 引擎侧 legacy 开关 requireApproval:false 等价于「关闭普通确认」，优先级
+				// 高于 approvalMode。面板显式选择「每次确认」或「本会话一次」时同时解除
+				// 它，否则该选择会被 host config 里的开关静默覆盖（保存后弹回 off）。
+				const payload = patch && typeof patch === "object" && patch.approvalMode && patch.approvalMode !== "off"
+					? { ...patch, requireApproval: true }
+					: patch;
 				if (api.kind === "remote" || api.settings.update.length !== 1) {
-					await api.settings.update("mindmap", patch, undefined);
+					await api.settings.update("mindmap", payload, undefined);
 				} else {
-					await api.settings.update({ ns: "mindmap", patch });
+					await api.settings.update({ ns: "mindmap", patch: payload });
 				}
 			};
 

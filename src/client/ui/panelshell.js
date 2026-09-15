@@ -15,17 +15,21 @@
 			const [panelWidth, setPanelWidth] = react.useState(() => {
 				try {
 					const saved = Number(localStorage.getItem(WIDTH_KEY));
-					if (Number.isFinite(saved) && saved >= 280) return Math.min(saved, Math.round(window.innerWidth * 0.8));
+					const max = Math.round(window.innerWidth * 0.8);
+					const min = Math.min(280, max);
+					if (Number.isFinite(saved)) return Math.min(max, Math.max(min, saved));
 				} catch {
 					// localStorage 不可用：走默认
 				}
-				return Math.round(window.innerWidth * 0.42);
+				const max = Math.round(window.innerWidth * 0.8);
+				return Math.min(max, Math.max(Math.min(280, max), Math.round(window.innerWidth * 0.42)));
 			});
 			react.useEffect(() => {
 				const clamp = () => {
 					setPanelWidth((prev) => {
 						const max = Math.round(window.innerWidth * 0.8);
-						return prev > max ? max : prev;
+						const min = Math.min(280, max);
+						return Math.min(max, Math.max(min, prev));
 					});
 				};
 				clamp();
@@ -44,7 +48,9 @@
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
 				mindmapFace.readSettings().then((v) => {
 					const pct = v && typeof v.defaultPanelWidth === "number" ? Math.min(80, Math.max(20, v.defaultPanelWidth)) : 42;
-					const px = Math.round(window.innerWidth * pct / 100);
+					const max = Math.round(window.innerWidth * 0.8);
+					const min = Math.min(280, max);
+					const px = Math.min(max, Math.max(min, Math.round(window.innerWidth * pct / 100)));
 					setPanelWidth((prev) => (Math.abs(prev - px) < 2 ? prev : px));
 				}).catch(() => {
 					// 读设置失败：保持 42% 默认
@@ -58,7 +64,8 @@
 				const onMove = (ev) => {
 					if (!dragStateRef.current) return;
 					const max = Math.round(window.innerWidth * 0.8);
-					const next = Math.min(max, Math.max(280, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
+					const min = Math.min(280, max);
+					const next = Math.min(max, Math.max(min, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
 					dragStateRef.current.latestWidth = next;
 					setPanelWidth(next);
 				};

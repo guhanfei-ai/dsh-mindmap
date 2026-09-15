@@ -17,16 +17,16 @@ A DeepSeek Harness plugin that turns a plain Markdown file into a live mindmap. 
 
 - **Four tools** (`mindmap_create` / `mindmap_open` / `mindmap_get` / `mindmap_update`) — plain Markdown files in the session working directory; the root node title is the filename and stays in sync both ways (`renameRoot` renames the file, collisions are rejected).
 - **Live panel with zero extra channels** — the panel consumes the session snapshot (`mindmap_*` tool results), so every AI edit re-renders immediately.
-- **Reliable open, recoverable loading state** — AI create/open results always expand the panel (a structural-fingerprint selector drives snapshot recomputation even when the host reuses the nodes array reference); after clicking a `.md` in the tree, the loading state recovers three ways: case-only path mismatches auto-merge (case-insensitive filesystems), tool errors show inline, and a ~30s watchdog switches to a timeout state — both failure states offer a one-click retry that re-sends the open request.
+- **Reliable open, recoverable loading state** — AI create/open results always expand the panel (a structural-fingerprint selector drives snapshot recomputation even when the host reuses the nodes array reference); clicking a `.md` first reads it through the local read-only route, while AI fallback loading still recovers from case-only path mismatches, inline tool errors, and a ~30s watchdog timeout with one-click retry.
 - **Floating right panel or native sidebar tab** — when `dsh-better-sidebar` is installed, the mindmap registers as a native single-instance tab (`dsh-mindmap:mindmap`) inside Better Sidebar, with a compact one-row toolbar (mindmap list, current mindmap, and export on the same line); the header 思维脑图 button opens or focuses that tab. When Better Sidebar is absent, the panel falls back to a standalone floating right panel toggled by the 思维脑图 button — drag-resizable (280px ~ 80% viewport), persisted, and pushing the chat left (layout-push) so the two never overlap. AI create/open/view intents always open or focus the panel/tab and switch to the target document, including when it is currently closed or the same document is opened again. The mode switch is fully reversible: if Better Sidebar is unloaded mid-session, the standalone panel and layout-push CSS are restored automatically.
-- **Directory tree tab** — a persistent tree of the session working directory (served by a plugin-owned read-only route), lazy-loaded per directory; right-click to create a mindmap (at the root or inside a directory); left-click a `.md` to open it instantly and hand it to the AI for editing. Labeled 目录 in standalone mode and 脑图列表 in sidebar mode.
+- **Directory tree tab** — a persistent tree of the session working directory (served by plugin-owned read-only routes), lazy-loaded per directory; right-click to create a mindmap at the root or inside a directory; left-click a `.md` renders it through the read-only route first, then hands it to the AI for editing when the draft is empty. Labeled 目录 in standalone mode and 脑图列表 in sidebar mode.
 - **Single-mindmap mode** — two tabs only: the tree/list tab and 脑图 (the current mindmap); opening another `.md` replaces the previous one.
 - **"What you see is what the AI edits"** — when the visible mindmap differs from the AI's working document, the panel automatically asks the AI to open it, keeping the chat focus in sync.
 - **MarkGrove-style mapping** — heading hierarchy, nested lists (empty items become placeholder nodes), code blocks as leaf nodes, paragraphs promoted to their own nodes (019 block concept), stable structural IDs, and orthogonal connector lines between nodes.
 - **Centered canvas with zoom and pan** — the mindmap opens centered in the canvas (scrollable without edge clipping when larger); a floating zoom bar at the canvas top-right (zoom out / percent / zoom in / fit) applies auto fit-to-view on open (small maps stay at 100%), steps through 25%–300% with a stable view center, and keeps re-fitting as the AI edits — until you zoom manually. Click any node to zoom in on it and its whole subtree, with the node pinned at the left-center of the canvas. The canvas also pans by drag: the **middle button** anywhere (even over a node), the **left button on blank canvas** (the Mac trackpad「click and drag」path), or **Space + left button** when the drag must start on a card. Panning works in both directions even when content does not overflow; content follows the pointer 1:1, blank space shows a grab hand, and a 4px threshold separates drag from click — so clicking blank space still clears the selection and clicking a node still focuses it, while a real drag never wipes the selection ring.
 - **Collapsible subtrees** — every node with children carries a small toggle on its connector: collapsing hides the whole subtree and reports how many nodes are hidden, so large maps stay navigable. It is view state only — the markdown file is untouched, image export still covers the full subtree, and switching documents expands everything again.
 - **PNG export** — one click on 导出图片 exports the current mindmap.
-- **Safety** — `mindmap_create` / `mindmap_update` require native approval by default. Automation can explicitly opt out with `requireApproval: false`; the client has **no write path** to the filesystem — every edit goes through the AI tools.
+- **Safety** — write approval defaults to “once per session/document”: after the first confirmation, ordinary `mindmap_update` calls for that document in the same session do not interrupt the flow. The settings page also offers “every write” and “disable ordinary confirmations”. Renames, deletes, and broad rewrites still require a separate confirmation; the current workspace shows and can revoke the current-session grant. Trusted automation can explicitly set `requireApproval: false` to skip ordinary confirmations; high-risk writes remain gated. The client has **no write path** to the filesystem — every edit goes through the AI tools.
 
 Inside Better Sidebar, the mindmap list uses the host's 14px body typography. Markdown files carry a compact M badge; folders and other files use 14px outline icons. Other file formats are display-only, without hover feedback, opening, dragging, or context menus; folders remain expandable. Tabs, actions, and hints use the host's 12px typography role. Standalone mode retains its original appearance, and mindmap node typography, zoom, and image export are unchanged.
 
@@ -37,7 +37,7 @@ The embedded M badge uses a transparent background and inherits the filename's t
 | Component | Baseline |
 | --- | --- |
 | Node.js | 20.11 or newer |
-| DeepSeek Harness | tested against `0.1.1-rc.2` and `0.1.2-rc.1` |
+| DeepSeek Harness | tested against `0.1.1-rc.2`, `0.1.2-rc.1`, and `0.1.5-rc.1` |
 
 ## Installation
 
@@ -57,10 +57,10 @@ dsh plugin --profile <profile> add <pkg>#v<version>
 
 | Tool | Description |
 | --- | --- |
-| `mindmap_create(name)` | Create `<name>.md` in the session working directory and show it in the panel (fails if it exists). |
+| `mindmap_create(name, directory?)` | Create `<name>.md` in the session working directory or an optional relative directory and show it in the panel (fails if it exists). |
 | `mindmap_open(path)` | Open an existing `.md` as a mindmap in the panel. |
-| `mindmap_get(path)` | Read the current Markdown content of a mindmap document. |
-| `mindmap_update(path, content, renameRoot?)` | Write the full updated Markdown; optionally rename the root node (renames the file, collisions rejected). |
+| `mindmap_get(path)` | Read the current Markdown content and revision of a mindmap document. |
+| `mindmap_update(path, content, renameRoot?, expectedRevision?)` | Write the full Markdown; pass the read revision to reject stale writes; optionally rename the root node (renames the file, collisions rejected). |
 
 ## Development
 

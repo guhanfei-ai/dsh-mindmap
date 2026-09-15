@@ -1442,7 +1442,7 @@ window.__ModuleLoader__.load({
 			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
 			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
 			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。
-			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
+			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px 7px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
 			// 紧凑标签：比 standalone 的 tab（3px 12px）更小，贴合单行工具栏。
 			sbTab: { border: "none", background: "none", cursor: "pointer", padding: "2px 8px", lineHeight: "20px", borderRadius: "6px", font: "inherit", fontSize: "12px", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
 			sbTabActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)" },
@@ -1502,7 +1502,7 @@ window.__ModuleLoader__.load({
 		/**
 		 * 015 设置面板（settings.section 页面，root scope）：读写 host 的
 		 * settings namespace "mindmap"。节点主题三件套（线/卡片/颜色）+ 面板宽度；
-		 * requireApproval 按作者要求隐藏（功能保留，经 config/API 仍可设）。
+		 * 写入确认策略在这里可见；当前会话的授权状态由脑图工作区显示。
 		 */
 		function SettingsPanel(props) {
 			const { mindmapFace } = props;
@@ -1519,6 +1519,7 @@ window.__ModuleLoader__.load({
 						if (!alive) return;
 						if (v === null) setError("设置服务不可用：settings namespace 未注册或 connection 缺失");
 						setValue({
+							approvalMode: v && v.requireApproval === false ? "off" : v && ["per-operation", "session", "off"].includes(v.approvalMode) ? v.approvalMode : "session",
 							lineStyle: v && v.lineStyle === "curve" ? "curve" : "elbow",
 							cardStyle: v && v.cardStyle === "square" ? "square" : "rounded",
 							colorTheme: v && COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
@@ -1544,8 +1545,10 @@ window.__ModuleLoader__.load({
 					await mindmapFace.updateSettings(patch);
 					settingsBus.bump(); // 通知脑图面板重读主题（面板常驻，open 不变）
 					setNotice("已保存");
+					return true;
 				} catch (err) {
 					setError(String(err?.message ?? err));
+					return false;
 				} finally {
 					setSaving(false);
 				}
@@ -1569,7 +1572,6 @@ window.__ModuleLoader__.load({
 			const commitWidth = () => {
 				save({ defaultPanelWidth: value.defaultPanelWidth });
 			};
-
 			return (0, react_jsx_runtime.jsxs)("div", { style: S.settingsWrap, children: [
 				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "节点主题" }),
 				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
@@ -1642,6 +1644,24 @@ window.__ModuleLoader__.load({
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启后，脑图每次更新的新增/变化节点会逐个渐显长出（总时长不超过 2 秒）；关闭则整棵树立刻完整显示。" }),
+				] }),
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "写入确认" }),
+				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "确认频率" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [
+								{ value: "per-operation", label: "每次确认" },
+								{ value: "session", label: "本会话一次" },
+								{ value: "off", label: "关闭普通确认" },
+							],
+							value: value.approvalMode,
+							disabled: saving,
+							onChange: (v) => setField({ approvalMode: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: value.approvalMode === "session" ? "本会话首次写入当前脑图后，后续普通更新无需重复确认。切换文件或会话会重新确认。" : value.approvalMode === "off" ? "普通更新不再弹窗；重命名、删除和大范围重写仍需确认。" : "每次写入都会弹窗确认。" }),
+					value.approvalMode === "session" ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "授权状态显示在当前脑图工作区；可在那里撤销当前会话的普通写入授权。" }) : null,
 				] }),
 				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,
 				notice ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsNotice, children: notice }) : null,
@@ -2692,6 +2712,7 @@ window.__ModuleLoader__.load({
 			// settings——面板常驻不卸载，光靠 visible 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
 			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
+			const [approvalState, setApprovalState] = react.useState(null);
 			react.useEffect(() => {
 				if (!visible) return;
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
@@ -2708,6 +2729,26 @@ window.__ModuleLoader__.load({
 					// 读设置失败：保持当前主题
 				});
 			}, [visible, settingsStamp, mindmapFace]);
+			react.useEffect(() => {
+				let alive = true;
+				setApprovalState(null);
+				if (!visible || !sessionId || !mindmapFace || typeof mindmapFace.readApprovalStatus !== "function") return () => { alive = false; };
+				mindmapFace.readApprovalStatus(sessionId).then((value) => {
+					if (alive) setApprovalState(value);
+				}).catch(() => {
+					if (alive) setApprovalState(null);
+				});
+				return () => { alive = false; };
+			}, [visible, sessionId, mindmapFace, settingsStamp, nodesVersion]);
+			async function revokeApproval() {
+				if (!sessionId || !mindmapFace || typeof mindmapFace.revokeApproval !== "function") return;
+				try {
+					const value = await mindmapFace.revokeApproval(sessionId);
+					setApprovalState(value);
+				} catch {
+					// 撤销失败不改变当前状态，避免给出虚假的成功提示。
+				}
+			}
 
 			// 013 目录树 tab：常驻第一个 tab（TREE_TAB 哨兵，永不与绝对路径撞名）。
 			const TREE_TAB = "__tree__";
@@ -2784,27 +2825,15 @@ window.__ModuleLoader__.load({
 				? matchDocError(merged, doc.path, localErrorBaseRef.current)
 				: null;
 
-			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
-			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
-			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
-			const seen = react.useRef(null);
-			react.useEffect(() => {
-				const targetPath = autoOpenTarget(merged, seen.current);
-				seen.current = openingEventKeys(merged);
-				if (targetPath) {
-					onAutoOpen();
-					setHiddenPath(null);
-					setCurrentPath(targetPath);
-					setView("mindmap");
-				}
-			}, [merged]);
-
 			// 013「所见即所编」焦点同步：AI 焦点 = 快照里最新工具结果的文档路径；
 			// 脑图视图激活且其文档 ≠ 焦点时，仅在草稿为空时自动发送，让 AI
 			// 跟上用户眼睛看的那颗脑图，又不覆盖用户正在编辑的消息。
 			const focusPath = docs.order.length > 0 ? docs.order[docs.order.length - 1] : null;
 			const focusSentRef = react.useRef(null);
 			// 所有这些状态都属于会话，不得让 A 会话的在途打开/目录结果遗留到 B。
+			// 这个 effect 必须先于自动打开 effect 声明：React 会按声明顺序运行同一轮
+			// effect，否则清理会把刚自动选中的脑图又切回「目录」。
+			const seen = react.useRef(null);
 			react.useEffect(() => {
 				setLocalDocs({});
 				setCurrentPath(null);
@@ -2816,8 +2845,24 @@ window.__ModuleLoader__.load({
 				setFilledHint("");
 				localErrorBaseRef.current = null;
 				focusSentRef.current = null;
+				seen.current = null;
 				prevIdsRef.current = { path: null, ids: null };
 			}, [sessionId]);
+
+			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
+			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
+			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
+			react.useEffect(() => {
+				const targetPath = autoOpenTarget(merged, seen.current);
+				seen.current = openingEventKeys(merged);
+				if (targetPath) {
+					onAutoOpen();
+					setHiddenPath(null);
+					setCurrentPath(targetPath);
+					setView("mindmap");
+				}
+			}, [merged, sessionId]);
+
 			react.useEffect(() => {
 				if (!visible) return; // 面板/Tab 不可见时不自动发消息
 				if (!sessionId) return;
@@ -2893,26 +2938,14 @@ window.__ModuleLoader__.load({
 				});
 			}
 
-			// 左键点 .md（013 作者定稿）：① tab 秒建（本地占位，不显示内容，body
-			// 显示加载动效）；② 同时填「用 mindmap_open 打开 <rel>」并 submit 让 AI
-			// 就位——AI 工具结果到达后同 path 覆盖占位，节点才渲染；随后用户接着
-			// 说即可继续编辑（002 数据流不变：内容只来自 AI 工具结果）。
-			function openMindmap(entry) {
+			// 左键点 .md：先通过只读 document 路由显示文件，再在草稿为空时提交
+			// mindmap_open 让 AI 接管编辑；已有草稿永不被覆盖。
+			async function openMindmap(entry) {
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
-				// 有未发送草稿：不建占位、不抢输入框，改把指令交给用户自己发。
-				if (draftBlocked()) {
-					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-						navigator.clipboard.writeText(text).catch(() => {});
-						setFilledHint("检测到未发送的草稿，已保留；打开指令已复制到剪贴板，粘贴发送即可");
-					} else {
-						setFilledHint(`检测到未发送的草稿，已保留。请手动发送：${text}`);
-					}
-					return;
-				}
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
 				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
 				localErrorBaseRef.current = errorEventKeys(merged);
-				// ① 本地占位：脑图 tab 立即切过去、内容为空（op:"local" 触发加载态）；
+				// ① 本地占位：脑图 tab 立即切过去，随后由只读路由填充内容；
 				// 新打开的脑图替换旧的那颗（单脑图模式）。
 				setHiddenPath(null);
 				setCurrentPath(entry.path);
@@ -2928,19 +2961,34 @@ window.__ModuleLoader__.load({
 						renamedFrom: null,
 					},
 				}));
-				// ② AI 就位：填指令并直接提交（失败降级剪贴板）。
-				if (submitChatCommand(text)) {
-					// 标记已发，避免焦点同步 effect 对同一路径重复发送。
+				try {
+					if (!mindmapFace || typeof mindmapFace.readDocument !== "function") throw new Error("只读文档能力不可用");
+					const loaded = await mindmapFace.readDocument(sessionId, relPathWithin(fsTree.cwd, entry.path, entry.name));
+					setLocalDocs((prev) => {
+						const current = prev[entry.path];
+						if (!current || current.op !== "local") return prev;
+						return { ...prev, [entry.path]: { ...current, op: "local-read", content: String(loaded.content ?? ""), revision: loaded.revision ?? null } };
+					});
+					setFilledHint(`已直接打开「${entry.name}」；需要 AI 编辑时可继续发送打开指令`);
+				} catch (error) {
+					setLocalDocs((prev) => {
+						const current = prev[entry.path];
+						if (!current || current.op !== "local") return prev;
+						return { ...prev, [entry.path]: { ...current, error: String(error?.message ?? error) } };
+					});
+					setFilledHint("直接读取失败，可重试或让 AI 打开该文件");
+				}
+				// ② 草稿为空时再让 AI 接管焦点；已有草稿绝不覆盖。
+				if (!draftBlocked() && submitChatCommand(text)) {
 					focusSentRef.current = entry.path;
-					setFilledHint(`已让 AI 打开「${entry.name}」，在聊天里继续说就能继续编辑`);
 					return;
 				}
-				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-					navigator.clipboard.writeText(text).catch(() => {});
-					setFilledHint("已复制指令到剪贴板，请粘贴到聊天输入框");
-					return;
+				if (draftBlocked()) {
+					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+						navigator.clipboard.writeText(text).catch(() => {});
+						setFilledHint("检测到未发送的草稿，文件已打开；打开指令已复制到剪贴板");
+					} else setFilledHint(`文件已打开，请手动发送：${text}`);
 				}
-				setFilledHint(text);
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
@@ -3194,9 +3242,12 @@ window.__ModuleLoader__.load({
 			function renderLoading() {
 				// 016 三态流转：加载中 →（错误 | 超时）——错误优先于超时；失败态
 				// 提供「重试」一键重发打开指令（openMindmap 同款通路 + 降级链）。
-				const failed = Boolean(docError) || openTimedOut;
+				const localReadError = doc && doc.op === "local" && doc.error ? doc.error : null;
+				const failed = Boolean(docError || localReadError) || openTimedOut;
 				const message = docError
 					? `AI 打开失败：${docError.message}`
+					: localReadError
+						? `读取失败：${localReadError}`
 					: openTimedOut
 						? "等待 AI 打开超时（约 30 秒无结果）"
 						: "AI 正在打开脑图…";
@@ -3311,6 +3362,12 @@ window.__ModuleLoader__.load({
 	const exportErrorSpan = exportError
 		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
 		: null;
+	const approvalControls = approvalState && approvalState.mode === "session"
+		? (0, react_jsx_runtime.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px", color: "var(--dsw-alias-label-tertiary)", fontSize: "12px" }, children: [
+			(0, react_jsx_runtime.jsx)("span", { title: "授权按当前会话与脑图文件隔离", children: approvalState.grantedDocuments > 0 ? "本会话已允许写入" : "本会话尚未授权" }),
+			(0, react_jsx_runtime.jsx)("button", { type: "button", style: S.action, disabled: approvalState.grantedDocuments === 0, onClick: revokeApproval, children: "撤销授权" }),
+		] })
+		: null;
 
 	// 027 目录/列表标签文案：sidebar 模式叫「脑图列表」，standalone 模式叫「目录」。
 	const treeTabLabel = variant === "sidebar" ? "脑图列表" : "目录";
@@ -3363,6 +3420,7 @@ window.__ModuleLoader__.load({
 				}, shown) : null,
 				// 导出按钮 + 错误推到行尾。
 				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
+				approvalControls,
 				exportErrorSpan,
 				exportBtn,
 			] }),
@@ -3398,6 +3456,7 @@ window.__ModuleLoader__.load({
 	const wsHeaderChildren = [
 		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
+			approvalControls,
 			exportBtn,
 			exportErrorSpan,
 			// 关闭按钮：仅独立 fixed 壳提供 onClose（BS Tab 自带关闭）。
@@ -3500,17 +3559,21 @@ window.__ModuleLoader__.load({
 			const [panelWidth, setPanelWidth] = react.useState(() => {
 				try {
 					const saved = Number(localStorage.getItem(WIDTH_KEY));
-					if (Number.isFinite(saved) && saved >= 280) return Math.min(saved, Math.round(window.innerWidth * 0.8));
+					const max = Math.round(window.innerWidth * 0.8);
+					const min = Math.min(280, max);
+					if (Number.isFinite(saved)) return Math.min(max, Math.max(min, saved));
 				} catch {
 					// localStorage 不可用：走默认
 				}
-				return Math.round(window.innerWidth * 0.42);
+				const max = Math.round(window.innerWidth * 0.8);
+				return Math.min(max, Math.max(Math.min(280, max), Math.round(window.innerWidth * 0.42)));
 			});
 			react.useEffect(() => {
 				const clamp = () => {
 					setPanelWidth((prev) => {
 						const max = Math.round(window.innerWidth * 0.8);
-						return prev > max ? max : prev;
+						const min = Math.min(280, max);
+						return Math.min(max, Math.max(min, prev));
 					});
 				};
 				clamp();
@@ -3529,7 +3592,9 @@ window.__ModuleLoader__.load({
 				if (!mindmapFace || typeof mindmapFace.readSettings !== "function") return;
 				mindmapFace.readSettings().then((v) => {
 					const pct = v && typeof v.defaultPanelWidth === "number" ? Math.min(80, Math.max(20, v.defaultPanelWidth)) : 42;
-					const px = Math.round(window.innerWidth * pct / 100);
+					const max = Math.round(window.innerWidth * 0.8);
+					const min = Math.min(280, max);
+					const px = Math.min(max, Math.max(min, Math.round(window.innerWidth * pct / 100)));
 					setPanelWidth((prev) => (Math.abs(prev - px) < 2 ? prev : px));
 				}).catch(() => {
 					// 读设置失败：保持 42% 默认
@@ -3543,7 +3608,8 @@ window.__ModuleLoader__.load({
 				const onMove = (ev) => {
 					if (!dragStateRef.current) return;
 					const max = Math.round(window.innerWidth * 0.8);
-					const next = Math.min(max, Math.max(280, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
+					const min = Math.min(280, max);
+					const next = Math.min(max, Math.max(min, dragStateRef.current.startWidth + (dragStateRef.current.startX - ev.clientX)));
 					dragStateRef.current.latestWidth = next;
 					setPanelWidth(next);
 				};
@@ -4097,6 +4163,45 @@ window.__ModuleLoader__.load({
 				}
 				return parsed.value;
 			};
+			// Read-only fast path for directory clicks. Rendering a document must not
+			// wait for a model turn just to fetch bytes; the empty-draft path may still
+			// ask the AI to take over editing after the document is visible.
+			face.readDocument = async (sessionId, path) => {
+				const response = await fetch("/mindmap/api/document", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, path }),
+				});
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true || !parsed.value) {
+					throw new Error(parsed?.error?.message ?? `HTTP ${response.status}`);
+				}
+				return parsed.value;
+			};
+			face.readApprovalStatus = async (sessionId) => {
+				const response = await fetch("/mindmap/api/approval", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, action: "status" }),
+				});
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true || !parsed.value) {
+					throw new Error(parsed?.error?.message ?? `HTTP ${response.status}`);
+				}
+				return parsed.value;
+			};
+			face.revokeApproval = async (sessionId) => {
+				const response = await fetch("/mindmap/api/approval", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ sessionId, action: "revoke" }),
+				});
+				const parsed = await response.json().catch(() => null);
+				if (!response.ok || parsed === null || parsed.ok !== true || !parsed.value) {
+					throw new Error(parsed?.error?.message ?? `HTTP ${response.status}`);
+				}
+				return parsed.value;
+			};
 
 			// 015 设置面板：connection/remote 在客户端插件启动后才可能就绪，不能在
 			// apply 时捕获一次 undefined；每次读写前重新查取，服务晚到也能恢复。
@@ -4143,10 +4248,16 @@ window.__ModuleLoader__.load({
 				if (!api) {
 					throw new Error("settings service unavailable");
 				}
+				// 引擎侧 legacy 开关 requireApproval:false 等价于「关闭普通确认」，优先级
+				// 高于 approvalMode。面板显式选择「每次确认」或「本会话一次」时同时解除
+				// 它，否则该选择会被 host config 里的开关静默覆盖（保存后弹回 off）。
+				const payload = patch && typeof patch === "object" && patch.approvalMode && patch.approvalMode !== "off"
+					? { ...patch, requireApproval: true }
+					: patch;
 				if (api.kind === "remote" || api.settings.update.length !== 1) {
-					await api.settings.update("mindmap", patch, undefined);
+					await api.settings.update("mindmap", payload, undefined);
 				} else {
-					await api.settings.update({ ns: "mindmap", patch });
+					await api.settings.update({ ns: "mindmap", patch: payload });
 				}
 			};
 

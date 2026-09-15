@@ -910,6 +910,8 @@ test('apply registers the header M slot and the settings section, and takes no o
   assert.equal(typeof face.mindmapFace.listTree, 'function')
   assert.equal(typeof face.mindmapFace.readSettings, 'function')
   assert.equal(typeof face.mindmapFace.updateSettings, 'function')
+  assert.equal(typeof face.mindmapFace.readApprovalStatus, 'function')
+  assert.equal(typeof face.mindmapFace.revokeApproval, 'function')
 })
 
 test('settings face looks up a late connection for direct descriptors and positional updates', async () => {
@@ -991,6 +993,41 @@ test('settings face uses the current remote settings API when connection is unav
   assert.equal(writes[0].ns, 'mindmap')
   assert.equal(writes[0].patch.cardStyle, 'rounded')
   assert.equal(writes[0].revision, undefined)
+})
+
+test('settings face lifts the legacy requireApproval switch when an explicit approval mode is chosen', async () => {
+  const registered = []
+  const writes = []
+  const connection = {
+    api: {
+      settings: {
+        async describe() { return [{ ns: 'mindmap', value: { requireApproval: false, approvalMode: 'off' } }] },
+        async update(ns, patch) { writes.push({ ns, patch }) },
+      },
+    },
+  }
+  const ctx = {
+    get() { return connection },
+    slots: {
+      inject(_key, factory) { factory() },
+      register(options) { registered.push(options); return () => {} },
+    },
+  }
+  runtime.apply(ctx)
+  const face = registered.find((options) => options.name === 'conversation.session.header.actions').inject().mindmapFace
+  // 引擎侧 requireApproval:false 优先于 approvalMode；面板选择显式模式时必须
+  // 同时解除它，否则保存后读回仍是 off。
+  await face.updateSettings({ approvalMode: 'session' })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].ns, 'mindmap')
+  assert.equal(writes[0].patch.approvalMode, 'session')
+  assert.equal(writes[0].patch.requireApproval, true)
+  await face.updateSettings({ approvalMode: 'off' })
+  assert.equal(writes[1].patch.approvalMode, 'off')
+  assert.equal(writes[1].patch.requireApproval, undefined)
+  await face.updateSettings({ colorTheme: 'ocean' })
+  assert.equal(writes[2].patch.colorTheme, 'ocean')
+  assert.equal(writes[2].patch.requireApproval, undefined)
 })
 
 test('visibleTreeRows walks only expanded directories in pre-order', () => {
@@ -2398,15 +2435,94 @@ function loadClientWithEffectDriver() {
   const driver = createEffectDriver()
   let def
   const win = { __ModuleLoader__: { load(v) { def = v } } }
-  const ctx = vm.createContext({ URL, window: win })
+  const ctx = vm.createContext({ URL, window: win, setTimeout, clearTimeout })
   vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), ctx)
   const rt = def.factory((id) => {
     if (id === 'react/jsx-runtime') return { jsx(t,p,k){return{type:t,props:p||{},key:k}}, jsxs(t,p,k){return{type:t,props:p||{},key:k}}, Fragment:{} }
     if (id === 'react') return driver.hooks
     throw new Error('unexpected:'+id)
   })
-  return { driver, MindmapSlot: rt.internals.MindmapSlot, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
+  return { driver, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
 }
+
+// 驱动工作区的 effect，再重渲染一次读取最终画布；只调用 openTab 并不代表
+// 内层已经选中脑图，必须检查实际渲染结果，才能捕获会话清理覆盖自动打开。
+function renderWorkspaceAfterEffects(harness, props, mounting = false) {
+  const { driver, MindmapWorkspace } = harness
+  driver.beginRender()
+  MindmapWorkspace(props)
+  if (mounting) driver.flushMount()
+  else driver.flushUpdate()
+  driver.beginRender()
+  const rendered = MindmapWorkspace(props)
+  driver.flushUpdate()
+  return rendered
+}
+
+function workspaceCanvas(rendered) {
+  return findInTree(rendered, el => el.type?.name === 'MindmapCanvas')
+}
+
+for (const variant of ['sidebar', 'standalone']) {
+  test(`${variant}: mounting after AI create selects the new mindmap canvas`, () => {
+    const harness = loadClientWithEffectDriver()
+    let opened = 0
+    const props = {
+      variant, visible: true, sessionId: 'created-session',
+      onAutoOpen: () => { opened += 1 },
+      nodes: [
+        toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/new.md', content: '' }, { callId: 'create-new' }),
+        toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/new.md', content: '# First branch' }, { callId: 'update-new' }),
+      ],
+    }
+    try {
+      const canvas = workspaceCanvas(renderWorkspaceAfterEffects(harness, props, true))
+      assert.equal(opened, 1, 'opens the outer panel once')
+      assert.ok(canvas, 'inner workspace must show the canvas instead of the directory')
+      assert.equal(canvas.props.fitKey, '/w/new.md')
+      assert.equal(canvas.props.node.children[0].topic, 'First branch')
+    } finally {
+      harness.driver.unmount()
+    }
+  })
+}
+
+test('workspace session switch resets opening events and selects the new session document', () => {
+  const harness = loadClientWithEffectDriver()
+  const props = sessionId => ({
+    variant: 'sidebar', visible: true, sessionId, onAutoOpen() {},
+    // 调用标识只属于各自会话；同名事件不能阻止新会话恢复脑图。
+    nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: `/w/${sessionId}.md`, content: '# Branch' }, { callId: 'open-1' })],
+  })
+  try {
+    renderWorkspaceAfterEffects(harness, props('session-a'), true)
+    const canvas = workspaceCanvas(renderWorkspaceAfterEffects(harness, props('session-b')))
+    assert.ok(canvas, 'session cleanup must not leave the new workspace on the directory')
+    assert.equal(canvas.props.fitKey, '/w/session-b.md')
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('workspace preserves manual directory selection on updates and switches for a new create', () => {
+  const harness = loadClientWithEffectDriver()
+  const nodes = [toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/first.md', content: '' }, { callId: 'create-first' })]
+  const props = { variant: 'sidebar', visible: true, sessionId: 'same-session', nodes, onAutoOpen() {} }
+  try {
+    const rendered = renderWorkspaceAfterEffects(harness, props, true)
+    const directory = findInTree(rendered, el => typeof el.props?.onClick === 'function' && el.props.children === '脑图列表')
+    assert.ok(directory)
+    directory.props.onClick()
+    const updated = { ...props, nodes: [...nodes, toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/first.md', content: '# Updated' })] }
+    assert.equal(workspaceCanvas(renderWorkspaceAfterEffects(harness, updated)), null, 'ordinary updates do not override manual directory selection')
+    const created = { ...updated, nodes: [...updated.nodes, toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/second.md', content: '' }, { callId: 'create-second' })] }
+    const canvas = workspaceCanvas(renderWorkspaceAfterEffects(harness, created))
+    assert.ok(canvas)
+    assert.equal(canvas.props.fitKey, '/w/second.md')
+  } finally {
+    harness.driver.unmount()
+  }
+})
 
 // 用 applySandbox 拿到 mindmapFace（header 槽位的 inject 返回值）。
 // 用完后清理原沙箱的 sidebarBus。

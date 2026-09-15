@@ -20,6 +20,6 @@ If private reporting is unavailable, contact the repository owner privately befo
 ## Security model
 
 - The plugin edits plain markdown files inside the DSH working directory only; it refuses all file access when that working directory is unavailable.
-- Native approval is enabled by default. Operators may explicitly opt out with `requireApproval: false` for trusted automation.
+- Native approval is enabled by default with a session/document grant: the first ordinary write asks once, then later updates to the same document in that session reuse the grant. `approvalMode` supports `per-operation`, `session` (default), and `off` (ordinary confirmations only); root renames, deletes, and broad rewrites remain approval-gated. Operators may explicitly set `requireApproval: false` for trusted automation's ordinary writes.
 - Document paths are resolved and contained within the working directory before any write.
 - Operators remain responsible for file permissions, network routing, and model-provider data policy.
