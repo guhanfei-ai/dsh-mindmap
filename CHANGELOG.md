@@ -6,6 +6,7 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
+- Copy as markdown: a 复制全文 button now sits left of 导出图片 in both the sidebar toolbar and the standalone panel header. One click copies the current mindmap's raw markdown source to the system clipboard via the existing `copyPlainText` helper (Clipboard API with a textarea fallback) — the document state's `doc.content` is used directly instead of re-serializing the tree, so headings, nested lists, tables, and the original whitespace round-trip losslessly. Success briefly switches the button label to 已复制 ✓; failures surface in the shared export error slot. The node context-menu 复制全文 (single-node text) is unchanged.
 - Read-only document opening now renders a clicked Markdown file before asking the AI to take over editing. `mindmap_create` accepts an optional relative directory, and read/write results carry a SHA-256 revision so stale `mindmap_update` calls can be rejected instead of overwriting newer edits.
 - Standalone panel width now remains usable on narrow viewports by clamping the initial, saved, resized, and settings-derived widths together.
 - Write approval now supports `per-operation`, `session` (default), and `off` for ordinary writes. Session mode reuses a successful approval per document, while renames, empty-content deletions, and broad rewrites stay gated; the settings page exposes the policy and the current mindmap workspace shows and revokes the current-session grant.

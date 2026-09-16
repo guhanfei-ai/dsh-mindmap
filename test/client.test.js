@@ -1999,6 +1999,9 @@ test('sidebar variant: toolbar is a single row with "脑图列表" label and exp
   const texts = collectTexts(ws)
   assert.ok(texts.includes('脑图列表'), 'sidebar shows "脑图列表" label')
   assert.ok(texts.includes('导出图片'), 'export button present')
+  // 032 复制全文按钮也在同一行，且位于导出按钮左侧。
+  assert.ok(texts.includes('复制全文'), '032 copy-text button present')
+  assert.ok(texts.indexOf('复制全文') < texts.indexOf('导出图片'), 'copy button sits left of export')
   // 不得出现 standalone 的 "目录" 文案
   assert.ok(!texts.includes('目录'), 'sidebar must NOT show "目录" label')
 })
@@ -2021,6 +2024,9 @@ test('standalone variant: shows "目录" label and preserves two-row header with
   assert.ok(texts.includes('目录'), 'standalone shows "目录" label')
   // 不得出现 sidebar 的 "脑图列表" 文案
   assert.ok(!texts.includes('脑图列表'), 'standalone must NOT show "脑图列表" label')
+  // 032 复制全文按钮也在 headerTop 行，且位于导出按钮左侧。
+  assert.ok(texts.includes('复制全文'), '032 copy-text button present')
+  assert.ok(texts.indexOf('复制全文') < texts.indexOf('导出图片'), 'copy button sits left of export')
   // standalone 有 headerTop 行（spacer + 导出 + 关闭）
   const hasHeaderTop = findInTree(ws, (el) => el.props && el.props.style === S.headerTop)
   assert.ok(hasHeaderTop, 'standalone renders headerTop row')
@@ -2442,7 +2448,7 @@ function loadClientWithEffectDriver() {
     if (id === 'react') return driver.hooks
     throw new Error('unexpected:'+id)
   })
-  return { driver, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
+  return { driver, ctx, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
 }
 
 // 驱动工作区的 effect，再重渲染一次读取最终画布；只调用 openTab 并不代表
@@ -2486,6 +2492,42 @@ for (const variant of ['sidebar', 'standalone']) {
     }
   })
 }
+
+// —— 032 复制全文：整篇 Markdown 原文写入系统剪贴板 ——
+
+test('032 copy-text button: writes the raw markdown source to the clipboard', async () => {
+  // 030 effect 驱动设施：mount 跑完 auto-open effect 后 doc/tree 才就位
+  //（无状态 react 桩的 renderWorkspace 停在目录视图，doc 为 null）。
+  const harness = loadClientWithEffectDriver()
+  const props = {
+    variant: 'standalone', visible: true, sessionId: 'copy-text', onAutoOpen() {},
+    nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/test.md', content: '# A\n- x', rootTitle: '测试脑图' }, { callId: 'copy-open' })],
+  }
+  try {
+    const rendered = renderWorkspaceAfterEffects(harness, props, true)
+    const copyBtn = findInTree(rendered, (el) => el.props && el.props.title === '把当前脑图的 Markdown 原文复制到剪贴板')
+    assert.ok(copyBtn, 'copy button rendered')
+    assert.equal(copyBtn.props.disabled, false, 'enabled for an opened document')
+    // 沙箱无 navigator：注入剪贴板桩；setTimeout 换捕获桩——既能断言 2s
+    // 复位有被调度，又不给测试进程留挂起的真实定时器。
+    let captured = null
+    const scheduled = { ms: null }
+    harness.ctx.navigator = { clipboard: { writeText: async (t) => { captured = t } } }
+    const realSetTimeout = harness.ctx.setTimeout
+    harness.ctx.setTimeout = (fn, ms) => { scheduled.ms = ms; return 0 }
+    try {
+      await copyBtn.props.onClick()
+    } finally {
+      harness.ctx.setTimeout = realSetTimeout
+      delete harness.ctx.navigator
+    }
+    // 写入内容 = 文档状态里的 Markdown 原文（不从树结构反向序列化）。
+    assert.equal(captured, '# A\n- x', 'clipboard receives the raw markdown source')
+    assert.equal(scheduled.ms, 2000, 'success branch schedules the 2s label reset')
+  } finally {
+    harness.driver.unmount()
+  }
+})
 
 test('workspace session switch resets opening events and selects the new session document', () => {
   const harness = loadClientWithEffectDriver()

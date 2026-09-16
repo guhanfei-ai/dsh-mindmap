@@ -2760,6 +2760,10 @@ window.__ModuleLoader__.load({
 			const [exporting, setExporting] = react.useState(false);
 			const [exportError, setExportError] = react.useState("");
 			const [filledHint, setFilledHint] = react.useState("");
+			// 032 复制全文：copying = 写剪贴板进行中；copiedOk = 成功短反馈
+			//（按钮文案短暂变「已复制 ✓」约 2s；失败复用 exportError 展示位）。
+			const [copying, setCopying] = react.useState(false);
+			const [copiedOk, setCopiedOk] = react.useState(false);
 			// fsTree：nodes = {path → 节点}, expanded = {path → true}, loading = {path → true}。
 			const [fsTree, setFsTree] = react.useState({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
 			// 会话切换时递增，使旧请求的异步回包不能写入新会话的目录树。
@@ -2886,6 +2890,24 @@ window.__ModuleLoader__.load({
 					setExportError(String(error?.message ?? error));
 				} finally {
 					setExporting(false);
+				}
+			}
+
+			// 032 复制全文：当前脑图的 Markdown 原文写入系统剪贴板。内容直接取
+			// doc.content（tree 即由它解析而来），不从树结构反向序列化——零信息
+			// 损失（标题/列表/表格/原文空白原样保留），与参考实现实测路径一致。
+			async function onCopyText() {
+				if (!doc || doc.op === "local" || copying) return;
+				setCopying(true);
+				setExportError("");
+				try {
+					await copyPlainText(doc.content);
+					setCopiedOk(true);
+					setTimeout(() => setCopiedOk(false), 2000);
+				} catch (error) {
+					setExportError(String(error?.message ?? error));
+				} finally {
+					setCopying(false);
 				}
 			}
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
@@ -3359,6 +3381,16 @@ window.__ModuleLoader__.load({
 		onClick: onExport,
 		children: exporting ? "导出中…" : "导出图片",
 	});
+	// 032 复制全文按钮（两种模式共用）：整篇 Markdown 原文写系统剪贴板，插在
+	// 导出按钮左侧；disabled 语义与导出一致（无树/复制中/本地占位不可复制）。
+	const copyBtn = (0, react_jsx_runtime.jsx)("button", {
+		type: "button",
+		style: S.action,
+		disabled: !tree || copying || (doc && doc.op === "local"),
+		onClick: onCopyText,
+		title: "把当前脑图的 Markdown 原文复制到剪贴板",
+		children: copying ? "复制中…" : copiedOk ? "已复制 ✓" : "复制全文",
+	});
 	const exportErrorSpan = exportError
 		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
 		: null;
@@ -3418,10 +3450,11 @@ window.__ModuleLoader__.load({
 						}),
 					],
 				}, shown) : null,
-				// 导出按钮 + 错误推到行尾。
+				// 复制/导出按钮 + 错误推到行尾。
 				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 				approvalControls,
 				exportErrorSpan,
+				copyBtn,
 				exportBtn,
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
@@ -3457,6 +3490,7 @@ window.__ModuleLoader__.load({
 		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 			approvalControls,
+			copyBtn,
 			exportBtn,
 			exportErrorSpan,
 			// 关闭按钮：仅独立 fixed 壳提供 onClose（BS Tab 自带关闭）。

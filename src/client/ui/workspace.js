@@ -85,6 +85,10 @@
 			const [exporting, setExporting] = react.useState(false);
 			const [exportError, setExportError] = react.useState("");
 			const [filledHint, setFilledHint] = react.useState("");
+			// 032 复制全文：copying = 写剪贴板进行中；copiedOk = 成功短反馈
+			//（按钮文案短暂变「已复制 ✓」约 2s；失败复用 exportError 展示位）。
+			const [copying, setCopying] = react.useState(false);
+			const [copiedOk, setCopiedOk] = react.useState(false);
 			// fsTree：nodes = {path → 节点}, expanded = {path → true}, loading = {path → true}。
 			const [fsTree, setFsTree] = react.useState({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
 			// 会话切换时递增，使旧请求的异步回包不能写入新会话的目录树。
@@ -211,5 +215,23 @@
 					setExportError(String(error?.message ?? error));
 				} finally {
 					setExporting(false);
+				}
+			}
+
+			// 032 复制全文：当前脑图的 Markdown 原文写入系统剪贴板。内容直接取
+			// doc.content（tree 即由它解析而来），不从树结构反向序列化——零信息
+			// 损失（标题/列表/表格/原文空白原样保留），与参考实现实测路径一致。
+			async function onCopyText() {
+				if (!doc || doc.op === "local" || copying) return;
+				setCopying(true);
+				setExportError("");
+				try {
+					await copyPlainText(doc.content);
+					setCopiedOk(true);
+					setTimeout(() => setCopiedOk(false), 2000);
+				} catch (error) {
+					setExportError(String(error?.message ?? error));
+				} finally {
+					setCopying(false);
 				}
 			}

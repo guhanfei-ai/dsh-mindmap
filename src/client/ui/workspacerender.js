@@ -19,6 +19,16 @@
 		onClick: onExport,
 		children: exporting ? "导出中…" : "导出图片",
 	});
+	// 032 复制全文按钮（两种模式共用）：整篇 Markdown 原文写系统剪贴板，插在
+	// 导出按钮左侧；disabled 语义与导出一致（无树/复制中/本地占位不可复制）。
+	const copyBtn = (0, react_jsx_runtime.jsx)("button", {
+		type: "button",
+		style: S.action,
+		disabled: !tree || copying || (doc && doc.op === "local"),
+		onClick: onCopyText,
+		title: "把当前脑图的 Markdown 原文复制到剪贴板",
+		children: copying ? "复制中…" : copiedOk ? "已复制 ✓" : "复制全文",
+	});
 	const exportErrorSpan = exportError
 		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
 		: null;
@@ -78,10 +88,11 @@
 						}),
 					],
 				}, shown) : null,
-				// 导出按钮 + 错误推到行尾。
+				// 复制/导出按钮 + 错误推到行尾。
 				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 				approvalControls,
 				exportErrorSpan,
+				copyBtn,
 				exportBtn,
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
@@ -117,6 +128,7 @@
 		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 			approvalControls,
+			copyBtn,
 			exportBtn,
 			exportErrorSpan,
 			// 关闭按钮：仅独立 fixed 壳提供 onClose（BS Tab 自带关闭）。
