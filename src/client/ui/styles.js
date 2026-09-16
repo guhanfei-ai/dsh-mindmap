@@ -117,7 +117,10 @@
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
 			// 021 平移：空白处抓手光标（节点盒自带 pointer 覆盖）；overscroll
 			// contain 让画布滚到边时不把滚动链传给宿主页面（聊天区不跟着动）。
-			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto", cursor: "grab", overscrollBehavior: "contain" },
+			// 033 scrollbar-gutter 常驻滚动条槽位：滚动条出现/消失不再改变
+			// clientWidth——从源头掐掉「适配→滚动条出现→视口变窄→再适配」的
+			// 抖动循环（老保险丝降级为兜底；不支持该属性的宿主优雅退化）。
+			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto", cursor: "grab", overscrollBehavior: "contain", scrollbarGutter: "stable" },
 			// 居中层：内容小则铺满视口（100%），大则撑到内容尺寸（max-content）；
 			// 子项用 margin:auto——空间充足双向居中，溢出时 margin 归零、从滚动
 			// 原点排布（flexbox 溢出居中裁剪的标准解法，无左/上侧裁剪）。

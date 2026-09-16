@@ -1426,7 +1426,10 @@ window.__ModuleLoader__.load({
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
 			// 021 平移：空白处抓手光标（节点盒自带 pointer 覆盖）；overscroll
 			// contain 让画布滚到边时不把滚动链传给宿主页面（聊天区不跟着动）。
-			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto", cursor: "grab", overscrollBehavior: "contain" },
+			// 033 scrollbar-gutter 常驻滚动条槽位：滚动条出现/消失不再改变
+			// clientWidth——从源头掐掉「适配→滚动条出现→视口变窄→再适配」的
+			// 抖动循环（老保险丝降级为兜底；不支持该属性的宿主优雅退化）。
+			canvasScroll: { flex: "1 1 auto", minHeight: 0, minWidth: 0, overflow: "auto", cursor: "grab", overscrollBehavior: "contain", scrollbarGutter: "stable" },
 			// 居中层：内容小则铺满视口（100%），大则撑到内容尺寸（max-content）；
 			// 子项用 margin:auto——空间充足双向居中，溢出时 margin 归零、从滚动
 			// 原点排布（flexbox 溢出居中裁剪的标准解法，无左/上侧裁剪）。
@@ -2001,7 +2004,12 @@ window.__ModuleLoader__.load({
 				// 缩放契约：范围 [0.25, 3]，每级 ×1.2；适配计算四周留 48px 余量
 				//（16px 视觉内距 + 经典滚动条占位，避免「适配→滚动条出现→视口变
 				// 窄→再适配」的抖动循环）。
-				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1 };
+				// 033 focusJump：点击聚焦单次跳变上限（相对当前比例最多 ×2 / ÷2），
+				// 巨图点叶子不再一步怼到 100%，连点渐进 drill。narrowView：视口宽
+				// 低于该值（sidebar 最窄 280px）时改按高度适配——横向适配在窄面板
+				// 永远占主导会把子树压得过小，宽度溢出交给平移（横向本就一等公民）。
+				// animMs：033 平滑过渡时长上限（限长、可中断、熔断后退化瞬时）。
+				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250 };
 
 				/** 缩放夹取：非有限值/≤0 回退 1，否则夹到 [min, max]。 */
 				function clampZoom(value) {
@@ -2018,16 +2026,57 @@ window.__ModuleLoader__.load({
 				/** 适配比例：min((view-padding)/tree, 1) 再夹取——小图不放大、巨图夹下限；零/非法尺寸返回 1。 */
 				function fitZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
+					// 033 窄视口（sidebar）：按高度适配，宽度溢出靠平移。
+					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, 1));
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, 1));
 				}
 
 				/**
 				 * 子树聚焦比例：适配整棵子树（区别于全局适配，允许放大到 focusMax），
 				 * 叶子/小子树不会怼脸、巨子树夹下限；零/非法尺寸返回 1。
+				 * 033 窄视口同 fitZoom：按高度适配（子树行通常宽而扁，窄面板里
+				 * 横向适配会把整行压到不可读）。
 				 */
 				function focusZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
+					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
+				}
+
+				/**
+				 * 033 点击聚焦跳变钳制：目标比例相对当前值单次最多变化 focusJump 倍
+				 *（放大 ×2 / 缩小 ÷2），超出则截到边界。放置在调用点而非 focusZoom
+				 * 内——focusZoom 保持「无状态适配计算」语义（测试直测），跳变限制
+				 * 需要知道当前值，属交互层策略。连续点击逐步逼近，方向不变。
+				 */
+				function clampFocusJump(target, current) {
+					const value = clampZoom(target);
+					const base = clampZoom(current);
+					return Math.min(base * ZOOM.focusJump, Math.max(base / ZOOM.focusJump, value));
+				}
+
+				/** 033 项3：按结构 id 找当前树里的节点盒（遍历比对属性值，不做选择器
+				 *  拼接——结构 id 虽是数字路径，这里不依赖该假设）。找不到返回 null。 */
+				function findBoxByNodeId(scroller, id) {
+					if (!scroller || typeof scroller.querySelectorAll !== "function") return null;
+					const boxes = scroller.querySelectorAll("[data-mindmap-node-id]");
+					for (const el of boxes) {
+						if (el.getAttribute("data-mindmap-node-id") === id) return el;
+					}
+					return null;
+				}
+
+				/** 033 项3：把完全离开视口的盒子拉回最近边的最小滚动位移（视口坐标
+				 *  系，正 = 向右/下滚）。部分可见或在内返回 0——不打扰用户视角。
+				 *  margin = 拉回后与视口边保留的呼吸余量。 */
+				function edgePullOffsets(box, view, margin) {
+					let dx = 0;
+					let dy = 0;
+					if (box.right < view.left) dx = box.left - (view.left + margin);
+					else if (box.left > view.right) dx = box.right - (view.right - margin);
+					if (box.bottom < view.top) dy = box.top - (view.top + margin);
+					else if (box.top > view.bottom) dy = box.bottom - (view.bottom - margin);
+					return { x: dx, y: dy };
 				}
 
 				//#region 021 画布平移：拖拽手势（中键 / 空白处左键 / 空格+左键）
@@ -2127,7 +2176,7 @@ window.__ModuleLoader__.load({
 						// 016 熔断器：观察器触发的适配时间戳。1.5s 内第 5 次 → 判定
 						// 反馈循环，自动停手（保险丝，任何未知循环都最多闪几下）。
 						const fitStampRef = react.useRef([]);
-							const [zoom, setZoomState] = react.useState(1);
+						const [zoom, setZoomState] = react.useState(1);
 							const [hover, setHover] = react.useState(null);
 							// 017 节点右键菜单：{x, y, node}；null = 关闭。busy = "copy" |
 							// "export" 表示对应动作进行中（两项都禁用），error 展示失败原因。
@@ -2171,6 +2220,61 @@ window.__ModuleLoader__.load({
 						// 021 指针是否悬在画布上（空格键要不要拦默认行为的门控；纯
 						// 读取，不参与渲染）。
 						const hoverRef = react.useRef(false);
+						// 033 平滑过渡：在飞的 zoom 动画句柄 { id, from, to, start }；
+						// animDisabled = 熔断器触发过（本轮 fitKey 内动画退化为瞬时，
+						// 切文档/点适配时复位）。动画只写 zoomRef + setZoomState（提交
+						// 路径同现状），测量一律走 committedZoomRef，不与 ResizeObserver
+						// 打架；聚焦动画期间 focusRef 保持存活，[zoom] effect 每帧把
+						// 节点钉回「水平 25% / 垂直居中」——视觉是节点不动、世界绕它缩放。
+						const zoomAnimRef = react.useRef(null);
+						const animDisabledRef = react.useRef(false);
+
+						// 033 截停在飞动画（任何新交互都先调）：取消 rAF + 顺手清掉
+						// focusRef（否则下一次 zoom 提交会被过期聚焦劫持定位）。zoomRef
+						// 停在最后已提交的中间值——每帧 setZoomState 都同步过
+						// committedZoomRef，无「ref 领先渲染」的脏基准。
+						function cancelZoomAnim() {
+							const anim = zoomAnimRef.current;
+							if (!anim) return;
+							zoomAnimRef.current = null;
+							focusRef.current = null;
+							if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(anim.id);
+						}
+
+						// 033 平滑 zoom：from → to，限长 animMs、easeOutQuad，并行上限 1
+						//（新动画先截停旧动画）。结束帧精确落在 to 并交还 focusRef 的
+						// 消费权（最后一次 [zoom] effect 定位）。禁用/无 rAF 环境瞬时应用，
+						// 行为与 033 之前完全一致。
+						function animateZoomTo(to) {
+							cancelZoomAnim();
+							const target = clampZoom(to);
+							const from = zoomRef.current;
+							if (from === target) return;
+							const canAnimate = animDisabledRef.current !== true
+								&& scrollRef.current
+								&& typeof requestAnimationFrame === "function";
+							if (!canAnimate) {
+								zoomRef.current = target;
+								setZoomState(target);
+								return;
+							}
+							const anim = { id: 0, from, to: target, start: Date.now() };
+							zoomAnimRef.current = anim;
+							const frame = () => {
+								if (zoomAnimRef.current !== anim) return; // 已被截停/替换
+								const t = Math.min(1, (Date.now() - anim.start) / ZOOM.animMs);
+								const eased = 1 - (1 - t) * (1 - t);
+								const value = t >= 1 ? target : from + (target - from) * eased;
+								zoomRef.current = value;
+								setZoomState(value);
+								if (t >= 1) {
+									zoomAnimRef.current = null;
+									return;
+								}
+								anim.id = requestAnimationFrame(frame);
+							};
+							anim.id = requestAnimationFrame(frame);
+						}
 
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
@@ -2179,6 +2283,9 @@ window.__ModuleLoader__.load({
 								const scroller = scrollRef.current;
 								const content = contentRef.current;
 								if (!scroller || !content) return;
+								// 033：适配前截停在飞动画（观察器/适配按钮不能被旧动画
+								// 的后续帧反向覆盖）。
+								cancelZoomAnim();
 								resetPanOffset();
 								const rect = content.getBoundingClientRect();
 								if (!(rect.width > 0) || !(rect.height > 0)) return;
@@ -2198,14 +2305,21 @@ window.__ModuleLoader__.load({
 							}
 
 							// 挂载 / 文档切换：清除「用户已手动缩放」标记与熔断计数，
-							// 布局稳定后（rAF）适配一次。
+							// 布局稳定后（rAF）适配一次。033：同时复位动画禁用位与
+							// 选中态（新文档不该继承旧文档的选中环——结构 id 跨文档
+							// 可能撞名，会让保视野逻辑锚错节点）；清理时截停在飞动画。
 							react.useLayoutEffect(() => {
 								userZoomedRef.current = false;
 								lastNaturalRef.current = null;
 								fitStampRef.current = [];
+								animDisabledRef.current = false;
+								setSelectedId(null);
 								setCollapsed((prev) => (prev.size > 0 ? new Set() : prev));
 								const id = requestAnimationFrame(applyFit);
-								return () => cancelAnimationFrame(id);
+								return () => {
+									cancelAnimationFrame(id);
+									cancelZoomAnim();
+								};
 							}, [fitKey]);
 
 							// 内容 / 画布尺寸变化（AI 编辑、面板拖宽）→ 未手动缩放则再适配。
@@ -2234,6 +2348,9 @@ window.__ModuleLoader__.load({
 									const stamps = fitStampRef.current = fitStampRef.current.filter((t) => now - t < 1500);
 									if (stamps.length >= 5) {
 										userZoomedRef.current = true;
+										// 033：熔断判定成立 → 本轮 fitKey 内动画也停用（反馈
+										// 循环环境里再引入中间态提交只会火上浇油）。
+										animDisabledRef.current = true;
 										return;
 									}
 									stamps.push(now);
@@ -2297,6 +2414,9 @@ window.__ModuleLoader__.load({
 					// 否则上轮手势留下的 true 会粘到下一次点击上——例：拖完画布后再
 					// 触摸点按（touch 路径不启动平移就早退了），那次点击会被白吞一次。
 					suppressClickRef.current = false;
+					// 033：平移起手即截停缩放动画——聚焦动画每帧把节点钉回锚位，
+					// 会和用户拖拽的方向对着干。
+					cancelZoomAnim();
 					const scroller = scrollRef.current;
 					if (!scroller || panRef.current) return;
 					const target = e.target;
@@ -2385,7 +2505,9 @@ window.__ModuleLoader__.load({
 					// DOM 已提交到该 zoom，测量换算基准同步（applyFit 依赖）。
 					committedZoomRef.current = zoom;
 					if (focusRef.current) {
-						positionFocus();
+						// 033：动画进行中每帧都把节点钉回目标锚位（不消费 focusRef，
+						// 视觉 = 节点不动、世界绕它缩放）；动画结束/瞬时路径照旧消费。
+						positionFocus(zoomAnimRef.current === null);
 						return;
 					}
 					const scroller = scrollRef.current;
@@ -2400,11 +2522,13 @@ window.__ModuleLoader__.load({
 
 				function zoomIn() {
 					userZoomedRef.current = true;
+					cancelZoomAnim();
 					setZoom(stepZoom(zoomRef.current, 1), true);
 				}
 
 				function zoomOut() {
 					userZoomedRef.current = true;
+					cancelZoomAnim();
 					setZoom(stepZoom(zoomRef.current, -1), true);
 				}
 
@@ -2418,6 +2542,8 @@ window.__ModuleLoader__.load({
 				// 左侧锚点让子级铺满右侧视野），缩放比例取 focusZoom（整棵子树适配、
 				// 上限 focusMax）。事件委托：closest 找节点盒与所在子树 row，无需给
 				// 递归 TreeRow 传回调。聚焦视为用户手动缩放（停自动再适配）。
+				// 033：目标比例经 clampFocusJump 单次最多 ×2/÷2（巨图点叶子不再一步
+				// 怼到 100%，连点渐进 drill）；zoom 变化经 animateZoomTo 平滑过渡。
 				function onCanvasClick(e) {
 					// 021：刚拖过画布（平移）的这次 click 不是点击，直接吞掉——
 					// 否则每次平移松手都会顺手把选中环清掉。
@@ -2441,13 +2567,16 @@ window.__ModuleLoader__.load({
 					if (!scroller) return;
 					const current = zoomRef.current;
 					const rowRect = rowEl.getBoundingClientRect();
-					const focus = focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight);
+					// 033 跳变钳制：相对当前比例单次最多 ×2 / ÷2。
+					const focus = clampFocusJump(
+						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
+						current,
+					);
 					userZoomedRef.current = true;
 					focusRef.current = { boxEl };
 					if (focus !== current) {
 						anchorRef.current = null;
-						zoomRef.current = focus;
-						setZoomState(focus);
+						animateZoomTo(focus);
 					} else {
 						positionFocus();
 					}
@@ -2455,11 +2584,17 @@ window.__ModuleLoader__.load({
 
 				// 聚焦定位：DOM 更新后量节点盒当前位置，滚动增量 = 当前位置 − 期望位置
 				//（scroll 增量与视口位移 1:1，浏览器自动钳制滚动范围；比例不变时同步调用）。
-				function positionFocus() {
+				// 033：consume = false 时保留 focusRef——聚焦动画的中间帧每帧重定位，
+				// 动画收尾帧（zoomAnimRef 已清空）才消费。
+				function positionFocus(consume = true) {
 					const focus = focusRef.current;
-					focusRef.current = null;
+					if (!focus || !focus.boxEl || !focus.boxEl.isConnected) {
+						focusRef.current = null;
+						return;
+					}
+					if (consume) focusRef.current = null;
 					const scroller = scrollRef.current;
-					if (!scroller || !focus || !focus.boxEl || !focus.boxEl.isConnected) return;
+					if (!scroller) return;
 					resetPanOffset();
 					const boxRect = focus.boxEl.getBoundingClientRect();
 					const scrollerRect = scroller.getBoundingClientRect();
@@ -2497,6 +2632,29 @@ window.__ModuleLoader__.load({
 					setCodePanel(null);
 					// 025：树重解析后丢弃已消失节点的折叠标记（无变化时保持原引用）。
 					setCollapsed((prev) => pruneCollapsed(prev, node));
+					// 033 项3：AI 编辑后保住选中节点在视野内。仅在用户已定视角
+					//（userZoomedRef，自动再适配已停）且选中节点**完全**离开视口时，
+					// 以最小滚动量把它带回最近的边（部分可见不打扰）。只动 scroll：
+					// 不改缩放、不碰 userZoomedRef/熔断器（滚动不触发 ResizeObserver
+					// 的内容尺寸变化），「面板跟随 AI 实时变化」与「视角归用户」两个
+					// 承诺同时成立。id 失效（节点被删/重写）→ 查不到盒，自然跳过。
+					if (userZoomedRef.current && selectedId) {
+						const scroller = scrollRef.current;
+						const boxEl = scroller && typeof scroller.querySelectorAll === "function"
+							? findBoxByNodeId(scroller, selectedId)
+							: null;
+						if (boxEl && typeof boxEl.getBoundingClientRect === "function") {
+							const box = boxEl.getBoundingClientRect();
+							const view = scroller.getBoundingClientRect();
+							const MARGIN = 24;
+							const pull = edgePullOffsets(box, view, MARGIN);
+							if (pull.x !== 0 || pull.y !== 0) {
+								resetPanOffset();
+								scroller.scrollLeft += pull.x;
+								scroller.scrollTop += pull.y;
+							}
+						}
+					}
 				}, [node]);
 
 				function toggleCollapse(id) {
@@ -4369,6 +4527,9 @@ window.__ModuleLoader__.load({
 			stepZoom,
 			fitZoom,
 			focusZoom,
+			// 033 点击聚焦跳变钳制 + 保视野拉回位移（供测试）。
+			clampFocusJump,
+			edgePullOffsets,
 			// 021 画布平移手势判定（供测试）。
 			PAN,
 			shouldStartPan,

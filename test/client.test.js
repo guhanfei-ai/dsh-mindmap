@@ -77,7 +77,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -1320,6 +1320,65 @@ test('focusZoom fits the subtree and caps zoom-in at focusMax', () => {
   assert.equal(focusZoom(NaN, 500, 800, 600), 1)
 })
 
+// —— 033 画布缩放/聚焦体验优化：窄视口、跳变钳制、保视野拉回 ——
+
+test('033 narrow view (<400px) fits by height instead of width', () => {
+  // sidebar 最窄 280px：宽树若按横向适配会被压得过小（(280-48)/2000=0.116
+  // → 夹下限 0.25 也不可读）；改按高度适配，宽度溢出交给平移。
+  // 高度充足：不放大、上限仍 1（fitZoom）。
+  assert.equal(fitZoom(2000, 300, 280, 800), 1)
+  // 高度也紧张：按 (800-48)/300 走 → 夹到 0.25 的路径改为高度主导：
+  assert.ok(Math.abs(fitZoom(2000, 2000, 280, 800) - 0.376) < 1e-9) // (800-48)/2000
+  // focusZoom 同分支，仅放大上限换成 focusMax（同为 1）。
+  assert.equal(focusZoom(2000, 300, 280, 800), 1)
+  assert.ok(Math.abs(focusZoom(2000, 2000, 280, 800) - 0.376) < 1e-9)
+  // 阈值边界：399 走窄分支（高度主导 0.376），400 走宽分支（宽主导 0.176
+  // → 夹下限 0.25，巨树窄面板保持可读、余量靠平移）。
+  assert.ok(Math.abs(fitZoom(2000, 2000, 399, 800) - 0.376) < 1e-9)
+  assert.equal(fitZoom(2000, 2000, 400, 800), 0.25)
+  // 零/非法尺寸守卫在窄视口下同样生效。
+  assert.equal(fitZoom(0, 500, 280, 800), 1)
+  assert.equal(focusZoom(NaN, 500, 280, 800), 1)
+})
+
+test('033 clampFocusJump limits each click to ×2 / ÷2 of the current zoom', () => {
+  // 巨图 25% 点小子树（focusZoom = 1）：单次最多 ×2 → 0.5，连点渐进 drill。
+  assert.equal(clampFocusJump(1, 0.25), 0.5)
+  // 反向：100% 点巨子树（focusZoom = 0.25）：单次最多 ÷2 → 0.5。
+  assert.equal(clampFocusJump(0.25, 1), 0.5)
+  // 目标在钳制范围内：原样通过。
+  assert.equal(clampFocusJump(0.8, 0.75), 0.8)
+  // 目标 = 当前：不变。
+  assert.equal(clampFocusJump(0.75, 0.75), 0.75)
+  // 钳制结果仍受全局范围夹取（0.25 下再 ÷2 不会低于 0.25）。
+  assert.equal(clampFocusJump(0.3, 0.25), 0.3)
+  // 极端目标先经 clampZoom 再钳制。
+  assert.equal(clampFocusJump(99, 1), 2)
+  assert.equal(clampFocusJump(0.01, 1), 0.5)
+})
+
+test('033 edgePullOffsets returns minimal scroll to bring an off-view box back', () => {
+  const view = { left: 0, right: 800, top: 0, bottom: 600 }
+  const MARGIN = 24
+  // 断属性而非 deepStrictEqual({x,y})：vm realm 造出的对象与本 realm 字面量
+  // 结构相等但原型不同源，deepStrictEqual 会误报（同 settingsNamespacesOf
+  // 先例）。
+  const pull = (box) => edgePullOffsets(box, view, MARGIN)
+  // 完全在视野内：零位移（部分可见同样不打扰）。
+  assert.equal(pull({ left: 100, right: 200, top: 50, bottom: 80 }).x, 0)
+  assert.equal(pull({ left: 100, right: 200, top: 50, bottom: 80 }).y, 0)
+  assert.equal(pull({ left: 700, right: 900, top: 0, bottom: 100 }).x, 0)
+  // 完全离开左侧：拉到左边界 + margin（负 = 向左滚）。
+  assert.equal(pull({ left: -300, right: -100, top: 0, bottom: 50 }).x, -324)
+  assert.equal(pull({ left: -300, right: -100, top: 0, bottom: 50 }).y, 0)
+  // 完全离开右侧：拉到右边界 − margin（dx = 1100 − (800−24) = 324，向右滚）。
+  assert.equal(pull({ left: 900, right: 1100, top: 0, bottom: 50 }).x, 324)
+  // 完全离开上方/下方：同规则走 y（上 = −224，下 = 800−(600−24) = 224）。
+  assert.equal(pull({ left: 0, right: 50, top: -200, bottom: -100 }).y, -224)
+  assert.equal(pull({ left: 0, right: 50, top: -200, bottom: -100 }).x, 0)
+  assert.equal(pull({ left: 0, right: 50, top: 700, bottom: 800 }).y, 224)
+})
+
 // 021 画布平移
 test('shouldStartPan accepts the middle button anywhere, left only on blank or with space', () => {
   // 中键：画布惯例，压在节点上也拖
@@ -2437,18 +2496,32 @@ function createEffectDriver() {
 
 // 030 组件 effect 测试公共设施：重新加载 client.js 到独立 vm 沙箱，
 // 注入能保持 hook 状态、执行 effect/cleanup 的 driver，返回沙箱内的组件和 store。
+// 034：window 加监听器桩（MindmapCanvas 的空格键/菜单 effect 需要）；rAF 换
+// 手动队列（测试逐帧驱动缩放动画，不真等时钟），cancel 按入队序号打洞。
 function loadClientWithEffectDriver() {
   const driver = createEffectDriver()
   let def
-  const win = { __ModuleLoader__: { load(v) { def = v } } }
-  const ctx = vm.createContext({ URL, window: win, setTimeout, clearTimeout })
+  const win = {
+    __ModuleLoader__: { load(v) { def = v } },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  const rafQueue = []
+  const ctx = vm.createContext({
+    URL,
+    window: win,
+    setTimeout,
+    clearTimeout,
+    requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length },
+    cancelAnimationFrame(id) { if (Number.isInteger(id) && id >= 1 && id <= rafQueue.length) rafQueue[id - 1] = null },
+  })
   vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), ctx)
   const rt = def.factory((id) => {
     if (id === 'react/jsx-runtime') return { jsx(t,p,k){return{type:t,props:p||{},key:k}}, jsxs(t,p,k){return{type:t,props:p||{},key:k}}, Fragment:{} }
     if (id === 'react') return driver.hooks
     throw new Error('unexpected:'+id)
   })
-  return { driver, ctx, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
+  return { driver, ctx, rafQueue, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, MindmapCanvas: rt.internals.MindmapCanvas, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
 }
 
 // 驱动工作区的 effect，再重渲染一次读取最终画布；只调用 openTab 并不代表
@@ -2524,6 +2597,141 @@ test('032 copy-text button: writes the raw markdown source to the clipboard', as
     // 写入内容 = 文档状态里的 Markdown 原文（不从树结构反向序列化）。
     assert.equal(captured, '# A\n- x', 'clipboard receives the raw markdown source')
     assert.equal(scheduled.ms, 2000, 'success branch schedules the 2s label reset')
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+// —— 033 画布缩放/聚焦体验优化：交互层行为 ——
+
+test('033 canvas scroll style reserves a stable scrollbar gutter', () => {
+  // 样式对象直接断言：scrollbar-gutter: stable 让滚动条槽位常驻，
+  // clientWidth 不随滚动条出现/消失变化，从源头掐掉适配抖动循环。
+  assert.equal(S.canvasScroll.scrollbarGutter, 'stable')
+})
+
+test('033 MindmapCanvas focus click applies zoom instantly without rAF and caps the jump', () => {
+  // 主沙箱无 requestAnimationFrame（老宿主 webview 兜底路径）：点击聚焦的
+  // animateZoomTo 走瞬时分支——zoomRef 直写目标值。验证方式：两次点击同一
+  // 巨子树行，第二次点击的输入换算（rowRect.width / current）会用到第一次
+  // 落下的 zoomRef 值；同时验证 ÷2 跳变钳制与二次点击的渐进逼近。
+  const scroller = renderCanvasScroller()
+  assert.ok(scroller, 'canvas scroller present')
+  const fake = fakeScroller(0, 0)
+  fake.clientWidth = 800
+  fake.clientHeight = 600
+  fake.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 })
+  capturedRefs[0].current = fake
+  // 行自然尺寸 100000×750（巨子树）。第一次点击：当前 zoom=1，focusZoom 目标
+  // 夹下限 0.25；钳制后单次 ÷2 → 0.5。第二次点击：current=0.5，目标仍 0.25，
+  // 钳制 0.5÷2=0.25 → 落 0.25（渐进 drill，而非一步到底）。
+  const rowRect = { width: 100000, height: 750, left: 0, top: 0, right: 100000, bottom: 750 }
+  // onCanvasClick 的链条：target.closest(node) 返回的盒子还要再被 .closest(row)
+  // 找 rowEl——盒对象必须自带 closest（指向同一行）。
+  const boxEl = {
+    isConnected: true,
+    getAttribute: () => 'n1',
+    getBoundingClientRect: () => rowRect,
+    closest: (sel) => (String(sel).includes('data-mindmap-row') ? rowEl : null),
+  }
+  const rowEl = { getBoundingClientRect: () => rowRect }
+  const CLICK_TARGET = {
+    closest(sel) {
+      if (String(sel).includes('data-mindmap-node')) return boxEl;
+      return null;
+    },
+  }
+  scroller.props.onClick({ target: CLICK_TARGET, stopPropagation() {} })
+  scroller.props.onClick({ target: CLICK_TARGET, stopPropagation() {} })
+  // zoomRef 在 capturedRefs 里（其他 ref 初始值均非 0.25，无撞车）。
+  const zoomRefFound = capturedRefs.find((r) => r.current === 0.25)
+  assert.ok(zoomRefFound, 'zoomRef lands at 0.25 after two clicks (1 → 0.5 → 0.25, ÷2 per click)')
+})
+
+// —— 034 聚焦动画跳闪修复：首帧零跳变 + 锚位插值 + DOM 直写 + 结束同步 ——
+
+test('034 focus animation: no first-frame jump, interpolated anchor, DOM-direct zoom, final sync', () => {
+  const harness = loadClientWithEffectDriver()
+  const { driver, ctx, rafQueue, MindmapCanvas } = harness
+  const props = { node: parseMarkdownToTree('# A\n## B', 'doc'), theme: null, fitKey: '034.md', reveal: null }
+  // 视口 800×600；点击时节点中心在 (300, 400) → startAnchor = (0.375, 2/3)。
+  // rowRect 100000×750 → focusZoom 夹下限 0.25 → clampFocusJump(0.25, 1) = 0.5。
+  try {
+    driver.beginRender()
+    const canvas = MindmapCanvas(props)
+    driver.flushMount()
+    // 排空 mount 期的 rAF（fitKey effect 的 applyFit）：此刻 refs 尚未挂，
+    // contentRef 为 null → applyFit 无害早退（先排空再挂桩，防其 cancel 动画）。
+    for (const fn of rafQueue.splice(0)) if (fn) fn()
+    assert.equal(rafQueue.length, 0, 'mount rAF drained')
+    // 挂 fake DOM：scroller / content / 点击目标（盒子位置随滚动位移，模拟
+    // 真实 getBoundingClientRect 的视口语义——静态桩会让每帧校正重复累加）。
+    let scrollEl = null
+    let contentEl = null
+    const walk = (el) => {
+      if (!el || typeof el !== 'object' || (scrollEl && contentEl)) return
+      const p = el.props
+      if (p) {
+        if (!scrollEl && typeof p.onClick === 'function' && typeof p.onPointerDown === 'function' && p.ref && typeof p.ref === 'object') scrollEl = el
+        if (!contentEl && p.ref && typeof p.ref === 'object' && p.style && p.style.margin === 'auto') contentEl = el
+      }
+      const children = p && p.children
+      if (Array.isArray(children)) children.forEach(walk)
+      else walk(children)
+    }
+    walk(canvas)
+    assert.ok(scrollEl, 'scroller element found')
+    assert.ok(contentEl, 'content element found')
+    const fake = {
+      clientWidth: 800, clientHeight: 600, scrollLeft: 0, scrollTop: 0, style: {},
+      setPointerCapture() {}, releasePointerCapture() {}, querySelectorAll: () => [],
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 }),
+    }
+    const fakeContent = { style: {} }
+    scrollEl.props.ref.current = fake
+    contentEl.props.ref.current = fakeContent
+    const rowRect = { width: 100000, height: 750 }
+    const boxRect = () => ({ left: 250 - fake.scrollLeft, top: 380 - fake.scrollTop, right: 350 - fake.scrollLeft, bottom: 420 - fake.scrollTop, width: 100, height: 40 })
+    const rowEl = { getBoundingClientRect: () => rowRect }
+    const boxEl = { isConnected: true, getAttribute: () => 'n1', getBoundingClientRect: boxRect, closest: (sel) => (String(sel).includes('data-mindmap-row') ? rowEl : null) }
+    // 可控时钟：frame 的进度（t = (now-start)/250ms）由这里的 clock 决定。
+    let clock = 1000
+    const realDate = ctx.Date
+    ctx.Date = { now: () => clock }
+    const step = () => { for (const fn of rafQueue.splice(0)) if (fn) fn() }
+    try {
+      scrollEl.props.onClick({ target: { closest: (sel) => (String(sel).includes('data-mindmap-node') ? boxEl : null) }, stopPropagation() {} })
+      assert.equal(rafQueue.length, 1, 'one animation frame scheduled')
+      // 第一帧（t=0）：期望锚位 = 点击位置 → 零滚动跳变（034 根因一的回归测试）。
+      clock = 1000
+      step()
+      assert.equal(rafQueue.length, 1, 'next frame scheduled')
+      assert.ok(Math.abs(fake.scrollLeft) < 1e-6, `first frame: no horizontal jump (got ${fake.scrollLeft})`)
+      assert.ok(Math.abs(fake.scrollTop) < 1e-6, `first frame: no vertical jump (got ${fake.scrollTop})`)
+      // 中间帧（t=0.5，eased=0.75）：zoom 1→0.625（DOM 直写，非 React state）；
+      // 锚位 x = 0.375−0.125×0.75 = 0.28125 → scrollLeft 75（渐进，非全量跳变）。
+      clock = 1125
+      step()
+      assert.ok(Math.abs(fakeContent.style.zoom - 0.625) < 1e-9, `mid frame DOM zoom = 0.625 (got ${fakeContent.style.zoom})`)
+      assert.ok(Math.abs(fake.scrollLeft - 75) < 1e-6, `mid frame scrollLeft = 75 (got ${fake.scrollLeft})`)
+      assert.ok(Math.abs(fake.scrollTop - 75) < 1e-6, `mid frame scrollTop = 75 (got ${fake.scrollTop})`)
+      // 结束帧（t=1）：DOM 落 target 0.5，锚位到 25%/50% → scroll (100, 100)，
+      // 不再排帧；setZoomState 触发重渲染后百分比同步 50%，最后全量锚位终校 ≈ no-op。
+      clock = 1250
+      step()
+      assert.equal(rafQueue.length, 0, 'animation finished, no more frames')
+      assert.ok(Math.abs(fakeContent.style.zoom - 0.5) < 1e-9, `final DOM zoom = 0.5 (got ${fakeContent.style.zoom})`)
+      assert.ok(Math.abs(fake.scrollLeft - 100) < 1e-6, `final scrollLeft = 100 = node at 25% (got ${fake.scrollLeft})`)
+      driver.beginRender()
+      const rendered = MindmapCanvas(props)
+      driver.flushUpdate()
+      const texts = collectTexts(rendered)
+      assert.ok(texts.some((s) => String(s).includes('50%')), `zoom label synced to 50% (got ${JSON.stringify(texts.filter((t) => String(t).includes('%')))})`)
+      assert.ok(Math.abs(fake.scrollLeft - 100) < 1e-6, `final anchor correction is a no-op (got ${fake.scrollLeft})`)
+      assert.ok(Math.abs(fake.scrollTop - 100) < 1e-6, `final anchor correction is a no-op (got ${fake.scrollTop})`)
+    } finally {
+      ctx.Date = realDate
+    }
   } finally {
     harness.driver.unmount()
   }

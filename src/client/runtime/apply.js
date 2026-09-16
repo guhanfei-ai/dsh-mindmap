@@ -333,6 +333,9 @@
 			stepZoom,
 			fitZoom,
 			focusZoom,
+			// 033 点击聚焦跳变钳制 + 保视野拉回位移（供测试）。
+			clampFocusJump,
+			edgePullOffsets,
 			// 021 画布平移手势判定（供测试）。
 			PAN,
 			shouldStartPan,

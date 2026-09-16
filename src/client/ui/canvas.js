@@ -3,7 +3,15 @@
 				// 缩放契约：范围 [0.25, 3]，每级 ×1.2；适配计算四周留 48px 余量
 				//（16px 视觉内距 + 经典滚动条占位，避免「适配→滚动条出现→视口变
 				// 窄→再适配」的抖动循环）。
-				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1 };
+				// 033 focusJump：点击聚焦单次跳变上限（相对当前比例最多 ×2 / ÷2），
+				// 巨图点叶子不再一步怼到 100%，连点渐进 drill。narrowView：视口宽
+				// 低于该值（sidebar 最窄 280px）时改按高度适配——横向适配在窄面板
+				// 永远占主导会把子树压得过小，宽度溢出交给平移（横向本就一等公民）。
+				// animMs：033 平滑过渡时长上限（限长、可中断、熔断后退化瞬时）。
+				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250 };
+				// 034 聚焦锚位（视口比例）：树向右生长，节点压在左侧 1/4 处、
+				// 垂直居中，右侧 3/4 视野铺开子级。动画从点击位置插值到此锚位。
+				const FOCUS_ANCHOR = { x: 0.25, y: 0.5 };
 
 				/** 缩放夹取：非有限值/≤0 回退 1，否则夹到 [min, max]。 */
 				function clampZoom(value) {
@@ -20,16 +28,57 @@
 				/** 适配比例：min((view-padding)/tree, 1) 再夹取——小图不放大、巨图夹下限；零/非法尺寸返回 1。 */
 				function fitZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
+					// 033 窄视口（sidebar）：按高度适配，宽度溢出靠平移。
+					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, 1));
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, 1));
 				}
 
 				/**
 				 * 子树聚焦比例：适配整棵子树（区别于全局适配，允许放大到 focusMax），
 				 * 叶子/小子树不会怼脸、巨子树夹下限；零/非法尺寸返回 1。
+				 * 033 窄视口同 fitZoom：按高度适配（子树行通常宽而扁，窄面板里
+				 * 横向适配会把整行压到不可读）。
 				 */
 				function focusZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
+					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
+				}
+
+				/**
+				 * 033 点击聚焦跳变钳制：目标比例相对当前值单次最多变化 focusJump 倍
+				 *（放大 ×2 / 缩小 ÷2），超出则截到边界。放置在调用点而非 focusZoom
+				 * 内——focusZoom 保持「无状态适配计算」语义（测试直测），跳变限制
+				 * 需要知道当前值，属交互层策略。连续点击逐步逼近，方向不变。
+				 */
+				function clampFocusJump(target, current) {
+					const value = clampZoom(target);
+					const base = clampZoom(current);
+					return Math.min(base * ZOOM.focusJump, Math.max(base / ZOOM.focusJump, value));
+				}
+
+				/** 033 项3：按结构 id 找当前树里的节点盒（遍历比对属性值，不做选择器
+				 *  拼接——结构 id 虽是数字路径，这里不依赖该假设）。找不到返回 null。 */
+				function findBoxByNodeId(scroller, id) {
+					if (!scroller || typeof scroller.querySelectorAll !== "function") return null;
+					const boxes = scroller.querySelectorAll("[data-mindmap-node-id]");
+					for (const el of boxes) {
+						if (el.getAttribute("data-mindmap-node-id") === id) return el;
+					}
+					return null;
+				}
+
+				/** 033 项3：把完全离开视口的盒子拉回最近边的最小滚动位移（视口坐标
+				 *  系，正 = 向右/下滚）。部分可见或在内返回 0——不打扰用户视角。
+				 *  margin = 拉回后与视口边保留的呼吸余量。 */
+				function edgePullOffsets(box, view, margin) {
+					let dx = 0;
+					let dy = 0;
+					if (box.right < view.left) dx = box.left - (view.left + margin);
+					else if (box.left > view.right) dx = box.right - (view.right - margin);
+					if (box.bottom < view.top) dy = box.top - (view.top + margin);
+					else if (box.top > view.bottom) dy = box.bottom - (view.bottom - margin);
+					return { x: dx, y: dy };
 				}
 
 				//#region 021 画布平移：拖拽手势（中键 / 空白处左键 / 空格+左键）
@@ -129,7 +178,7 @@
 						// 016 熔断器：观察器触发的适配时间戳。1.5s 内第 5 次 → 判定
 						// 反馈循环，自动停手（保险丝，任何未知循环都最多闪几下）。
 						const fitStampRef = react.useRef([]);
-							const [zoom, setZoomState] = react.useState(1);
+						const [zoom, setZoomState] = react.useState(1);
 							const [hover, setHover] = react.useState(null);
 							// 017 节点右键菜单：{x, y, node}；null = 关闭。busy = "copy" |
 							// "export" 表示对应动作进行中（两项都禁用），error 展示失败原因。
@@ -173,6 +222,94 @@
 						// 021 指针是否悬在画布上（空格键要不要拦默认行为的门控；纯
 						// 读取，不参与渲染）。
 						const hoverRef = react.useRef(false);
+						// 033 平滑过渡：在飞的 zoom 动画句柄 { id, from, to, start }；
+						// animDisabled = 熔断器触发过（本轮 fitKey 内动画退化为瞬时，
+						// 切文档/点适配时复位）。
+						// 034 动画期间绕过 React（根因二：每帧 setZoomState 整树重渲染，
+						// 大图掉帧）：每帧直写内容层 style.zoom + 滚动校正，不进 state；
+						// 结束帧一次性 setZoomState(target) 同步 UI（百分比/边界按钮/
+						// committedZoomRef）。测量基准不受影响——动画只在点击后飞，
+						// 此时 userZoomedRef 已置位，ResizeObserver 不会再调 applyFit。
+						const zoomAnimRef = react.useRef(null);
+						const animDisabledRef = react.useRef(false);
+
+						// 034 仅停帧：取消 rAF + 同步 committed/state，保留 focusRef
+						//（animateZoomTo 替换旧动画时用——调用方随后会覆盖 focusRef，
+						// 不能让它把新聚焦也清掉）。中断时 DOM 已被直写到中间值——
+						// 立即把 committedZoomRef 对齐该值（applyFit 的自然尺寸测量基准
+						// 必须等于 DOM 实际 zoom），并用 setZoomState 把 React state
+						// 兜底同步（防后续 re-render 把 style.zoom 打回动画前的旧值）。
+						function stopZoomAnimFrames() {
+							const anim = zoomAnimRef.current;
+							if (!anim) return;
+							zoomAnimRef.current = null;
+							if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(anim.id);
+							committedZoomRef.current = zoomRef.current;
+							setZoomState(zoomRef.current);
+						}
+
+						// 033 截停在飞动画（任何新交互都先调）：停帧 + 顺手清掉
+						// focusRef（否则下一次 zoom 提交会被过期聚焦劫持定位）。
+						function cancelZoomAnim() {
+							if (!zoomAnimRef.current) return;
+							stopZoomAnimFrames();
+							focusRef.current = null;
+						}
+
+						// 034 期望锚位插值：点击位置 → FOCUS_ANCHOR，与 zoom 同一
+						// eased 进度——第一帧期望位置 = 点击时位置（零瞬移，根因一），
+						// 节点被「牵着」滑向锚位。
+						function lerpFocusAnchor(start, k) {
+							return {
+								x: start.x + (FOCUS_ANCHOR.x - start.x) * k,
+								y: start.y + (FOCUS_ANCHOR.y - start.y) * k,
+							};
+						}
+
+						// 033/034 平滑 zoom：from → to，限长 animMs、easeOutQuad，并行
+						// 上限 1（新动画先截停旧动画）。每帧：直写 style.zoom、同步
+						// zoomRef、按插值锚位滚动校正（applyFocusAnchor）；结束帧精确落
+						// 在 to 并 setZoomState 触发最后一次 [zoom] effect（positionFocus
+						// 消费 focusRef、全量锚位终校——此刻 ≈ no-op）。禁用/无 rAF 环
+						// 境瞬时应用，行为与 033 之前完全一致。
+						function animateZoomTo(to) {
+							stopZoomAnimFrames();
+							const target = clampZoom(to);
+							const from = zoomRef.current;
+							if (from === target) return;
+							const scroller = scrollRef.current;
+							const content = contentRef.current;
+							const canAnimate = animDisabledRef.current !== true
+								&& scroller
+								&& content
+								&& typeof requestAnimationFrame === "function";
+							if (!canAnimate) {
+								zoomRef.current = target;
+								setZoomState(target);
+								return;
+							}
+							const anim = { id: 0, from, to: target, start: Date.now() };
+							zoomAnimRef.current = anim;
+							const frame = () => {
+								if (zoomAnimRef.current !== anim) return; // 已被截停/替换
+								const t = Math.min(1, (Date.now() - anim.start) / ZOOM.animMs);
+								const eased = 1 - (1 - t) * (1 - t);
+								const value = t >= 1 ? target : from + (target - from) * eased;
+								zoomRef.current = value;
+								content.style.zoom = value; // 034：直写 DOM，绕过 React
+								const focus = focusRef.current;
+								if (focus && focus.boxEl && focus.boxEl.isConnected) {
+									applyFocusAnchor(focus.boxEl, lerpFocusAnchor(focus.startAnchor, eased));
+								}
+								if (t >= 1) {
+									zoomAnimRef.current = null;
+									setZoomState(target);
+									return;
+								}
+								anim.id = requestAnimationFrame(frame);
+							};
+							anim.id = requestAnimationFrame(frame);
+						}
 
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
@@ -181,6 +318,9 @@
 								const scroller = scrollRef.current;
 								const content = contentRef.current;
 								if (!scroller || !content) return;
+								// 033：适配前截停在飞动画（观察器/适配按钮不能被旧动画
+								// 的后续帧反向覆盖）。
+								cancelZoomAnim();
 								resetPanOffset();
 								const rect = content.getBoundingClientRect();
 								if (!(rect.width > 0) || !(rect.height > 0)) return;
@@ -200,14 +340,21 @@
 							}
 
 							// 挂载 / 文档切换：清除「用户已手动缩放」标记与熔断计数，
-							// 布局稳定后（rAF）适配一次。
+							// 布局稳定后（rAF）适配一次。033：同时复位动画禁用位与
+							// 选中态（新文档不该继承旧文档的选中环——结构 id 跨文档
+							// 可能撞名，会让保视野逻辑锚错节点）；清理时截停在飞动画。
 							react.useLayoutEffect(() => {
 								userZoomedRef.current = false;
 								lastNaturalRef.current = null;
 								fitStampRef.current = [];
+								animDisabledRef.current = false;
+								setSelectedId(null);
 								setCollapsed((prev) => (prev.size > 0 ? new Set() : prev));
 								const id = requestAnimationFrame(applyFit);
-								return () => cancelAnimationFrame(id);
+								return () => {
+									cancelAnimationFrame(id);
+									cancelZoomAnim();
+								};
 							}, [fitKey]);
 
 							// 内容 / 画布尺寸变化（AI 编辑、面板拖宽）→ 未手动缩放则再适配。
@@ -236,6 +383,9 @@
 									const stamps = fitStampRef.current = fitStampRef.current.filter((t) => now - t < 1500);
 									if (stamps.length >= 5) {
 										userZoomedRef.current = true;
+										// 033：熔断判定成立 → 本轮 fitKey 内动画也停用（反馈
+										// 循环环境里再引入中间态提交只会火上浇油）。
+										animDisabledRef.current = true;
 										return;
 									}
 									stamps.push(now);
@@ -299,6 +449,9 @@
 					// 否则上轮手势留下的 true 会粘到下一次点击上——例：拖完画布后再
 					// 触摸点按（touch 路径不启动平移就早退了），那次点击会被白吞一次。
 					suppressClickRef.current = false;
+					// 033：平移起手即截停缩放动画——聚焦动画每帧把节点钉回锚位，
+					// 会和用户拖拽的方向对着干。
+					cancelZoomAnim();
 					const scroller = scrollRef.current;
 					if (!scroller || panRef.current) return;
 					const target = e.target;
@@ -387,7 +540,11 @@
 					// DOM 已提交到该 zoom，测量换算基准同步（applyFit 依赖）。
 					committedZoomRef.current = zoom;
 					if (focusRef.current) {
-						positionFocus();
+						// 034：动画在飞时既不定位也不消费——帧回调自己管锚位插值；
+						// 动画中再点击时，cancel 的 setZoomState 也会路过这里，
+						// 提前消费/全量锚位都会造成闪跳。瞬时聚焦与动画结束帧
+						//（anim 先清再 setState）才做全量终校（结束时 ≈ no-op）。
+						if (!zoomAnimRef.current) positionFocus();
 						return;
 					}
 					const scroller = scrollRef.current;
@@ -402,11 +559,13 @@
 
 				function zoomIn() {
 					userZoomedRef.current = true;
+					cancelZoomAnim();
 					setZoom(stepZoom(zoomRef.current, 1), true);
 				}
 
 				function zoomOut() {
 					userZoomedRef.current = true;
+					cancelZoomAnim();
 					setZoom(stepZoom(zoomRef.current, -1), true);
 				}
 
@@ -420,6 +579,8 @@
 				// 左侧锚点让子级铺满右侧视野），缩放比例取 focusZoom（整棵子树适配、
 				// 上限 focusMax）。事件委托：closest 找节点盒与所在子树 row，无需给
 				// 递归 TreeRow 传回调。聚焦视为用户手动缩放（停自动再适配）。
+				// 033：目标比例经 clampFocusJump 单次最多 ×2/÷2（巨图点叶子不再一步
+				// 怼到 100%，连点渐进 drill）；zoom 变化经 animateZoomTo 平滑过渡。
 				function onCanvasClick(e) {
 					// 021：刚拖过画布（平移）的这次 click 不是点击，直接吞掉——
 					// 否则每次平移松手都会顺手把选中环清掉。
@@ -443,32 +604,60 @@
 					if (!scroller) return;
 					const current = zoomRef.current;
 					const rowRect = rowEl.getBoundingClientRect();
-					const focus = focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight);
+					// 033 跳变钳制：相对当前比例单次最多 ×2 / ÷2。
+					const focus = clampFocusJump(
+						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
+						current,
+					);
+					// 034：记录点击时节点中心的视口比例位置——动画锚位插值起点
+					//（第一帧期望位置 = 点击时位置，消除首帧滚动瞬移）。
+					const boxRect = boxEl.getBoundingClientRect();
+					const scrollerRect = scroller.getBoundingClientRect();
+					const startAnchor = {
+						x: (boxRect.left + boxRect.width / 2 - scrollerRect.left) / scroller.clientWidth,
+						y: (boxRect.top + boxRect.height / 2 - scrollerRect.top) / scroller.clientHeight,
+					};
 					userZoomedRef.current = true;
-					focusRef.current = { boxEl };
 					if (focus !== current) {
 						anchorRef.current = null;
-						zoomRef.current = focus;
-						setZoomState(focus);
+						// 034：先完整截停旧动画（清过期 focusRef + 同步中间值），
+						// 再登记本次聚焦——顺序不能反（cancel 会清 focusRef）。
+						cancelZoomAnim();
+						focusRef.current = { boxEl, startAnchor };
+						animateZoomTo(focus);
 					} else {
+						cancelZoomAnim();
+						focusRef.current = { boxEl, startAnchor };
 						positionFocus();
 					}
 				}
 
-				// 聚焦定位：DOM 更新后量节点盒当前位置，滚动增量 = 当前位置 − 期望位置
-				//（scroll 增量与视口位移 1:1，浏览器自动钳制滚动范围；比例不变时同步调用）。
-				function positionFocus() {
-					const focus = focusRef.current;
-					focusRef.current = null;
+				// 034 锚位应用：把节点盒中心滚到指定视口比例锚位（滚动增量与视口
+				// 位移 1:1，浏览器自动钳制滚动范围）。positionFocus（固定锚位）与
+				// 聚焦动画帧（插值锚位）共用。
+				function applyFocusAnchor(boxEl, anchor) {
 					const scroller = scrollRef.current;
-					if (!scroller || !focus || !focus.boxEl || !focus.boxEl.isConnected) return;
+					if (!scroller || !boxEl || !boxEl.isConnected) return;
 					resetPanOffset();
-					const boxRect = focus.boxEl.getBoundingClientRect();
+					const boxRect = boxEl.getBoundingClientRect();
 					const scrollerRect = scroller.getBoundingClientRect();
 					const curX = boxRect.left + boxRect.width / 2 - scrollerRect.left;
 					const curY = boxRect.top + boxRect.height / 2 - scrollerRect.top;
-					scroller.scrollLeft += curX - scroller.clientWidth * 0.25;
-					scroller.scrollTop += curY - scroller.clientHeight / 2;
+					scroller.scrollLeft += curX - scroller.clientWidth * anchor.x;
+					scroller.scrollTop += curY - scroller.clientHeight * anchor.y;
+				}
+
+				// 聚焦定位：DOM 更新后把节点盒滚到 FOCUS_ANCHOR（全量校正）。
+				// 034：consume = false 时保留 focusRef——瞬时聚焦路径不再逐帧，仅
+				// 动画结束帧（zoomAnimRef 已清空）与同步调用消费。
+				function positionFocus(consume = true) {
+					const focus = focusRef.current;
+					if (!focus || !focus.boxEl || !focus.boxEl.isConnected) {
+						focusRef.current = null;
+						return;
+					}
+					if (consume) focusRef.current = null;
+					applyFocusAnchor(focus.boxEl, FOCUS_ANCHOR);
 				}
 
 				// 017 右键菜单开合：点其它地方/失焦/改窗口即关闭（目录树菜单同款）；
@@ -499,6 +688,29 @@
 					setCodePanel(null);
 					// 025：树重解析后丢弃已消失节点的折叠标记（无变化时保持原引用）。
 					setCollapsed((prev) => pruneCollapsed(prev, node));
+					// 033 项3：AI 编辑后保住选中节点在视野内。仅在用户已定视角
+					//（userZoomedRef，自动再适配已停）且选中节点**完全**离开视口时，
+					// 以最小滚动量把它带回最近的边（部分可见不打扰）。只动 scroll：
+					// 不改缩放、不碰 userZoomedRef/熔断器（滚动不触发 ResizeObserver
+					// 的内容尺寸变化），「面板跟随 AI 实时变化」与「视角归用户」两个
+					// 承诺同时成立。id 失效（节点被删/重写）→ 查不到盒，自然跳过。
+					if (userZoomedRef.current && selectedId) {
+						const scroller = scrollRef.current;
+						const boxEl = scroller && typeof scroller.querySelectorAll === "function"
+							? findBoxByNodeId(scroller, selectedId)
+							: null;
+						if (boxEl && typeof boxEl.getBoundingClientRect === "function") {
+							const box = boxEl.getBoundingClientRect();
+							const view = scroller.getBoundingClientRect();
+							const MARGIN = 24;
+							const pull = edgePullOffsets(box, view, MARGIN);
+							if (pull.x !== 0 || pull.y !== 0) {
+								resetPanOffset();
+								scroller.scrollLeft += pull.x;
+								scroller.scrollTop += pull.y;
+							}
+						}
+					}
 				}, [node]);
 
 				function toggleCollapse(id) {
@@ -568,7 +780,12 @@
 						},
 						children: 
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
-							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
+							// 034：动画期间 zoom 走 DOM 直写（style.zoom），React state
+							// 停在动画前的旧值——动画中任何 re-render（AI 改树、hover）
+							// 若按 state 渲染会把 DOM 打回旧值造成跳变。渲染值在动画
+							// 在飞时改读 zoomRef（恒等于 DOM 当前值），style diff 后
+							// 不覆盖；动画结束 state 已同步，两种取值一致。
+							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom: zoomAnimRef.current ? zoomRef.current : zoom }, children:
 								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse })
 							})
 						})
