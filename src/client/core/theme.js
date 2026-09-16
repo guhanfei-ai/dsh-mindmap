@@ -25,6 +25,9 @@
 			"color.accent.code": { default: "#3b5bdb", fallback: "color.accent.root" },
 			"color.accent.quote": { default: "#5c7cfa", fallback: "color.accent.heading.medium" },
 			"color.state.selected": { default: "var(--dsw-alias-state-business-primary)" },
+			// 035 搜索命中：普通命中用品牌色浅色调（tertiary）描边，活动命中共用
+			// 选中环主色（primary）——同色系靠层数/宽度分强度，主题换肤自动跟随。
+			"color.state.match": { default: "var(--dsw-alias-state-business-tertiary)" },
 			"color.state.hovered": { default: "var(--dsw-alias-interactive-bg-hover)" },
 			"connector.color": { default: "var(--dsw-alias-border-l2)", fallback: "color.border.default" },
 			"connector.width": { default: 1.5 },
@@ -146,6 +149,19 @@
 			// §6 状态叠加：hovered 抬升阴影；selected 强调环优先（两者并存时环在外）。
 			if (states.hovered && kind !== "placeholder") {
 				style.boxShadow = resolveToken("effect.shadow.hovered", overrides);
+			}
+			// 035 搜索命中态：普通命中 = 浅色调 2px 描边环；活动命中 = 主色描边 +
+			// 3px 外扩阴影（双层强调）。outline 不占布局，相邻盒间隙（8px）内放得下。
+			// 置于 selected 之前——选中环仍是最高优先级，两者并存时各自可见。
+			if (states.matched && !states.matchActive) {
+				style.outline = `2px solid ${resolveToken("color.state.match", overrides)}`;
+				style.outlineOffset = 1;
+			}
+			if (states.matchActive) {
+				const ring = resolveToken("color.state.selected", overrides);
+				style.outline = `2px solid ${ring}`;
+				style.outlineOffset = 2;
+				style.boxShadow = `0 0 0 3px ${ring}${style.boxShadow && style.boxShadow !== "none" ? `, ${style.boxShadow}` : ""}`;
 			}
 			if (states.selected) {
 				const ring = resolveToken("color.state.selected", overrides);

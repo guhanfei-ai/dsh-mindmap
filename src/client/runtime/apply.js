@@ -314,6 +314,11 @@
 			countDescendants,
 			pruneCollapsed,
 			TreeRow,
+			// 035 节点搜索：命中计算 / 下标步进（环绕）/ 命中保持 / 祖先展开（供测试）。
+			searchTreeMatches,
+			stepMatchIndex,
+			reconcileActiveMatch,
+			expandAncestorsFor,
 			// 019 皮肤层与血肉层纯函数（供测试）。
 			resolveToken,
 			resolveNodeStyle,

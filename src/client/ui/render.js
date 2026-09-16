@@ -115,8 +115,8 @@
 		//#endregion
 
 		function NodeBox(props) {
-			const { node, theme, revealDelay, selectedId, onCodePanel } = props;
-			const [hovered, setHovered] = react.useState(false);
+			const { node, theme, revealDelay, selectedId, onCodePanel, matchIds, activeMatchId } = props;
+				const [hovered, setHovered] = react.useState(false);
 			const boxRef = react.useRef(null);
 			// 020 长度治理：散文类块（text/md/list/quote）套 6 行截断；clamped = 实测
 			// 真的溢出了（scrollHeight>clientHeight），悬停浮层看全文（复用代码浮层）。
@@ -138,7 +138,13 @@
 				...resolveNodeStyle(node, {
 					colorTheme: theme && theme.colorTheme,
 					cardStyle: theme && theme.cardStyle,
-					states: { hovered, selected: selectedId === node.id },
+					states: {
+						hovered,
+						selected: selectedId === node.id,
+						// 035 搜索命中：普通命中轻描边，活动命中的命中节点双层强调环。
+						matched: Boolean(matchIds && matchIds.has(node.id)),
+						matchActive: activeMatchId === node.id,
+					},
 				}),
 			};
 			// 020 表格块不参与散文 320px 宽上限：完整网格需要更宽书写面，
@@ -179,7 +185,7 @@
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse } = props;
+			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse, matchIds, activeMatchId } = props;
 			// 025 折叠：纯视图态——markdown 资产不变，导出仍取完整子树。
 			const hasChildren = Boolean(node.children && node.children.length > 0);
 			const isCollapsed = hasChildren && Boolean(collapsed && collapsed.has(node.id));
@@ -296,7 +302,7 @@
 						e.stopPropagation();
 						onNodeContextMenu(e, node);
 					} : undefined,
-					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel }),
+					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel, matchIds, activeMatchId }),
 				}),
 				// 025 折叠开关：坐在盒与子列之间的连线起点上（有子节点才出现）。
 				// stopPropagation 保证点它不触发画布的「点节点聚焦 / 点空白取消选中」。
@@ -321,7 +327,7 @@
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse, matchIds, activeMatchId }),
 					}, child.id)) })
 					: null,
 				] });

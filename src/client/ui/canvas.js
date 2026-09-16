@@ -191,6 +191,24 @@
 							// 025 折叠子树：纯视图态（不写回 markdown，导出仍取完整子树）。
 							// 切换文档时全部展开；AI 改写后清掉已消失节点的折叠标记。
 							const [collapsed, setCollapsed] = react.useState(() => new Set());
+							// 035 节点搜索：开箱态 / 查询词 / 当前命中下标 / 待定位 id。
+							// 命中列表由 useMemo 按 [node, searchQuery] 现算——O(n) 子串
+							// 匹配（上千节点也是微秒级），不重 parse、不重建 DOM。
+							const [searchOpen, setSearchOpen] = react.useState(false);
+							const [searchQuery, setSearchQuery] = react.useState("");
+							const [searchIndex, setSearchIndex] = react.useState(-1);
+							const [searchReveal, setSearchReveal] = react.useState(null);
+							const searchInputRef = react.useRef(null);
+							// 当前命中的稳定结构 id：AI 改写树后按它找回原命中节点。
+							const searchActiveIdRef = react.useRef(null);
+							const searchMatches = react.useMemo(() => searchTreeMatches(node, searchQuery), [node, searchQuery]);
+							const searchMatchIds = searchMatches.length > 0 ? new Set(searchMatches) : null;
+							// 渲染期先钳一次：AI 改写后命中列表变短，[node] 协调 effect
+							// 生效前的那一帧若沿用旧下标会显示「4 / 3」这类越界计数。
+							const searchIndexSafe = searchMatches.length > 0
+								? (searchIndex >= 0 && searchIndex < searchMatches.length ? searchIndex : 0)
+								: -1;
+							const searchActiveId = searchIndexSafe >= 0 ? searchMatches[searchIndexSafe] : null;
 							// 019 代码块悬停浮层：{node, anchor}；null = 关闭。延迟关闭（150ms
 							// 宽限）让鼠标能从节点盒移到面板上滚动全文，不闪灭。
 							const [codePanel, setCodePanel] = react.useState(null);
@@ -350,6 +368,12 @@
 								animDisabledRef.current = false;
 								setSelectedId(null);
 								setCollapsed((prev) => (prev.size > 0 ? new Set() : prev));
+								// 035：切文档重置搜索——上一张图的 query/命中不污染新图。
+								setSearchOpen(false);
+								setSearchQuery("");
+								setSearchIndex(-1);
+								setSearchReveal(null);
+								searchActiveIdRef.current = null;
 								const id = requestAnimationFrame(applyFit);
 								return () => {
 									cancelAnimationFrame(id);
@@ -660,6 +684,117 @@
 					applyFocusAnchor(focus.boxEl, FOCUS_ANCHOR);
 				}
 
+				//#region 035 节点搜索：输入即搜 + 匹配间跳转 + 自动展开祖先 + 滚动定位
+				// 打开搜索（Cmd/Ctrl+F 或缩放条 🔍）。关闭 = 清 query/命中/高亮；
+				// 为定位展开的祖先保持展开——用户下一步多半还要看上下文。
+				function openSearch() {
+					setSearchOpen(true);
+				}
+				function closeSearch() {
+					setSearchOpen(false);
+					setSearchQuery("");
+					setSearchIndex(-1);
+					searchActiveIdRef.current = null;
+				}
+
+				// 输入即搜：每次按键 O(n) 现算命中并跳到第一个（VS Code find 同款手感）。
+				// 直接调纯函数拿新查询的结果（本渲染的 memo 还是旧 query 的）。
+				function onQueryChange(e) {
+					const query = e && e.target ? e.target.value : "";
+					const matches = searchTreeMatches(node, query);
+					setSearchQuery(query);
+					if (matches.length > 0) {
+						setSearchIndex(0);
+						searchActiveIdRef.current = matches[0];
+						revealSearchMatch(matches[0]);
+					} else {
+						setSearchIndex(-1);
+						searchActiveIdRef.current = null;
+					}
+				}
+
+				// 上一个/下一个：双向环绕（末尾→开头、开头→末尾）。
+				function stepSearch(delta) {
+					if (searchMatches.length === 0) return;
+					const next = stepMatchIndex(searchIndex, searchMatches.length, delta);
+					setSearchIndex(next);
+					searchActiveIdRef.current = searchMatches[next];
+					revealSearchMatch(searchMatches[next]);
+				}
+
+				// 定位一个命中：先展开它的祖先路径（折叠分支里的结果也真正可见），
+				// 再登记待定位 id——[searchReveal] layout effect 在 DOM 提交后按结构
+				// id 找盒、滚到聚焦锚位。不动 zoom（保留用户当前缩放，只改必要滚动）。
+				function revealSearchMatch(id) {
+					setCollapsed((prev) => expandAncestorsFor(prev, node, id));
+					setSearchReveal(id);
+				}
+
+				// 搜索定位提交后的滚动：与展开祖先同批 setState，此 effect 运行时
+				// 展开的子树已挂载。搜索定位 = 显式视角意图：与点击聚焦一样停自动
+				// 再适配，并截停在飞聚焦动画（其帧回调会把节点钉回旧锚位对着干）。
+				react.useLayoutEffect(() => {
+					if (!searchReveal) return;
+					const scroller = scrollRef.current;
+					const boxEl = scroller ? findBoxByNodeId(scroller, searchReveal) : null;
+					if (boxEl) {
+						userZoomedRef.current = true;
+						cancelZoomAnim();
+						applyFocusAnchor(boxEl, FOCUS_ANCHOR);
+					}
+					setSearchReveal(null);
+				}, [searchReveal]);
+
+				// 开箱聚焦输入框（全选既有词——当前实现关闭即清空，习惯上仍全选）。
+				react.useLayoutEffect(() => {
+					if (!searchOpen) return;
+					const input = searchInputRef.current;
+					if (!input || typeof input.focus !== "function") return;
+					input.focus();
+					if (typeof input.select === "function") input.select();
+				}, [searchOpen]);
+
+				// AI 更新后重算命中：保留 query；优先按稳定 id 找回原命中节点，
+				// 找不到回落最近有效下标/第一个；无命中显示 0。只调下标不滚动——
+				// AI 每次编辑都拽走视口会与「视角归用户」冲突，滚动只由导航触发。
+				react.useEffect(() => {
+					if (searchQuery === "") return;
+					const next = reconcileActiveMatch(searchActiveIdRef.current, searchIndex, searchMatches);
+					if (next !== searchIndex) setSearchIndex(next);
+					if (next >= 0) searchActiveIdRef.current = searchMatches[next];
+				}, [node]);
+
+				// Cmd/Ctrl+F 打开搜索。拦截范围 = 画布挂载（脑图 tab 可见且激活；
+				// 面板收起/切目录树即卸载，无僵尸监听）且目标不是别人的文本输入
+				//（聊天框里的 Cmd+F 留给宿主）；已有人处理过（defaultPrevented）不抢。
+				react.useEffect(() => {
+					const onKeyDown = (e) => {
+						if (e.defaultPrevented || e.altKey) return;
+						if (!(e.metaKey || e.ctrlKey)) return;
+						if (!e.key || e.key.toLowerCase() !== "f") return;
+						if (isTextEntry(e.target) && e.target !== searchInputRef.current) return;
+						e.preventDefault();
+						setSearchOpen(true);
+					};
+					window.addEventListener("keydown", onKeyDown);
+					return () => window.removeEventListener("keydown", onKeyDown);
+				}, []);
+
+				// Escape 关闭搜索：仅搜索打开期间注册（closeSearch 只调常参 setter，
+				// 闭包过期无害）；目标在他人输入框时不抢 Escape。
+				react.useEffect(() => {
+					if (!searchOpen) return;
+					const onKeyDown = (e) => {
+						if (e.key !== "Escape" || e.defaultPrevented) return;
+						if (isTextEntry(e.target) && e.target !== searchInputRef.current) return;
+						e.preventDefault();
+						closeSearch();
+					};
+					window.addEventListener("keydown", onKeyDown);
+					return () => window.removeEventListener("keydown", onKeyDown);
+				}, [searchOpen]);
+				//#endregion
+
 				// 017 右键菜单开合：点其它地方/失焦/改窗口即关闭（目录树菜单同款）；
 				// 点菜单内部（复制/导出按钮）不关——菜单里要展示「复制中…」与失败
 				// 原因。节点右键经 stopPropagation 不会触发这里的 contextmenu 关闭，
@@ -786,11 +921,38 @@
 							// 在飞时改读 zoomRef（恒等于 DOM 当前值），style diff 后
 							// 不覆盖；动画结束 state 已同步，两种取值一致。
 							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom: zoomAnimRef.current ? zoomRef.current : zoom }, children:
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse })
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse, matchIds: searchMatchIds, activeMatchId: searchActiveId })
 							})
 						})
 					}),
 					(0, react_jsx_runtime.jsxs)("div", { style: S.zoomBar, children: [
+						// 035 搜索入口：缩放条内一个轻量 🔍（线框图标与 M 按钮同风格），
+						// 两模式（BS Tab / 独立面板）共用画布，一处实现双模式生效。
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "搜索节点（⌘/Ctrl+F）",
+							"aria-label": "搜索节点",
+							"aria-expanded": searchOpen ? "true" : "false",
+							style: zoomBtnStyle("search", false),
+							onClick: () => (searchOpen ? closeSearch() : openSearch()),
+							onMouseEnter: () => setHover("search"),
+							onMouseLeave: () => setHover((h) => (h === "search" ? null : h)),
+							children: (0, react_jsx_runtime.jsx)("svg", {
+								width: 13,
+								height: 13,
+								viewBox: "0 0 14 14",
+								fill: "none",
+								stroke: "currentColor",
+								strokeWidth: 1.4,
+								strokeLinecap: "round",
+								"aria-hidden": "true",
+								style: { display: "block" },
+								children: [
+									(0, react_jsx_runtime.jsx)("circle", { cx: 6, cy: 6, r: 4 }),
+									(0, react_jsx_runtime.jsx)("path", { d: "M9.2 9.2 L12.5 12.5" }),
+								],
+							}),
+						}),
 						(0, react_jsx_runtime.jsx)("button", {
 							type: "button",
 							title: "缩小",
@@ -822,6 +984,68 @@
 							children: "适配",
 						}),
 					] }),
+					// 035 节点搜索条：缩放条正下方的紧凑浮层（同款容器/主题变量）。
+					// 输入即搜；Enter/↓ 下一个、Shift+Enter/↑ 上一个（双向环绕）；
+					// 无命中显示「未找到」。纯视图态——不碰 markdown/revision。
+					searchOpen ? (0, react_jsx_runtime.jsxs)("div", { style: S.searchBar, children: [
+						(0, react_jsx_runtime.jsx)("input", {
+							ref: searchInputRef,
+							type: "text",
+							value: searchQuery,
+							placeholder: "搜索节点…",
+							"aria-label": "搜索当前脑图的节点文字",
+							title: "搜索当前脑图的节点文字（Enter 下一个，Shift+Enter 上一个，Esc 关闭）",
+							style: S.searchInput,
+							onChange: onQueryChange,
+							onKeyDown: (e) => {
+								if (e.key === "Enter") {
+									e.preventDefault();
+									stepSearch(e.shiftKey ? -1 : 1);
+								} else if (e.key === "ArrowDown") {
+									e.preventDefault();
+									stepSearch(1);
+								} else if (e.key === "ArrowUp") {
+									e.preventDefault();
+									stepSearch(-1);
+								}
+							},
+						}),
+						(0, react_jsx_runtime.jsx)("span", { style: S.searchCount, "aria-live": "polite", children: searchMatches.length === 0
+							? (searchQuery.trim() ? "未找到" : "0 / 0")
+								: `${searchIndexSafe >= 0 ? searchIndexSafe + 1 : 0} / ${searchMatches.length}` }),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "上一个匹配（Shift+Enter）",
+							"aria-label": "上一个匹配",
+							style: zoomBtnStyle("sprev", searchMatches.length === 0),
+							disabled: searchMatches.length === 0,
+							onClick: () => stepSearch(-1),
+							onMouseEnter: () => setHover("sprev"),
+							onMouseLeave: () => setHover((h) => (h === "sprev" ? null : h)),
+							children: "↑",
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "下一个匹配（Enter）",
+							"aria-label": "下一个匹配",
+							style: zoomBtnStyle("snext", searchMatches.length === 0),
+							disabled: searchMatches.length === 0,
+							onClick: () => stepSearch(1),
+							onMouseEnter: () => setHover("snext"),
+							onMouseLeave: () => setHover((h) => (h === "snext" ? null : h)),
+							children: "↓",
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "关闭搜索（Esc）",
+							"aria-label": "关闭搜索",
+							style: zoomBtnStyle("sclose", false),
+							onClick: closeSearch,
+							onMouseEnter: () => setHover("sclose"),
+							onMouseLeave: () => setHover((h) => (h === "sclose" ? null : h)),
+							children: "✕",
+						}),
+					] }) : null,
 					// 017 节点右键菜单：标题行（节点主题）+ 复制全文/复制为图片/导出为
 					// 图片三动作 + 错误行。复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
 					nodeMenu ? (0, react_jsx_runtime.jsxs)("div", {

@@ -109,4 +109,77 @@
 		}
 		//#endregion
 
+		//#region 035 节点搜索：命中计算 / 下标步进 / 命中保持 / 祖先展开（纯函数，经 internals 供测试）
+		/**
+		 * 在当前树里搜节点可见文字（topic）：大小写不敏感子串匹配，先序遍历
+		 * 返回命中节点 id 列表（含根）。空/纯空白查询返回空数组。不搜整个
+		 * workspace、不做正则/模糊——第一版只要简单可靠。
+		 */
+		function searchTreeMatches(tree, query) {
+			const q = String(query ?? "").trim().toLowerCase();
+			if (!q) return [];
+			const out = [];
+			const walk = (node) => {
+				if (!node) return;
+				if (String(node.topic ?? "").toLowerCase().includes(q)) out.push(node.id);
+				for (const child of node.children ?? []) walk(child);
+			};
+			walk(tree);
+			return out;
+		}
+
+		/**
+		 * 下标步进（delta = +1 下一个 / −1 上一个），双向环绕（末尾→开头、
+		 * 开头→末尾）。当前下标越界（AI 改写后命中列表已变）先归零再步进；
+		 * 无命中返回 −1。
+		 */
+		function stepMatchIndex(index, count, delta) {
+			if (!(count > 0)) return -1;
+			const base = Number.isInteger(index) && index >= 0 && index < count ? index : 0;
+			const step = delta >= 0 ? 1 : -1;
+			return (base + step + count) % count;
+		}
+
+		/**
+		 * 命中列表重算后的当前项保持（AI 更改 mindmap 后）：优先按稳定结构 id
+		 * 找回原命中节点；找不到则钳制到最近的有效下标；再不行回落第一个。
+		 * 无命中返回 −1。返回值是 matches 里的下标。
+		 */
+		function reconcileActiveMatch(prevId, prevIndex, matches) {
+			if (!Array.isArray(matches) || matches.length === 0) return -1;
+			if (prevId != null) {
+				const idx = matches.indexOf(prevId);
+				if (idx >= 0) return idx;
+			}
+			if (Number.isInteger(prevIndex) && prevIndex >= 0 && prevIndex < matches.length) return prevIndex;
+			return 0;
+		}
+
+		/**
+		 * 定位命中前展开其祖先路径：把「根 → 目标」链上的折叠 id 全部移出
+		 *（不含目标自身——自身折叠只藏子树，盒子仍可见），无关折叠保留。
+		 * 无需变化 / 目标不存在时原样返回入参集合（引用不变，React 免重渲染）。
+		 */
+		function expandAncestorsFor(collapsed, tree, nodeId) {
+			if (!collapsed || collapsed.size === 0 || !tree || nodeId == null) return collapsed;
+			const ancestors = [];
+			const walk = (node, chain) => {
+				if (!node) return false;
+				if (node.id === nodeId) {
+					for (const id of chain) ancestors.push(id);
+					return true;
+				}
+				for (const child of node.children ?? []) {
+					if (walk(child, chain.concat(node.id))) return true;
+				}
+				return false;
+			};
+			walk(tree, []);
+			if (!ancestors.some((id) => collapsed.has(id))) return collapsed;
+			const next = new Set(collapsed);
+			for (const id of ancestors) next.delete(id);
+			return next;
+		}
+		//#endregion
+
 

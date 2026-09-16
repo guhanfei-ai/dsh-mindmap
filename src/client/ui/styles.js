@@ -133,6 +133,11 @@
 			// 百分比标签：tabular-nums 防数字抖动。
 			zoomLabel: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none" },
 			zoomFitBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "12px", lineHeight: "20px", height: "22px", padding: "0 8px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", flex: "none" },
+			// 035 节点搜索：缩放条同款浮层容器，挂在缩放条正下方（顶 44px），
+			// 全部复用宿主主题变量，亮暗/换肤自动跟随。
+			searchBar: { position: "absolute", top: "44px", right: "12px", zIndex: 5, display: "inline-flex", alignItems: "center", gap: "2px", padding: "3px", borderRadius: "8px", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", boxShadow: "var(--dsw-shadow-l2)" },
+			searchInput: { flex: "none", width: "108px", height: "22px", boxSizing: "border-box", padding: "0 8px", borderRadius: "6px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit", fontSize: "12px", outline: "none" },
+			searchCount: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none", whiteSpace: "nowrap" },
 			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
 			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
 			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。

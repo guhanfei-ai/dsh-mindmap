@@ -62,6 +62,9 @@ window.__ModuleLoader__.load({
 			"color.accent.code": { default: "#3b5bdb", fallback: "color.accent.root" },
 			"color.accent.quote": { default: "#5c7cfa", fallback: "color.accent.heading.medium" },
 			"color.state.selected": { default: "var(--dsw-alias-state-business-primary)" },
+			// 035 搜索命中：普通命中用品牌色浅色调（tertiary）描边，活动命中共用
+			// 选中环主色（primary）——同色系靠层数/宽度分强度，主题换肤自动跟随。
+			"color.state.match": { default: "var(--dsw-alias-state-business-tertiary)" },
 			"color.state.hovered": { default: "var(--dsw-alias-interactive-bg-hover)" },
 			"connector.color": { default: "var(--dsw-alias-border-l2)", fallback: "color.border.default" },
 			"connector.width": { default: 1.5 },
@@ -183,6 +186,19 @@ window.__ModuleLoader__.load({
 			// §6 状态叠加：hovered 抬升阴影；selected 强调环优先（两者并存时环在外）。
 			if (states.hovered && kind !== "placeholder") {
 				style.boxShadow = resolveToken("effect.shadow.hovered", overrides);
+			}
+			// 035 搜索命中态：普通命中 = 浅色调 2px 描边环；活动命中 = 主色描边 +
+			// 3px 外扩阴影（双层强调）。outline 不占布局，相邻盒间隙（8px）内放得下。
+			// 置于 selected 之前——选中环仍是最高优先级，两者并存时各自可见。
+			if (states.matched && !states.matchActive) {
+				style.outline = `2px solid ${resolveToken("color.state.match", overrides)}`;
+				style.outlineOffset = 1;
+			}
+			if (states.matchActive) {
+				const ring = resolveToken("color.state.selected", overrides);
+				style.outline = `2px solid ${ring}`;
+				style.outlineOffset = 2;
+				style.boxShadow = `0 0 0 3px ${ring}${style.boxShadow && style.boxShadow !== "none" ? `, ${style.boxShadow}` : ""}`;
 			}
 			if (states.selected) {
 				const ring = resolveToken("color.state.selected", overrides);
@@ -1027,6 +1043,79 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		//#region 035 节点搜索：命中计算 / 下标步进 / 命中保持 / 祖先展开（纯函数，经 internals 供测试）
+		/**
+		 * 在当前树里搜节点可见文字（topic）：大小写不敏感子串匹配，先序遍历
+		 * 返回命中节点 id 列表（含根）。空/纯空白查询返回空数组。不搜整个
+		 * workspace、不做正则/模糊——第一版只要简单可靠。
+		 */
+		function searchTreeMatches(tree, query) {
+			const q = String(query ?? "").trim().toLowerCase();
+			if (!q) return [];
+			const out = [];
+			const walk = (node) => {
+				if (!node) return;
+				if (String(node.topic ?? "").toLowerCase().includes(q)) out.push(node.id);
+				for (const child of node.children ?? []) walk(child);
+			};
+			walk(tree);
+			return out;
+		}
+
+		/**
+		 * 下标步进（delta = +1 下一个 / −1 上一个），双向环绕（末尾→开头、
+		 * 开头→末尾）。当前下标越界（AI 改写后命中列表已变）先归零再步进；
+		 * 无命中返回 −1。
+		 */
+		function stepMatchIndex(index, count, delta) {
+			if (!(count > 0)) return -1;
+			const base = Number.isInteger(index) && index >= 0 && index < count ? index : 0;
+			const step = delta >= 0 ? 1 : -1;
+			return (base + step + count) % count;
+		}
+
+		/**
+		 * 命中列表重算后的当前项保持（AI 更改 mindmap 后）：优先按稳定结构 id
+		 * 找回原命中节点；找不到则钳制到最近的有效下标；再不行回落第一个。
+		 * 无命中返回 −1。返回值是 matches 里的下标。
+		 */
+		function reconcileActiveMatch(prevId, prevIndex, matches) {
+			if (!Array.isArray(matches) || matches.length === 0) return -1;
+			if (prevId != null) {
+				const idx = matches.indexOf(prevId);
+				if (idx >= 0) return idx;
+			}
+			if (Number.isInteger(prevIndex) && prevIndex >= 0 && prevIndex < matches.length) return prevIndex;
+			return 0;
+		}
+
+		/**
+		 * 定位命中前展开其祖先路径：把「根 → 目标」链上的折叠 id 全部移出
+		 *（不含目标自身——自身折叠只藏子树，盒子仍可见），无关折叠保留。
+		 * 无需变化 / 目标不存在时原样返回入参集合（引用不变，React 免重渲染）。
+		 */
+		function expandAncestorsFor(collapsed, tree, nodeId) {
+			if (!collapsed || collapsed.size === 0 || !tree || nodeId == null) return collapsed;
+			const ancestors = [];
+			const walk = (node, chain) => {
+				if (!node) return false;
+				if (node.id === nodeId) {
+					for (const id of chain) ancestors.push(id);
+					return true;
+				}
+				for (const child of node.children ?? []) {
+					if (walk(child, chain.concat(node.id))) return true;
+				}
+				return false;
+			};
+			walk(tree, []);
+			if (!ancestors.some((id) => collapsed.has(id))) return collapsed;
+			const next = new Set(collapsed);
+			for (const id of ancestors) next.delete(id);
+			return next;
+		}
+		//#endregion
+
 		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
 		// 019 可变盒高布局：盒高按内容估行数（全量换行的导出形态），表格节点加宽；
 		// 布局契约不变——叶子自上而下占行、父节点垂直居中于其子块。
@@ -1442,6 +1531,11 @@ window.__ModuleLoader__.load({
 			// 百分比标签：tabular-nums 防数字抖动。
 			zoomLabel: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none" },
 			zoomFitBtn: { border: "none", background: "none", cursor: "pointer", font: "inherit", fontSize: "12px", lineHeight: "20px", height: "22px", padding: "0 8px", borderRadius: "6px", color: "var(--dsw-alias-label-secondary)", flex: "none" },
+			// 035 节点搜索：缩放条同款浮层容器，挂在缩放条正下方（顶 44px），
+			// 全部复用宿主主题变量，亮暗/换肤自动跟随。
+			searchBar: { position: "absolute", top: "44px", right: "12px", zIndex: 5, display: "inline-flex", alignItems: "center", gap: "2px", padding: "3px", borderRadius: "8px", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", boxShadow: "var(--dsw-shadow-l2)" },
+			searchInput: { flex: "none", width: "108px", height: "22px", boxSizing: "border-box", padding: "0 8px", borderRadius: "6px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", font: "inherit", fontSize: "12px", outline: "none" },
+			searchCount: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none", whiteSpace: "nowrap" },
 			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
 			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
 			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。
@@ -1788,8 +1882,8 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		function NodeBox(props) {
-			const { node, theme, revealDelay, selectedId, onCodePanel } = props;
-			const [hovered, setHovered] = react.useState(false);
+			const { node, theme, revealDelay, selectedId, onCodePanel, matchIds, activeMatchId } = props;
+				const [hovered, setHovered] = react.useState(false);
 			const boxRef = react.useRef(null);
 			// 020 长度治理：散文类块（text/md/list/quote）套 6 行截断；clamped = 实测
 			// 真的溢出了（scrollHeight>clientHeight），悬停浮层看全文（复用代码浮层）。
@@ -1811,7 +1905,13 @@ window.__ModuleLoader__.load({
 				...resolveNodeStyle(node, {
 					colorTheme: theme && theme.colorTheme,
 					cardStyle: theme && theme.cardStyle,
-					states: { hovered, selected: selectedId === node.id },
+					states: {
+						hovered,
+						selected: selectedId === node.id,
+						// 035 搜索命中：普通命中轻描边，活动命中的命中节点双层强调环。
+						matched: Boolean(matchIds && matchIds.has(node.id)),
+						matchActive: activeMatchId === node.id,
+					},
 				}),
 			};
 			// 020 表格块不参与散文 320px 宽上限：完整网格需要更宽书写面，
@@ -1852,7 +1952,7 @@ window.__ModuleLoader__.load({
 
 		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
 		function TreeRow(props) {
-			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse } = props;
+			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse, matchIds, activeMatchId } = props;
 			// 025 折叠：纯视图态——markdown 资产不变，导出仍取完整子树。
 			const hasChildren = Boolean(node.children && node.children.length > 0);
 			const isCollapsed = hasChildren && Boolean(collapsed && collapsed.has(node.id));
@@ -1969,7 +2069,7 @@ window.__ModuleLoader__.load({
 						e.stopPropagation();
 						onNodeContextMenu(e, node);
 					} : undefined,
-					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel }),
+					children: (0, react_jsx_runtime.jsx)(NodeBox, { node, theme, revealDelay, selectedId, onCodePanel, matchIds, activeMatchId }),
 				}),
 				// 025 折叠开关：坐在盒与子列之间的连线起点上（有子节点才出现）。
 				// stopPropagation 保证点它不触发画布的「点节点聚焦 / 点空白取消选中」。
@@ -1994,7 +2094,7 @@ window.__ModuleLoader__.load({
 						ref: (el) => {
 							childRefs.current[idx] = el;
 						},
-						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse }),
+						children: (0, react_jsx_runtime.jsx)(TreeRow, { node: child, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse, matchIds, activeMatchId }),
 					}, child.id)) })
 					: null,
 				] });
@@ -2010,6 +2110,9 @@ window.__ModuleLoader__.load({
 				// 永远占主导会把子树压得过小，宽度溢出交给平移（横向本就一等公民）。
 				// animMs：033 平滑过渡时长上限（限长、可中断、熔断后退化瞬时）。
 				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250 };
+				// 034 聚焦锚位（视口比例）：树向右生长，节点压在左侧 1/4 处、
+				// 垂直居中，右侧 3/4 视野铺开子级。动画从点击位置插值到此锚位。
+				const FOCUS_ANCHOR = { x: 0.25, y: 0.5 };
 
 				/** 缩放夹取：非有限值/≤0 回退 1，否则夹到 [min, max]。 */
 				function clampZoom(value) {
@@ -2189,6 +2292,24 @@ window.__ModuleLoader__.load({
 							// 025 折叠子树：纯视图态（不写回 markdown，导出仍取完整子树）。
 							// 切换文档时全部展开；AI 改写后清掉已消失节点的折叠标记。
 							const [collapsed, setCollapsed] = react.useState(() => new Set());
+							// 035 节点搜索：开箱态 / 查询词 / 当前命中下标 / 待定位 id。
+							// 命中列表由 useMemo 按 [node, searchQuery] 现算——O(n) 子串
+							// 匹配（上千节点也是微秒级），不重 parse、不重建 DOM。
+							const [searchOpen, setSearchOpen] = react.useState(false);
+							const [searchQuery, setSearchQuery] = react.useState("");
+							const [searchIndex, setSearchIndex] = react.useState(-1);
+							const [searchReveal, setSearchReveal] = react.useState(null);
+							const searchInputRef = react.useRef(null);
+							// 当前命中的稳定结构 id：AI 改写树后按它找回原命中节点。
+							const searchActiveIdRef = react.useRef(null);
+							const searchMatches = react.useMemo(() => searchTreeMatches(node, searchQuery), [node, searchQuery]);
+							const searchMatchIds = searchMatches.length > 0 ? new Set(searchMatches) : null;
+							// 渲染期先钳一次：AI 改写后命中列表变短，[node] 协调 effect
+							// 生效前的那一帧若沿用旧下标会显示「4 / 3」这类越界计数。
+							const searchIndexSafe = searchMatches.length > 0
+								? (searchIndex >= 0 && searchIndex < searchMatches.length ? searchIndex : 0)
+								: -1;
+							const searchActiveId = searchIndexSafe >= 0 ? searchMatches[searchIndexSafe] : null;
 							// 019 代码块悬停浮层：{node, anchor}；null = 关闭。延迟关闭（150ms
 							// 宽限）让鼠标能从节点盒移到面板上滚动全文，不闪灭。
 							const [codePanel, setCodePanel] = react.useState(null);
@@ -2222,36 +2343,64 @@ window.__ModuleLoader__.load({
 						const hoverRef = react.useRef(false);
 						// 033 平滑过渡：在飞的 zoom 动画句柄 { id, from, to, start }；
 						// animDisabled = 熔断器触发过（本轮 fitKey 内动画退化为瞬时，
-						// 切文档/点适配时复位）。动画只写 zoomRef + setZoomState（提交
-						// 路径同现状），测量一律走 committedZoomRef，不与 ResizeObserver
-						// 打架；聚焦动画期间 focusRef 保持存活，[zoom] effect 每帧把
-						// 节点钉回「水平 25% / 垂直居中」——视觉是节点不动、世界绕它缩放。
+						// 切文档/点适配时复位）。
+						// 034 动画期间绕过 React（根因二：每帧 setZoomState 整树重渲染，
+						// 大图掉帧）：每帧直写内容层 style.zoom + 滚动校正，不进 state；
+						// 结束帧一次性 setZoomState(target) 同步 UI（百分比/边界按钮/
+						// committedZoomRef）。测量基准不受影响——动画只在点击后飞，
+						// 此时 userZoomedRef 已置位，ResizeObserver 不会再调 applyFit。
 						const zoomAnimRef = react.useRef(null);
 						const animDisabledRef = react.useRef(false);
 
-						// 033 截停在飞动画（任何新交互都先调）：取消 rAF + 顺手清掉
-						// focusRef（否则下一次 zoom 提交会被过期聚焦劫持定位）。zoomRef
-						// 停在最后已提交的中间值——每帧 setZoomState 都同步过
-						// committedZoomRef，无「ref 领先渲染」的脏基准。
-						function cancelZoomAnim() {
+						// 034 仅停帧：取消 rAF + 同步 committed/state，保留 focusRef
+						//（animateZoomTo 替换旧动画时用——调用方随后会覆盖 focusRef，
+						// 不能让它把新聚焦也清掉）。中断时 DOM 已被直写到中间值——
+						// 立即把 committedZoomRef 对齐该值（applyFit 的自然尺寸测量基准
+						// 必须等于 DOM 实际 zoom），并用 setZoomState 把 React state
+						// 兜底同步（防后续 re-render 把 style.zoom 打回动画前的旧值）。
+						function stopZoomAnimFrames() {
 							const anim = zoomAnimRef.current;
 							if (!anim) return;
 							zoomAnimRef.current = null;
-							focusRef.current = null;
 							if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(anim.id);
+							committedZoomRef.current = zoomRef.current;
+							setZoomState(zoomRef.current);
 						}
 
-						// 033 平滑 zoom：from → to，限长 animMs、easeOutQuad，并行上限 1
-						//（新动画先截停旧动画）。结束帧精确落在 to 并交还 focusRef 的
-						// 消费权（最后一次 [zoom] effect 定位）。禁用/无 rAF 环境瞬时应用，
-						// 行为与 033 之前完全一致。
+						// 033 截停在飞动画（任何新交互都先调）：停帧 + 顺手清掉
+						// focusRef（否则下一次 zoom 提交会被过期聚焦劫持定位）。
+						function cancelZoomAnim() {
+							if (!zoomAnimRef.current) return;
+							stopZoomAnimFrames();
+							focusRef.current = null;
+						}
+
+						// 034 期望锚位插值：点击位置 → FOCUS_ANCHOR，与 zoom 同一
+						// eased 进度——第一帧期望位置 = 点击时位置（零瞬移，根因一），
+						// 节点被「牵着」滑向锚位。
+						function lerpFocusAnchor(start, k) {
+							return {
+								x: start.x + (FOCUS_ANCHOR.x - start.x) * k,
+								y: start.y + (FOCUS_ANCHOR.y - start.y) * k,
+							};
+						}
+
+						// 033/034 平滑 zoom：from → to，限长 animMs、easeOutQuad，并行
+						// 上限 1（新动画先截停旧动画）。每帧：直写 style.zoom、同步
+						// zoomRef、按插值锚位滚动校正（applyFocusAnchor）；结束帧精确落
+						// 在 to 并 setZoomState 触发最后一次 [zoom] effect（positionFocus
+						// 消费 focusRef、全量锚位终校——此刻 ≈ no-op）。禁用/无 rAF 环
+						// 境瞬时应用，行为与 033 之前完全一致。
 						function animateZoomTo(to) {
-							cancelZoomAnim();
+							stopZoomAnimFrames();
 							const target = clampZoom(to);
 							const from = zoomRef.current;
 							if (from === target) return;
+							const scroller = scrollRef.current;
+							const content = contentRef.current;
 							const canAnimate = animDisabledRef.current !== true
-								&& scrollRef.current
+								&& scroller
+								&& content
 								&& typeof requestAnimationFrame === "function";
 							if (!canAnimate) {
 								zoomRef.current = target;
@@ -2266,9 +2415,14 @@ window.__ModuleLoader__.load({
 								const eased = 1 - (1 - t) * (1 - t);
 								const value = t >= 1 ? target : from + (target - from) * eased;
 								zoomRef.current = value;
-								setZoomState(value);
+								content.style.zoom = value; // 034：直写 DOM，绕过 React
+								const focus = focusRef.current;
+								if (focus && focus.boxEl && focus.boxEl.isConnected) {
+									applyFocusAnchor(focus.boxEl, lerpFocusAnchor(focus.startAnchor, eased));
+								}
 								if (t >= 1) {
 									zoomAnimRef.current = null;
+									setZoomState(target);
 									return;
 								}
 								anim.id = requestAnimationFrame(frame);
@@ -2315,6 +2469,12 @@ window.__ModuleLoader__.load({
 								animDisabledRef.current = false;
 								setSelectedId(null);
 								setCollapsed((prev) => (prev.size > 0 ? new Set() : prev));
+								// 035：切文档重置搜索——上一张图的 query/命中不污染新图。
+								setSearchOpen(false);
+								setSearchQuery("");
+								setSearchIndex(-1);
+								setSearchReveal(null);
+								searchActiveIdRef.current = null;
 								const id = requestAnimationFrame(applyFit);
 								return () => {
 									cancelAnimationFrame(id);
@@ -2505,9 +2665,11 @@ window.__ModuleLoader__.load({
 					// DOM 已提交到该 zoom，测量换算基准同步（applyFit 依赖）。
 					committedZoomRef.current = zoom;
 					if (focusRef.current) {
-						// 033：动画进行中每帧都把节点钉回目标锚位（不消费 focusRef，
-						// 视觉 = 节点不动、世界绕它缩放）；动画结束/瞬时路径照旧消费。
-						positionFocus(zoomAnimRef.current === null);
+						// 034：动画在飞时既不定位也不消费——帧回调自己管锚位插值；
+						// 动画中再点击时，cancel 的 setZoomState 也会路过这里，
+						// 提前消费/全量锚位都会造成闪跳。瞬时聚焦与动画结束帧
+						//（anim 先清再 setState）才做全量终校（结束时 ≈ no-op）。
+						if (!zoomAnimRef.current) positionFocus();
 						return;
 					}
 					const scroller = scrollRef.current;
@@ -2572,20 +2734,47 @@ window.__ModuleLoader__.load({
 						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
 						current,
 					);
+					// 034：记录点击时节点中心的视口比例位置——动画锚位插值起点
+					//（第一帧期望位置 = 点击时位置，消除首帧滚动瞬移）。
+					const boxRect = boxEl.getBoundingClientRect();
+					const scrollerRect = scroller.getBoundingClientRect();
+					const startAnchor = {
+						x: (boxRect.left + boxRect.width / 2 - scrollerRect.left) / scroller.clientWidth,
+						y: (boxRect.top + boxRect.height / 2 - scrollerRect.top) / scroller.clientHeight,
+					};
 					userZoomedRef.current = true;
-					focusRef.current = { boxEl };
 					if (focus !== current) {
 						anchorRef.current = null;
+						// 034：先完整截停旧动画（清过期 focusRef + 同步中间值），
+						// 再登记本次聚焦——顺序不能反（cancel 会清 focusRef）。
+						cancelZoomAnim();
+						focusRef.current = { boxEl, startAnchor };
 						animateZoomTo(focus);
 					} else {
+						cancelZoomAnim();
+						focusRef.current = { boxEl, startAnchor };
 						positionFocus();
 					}
 				}
 
-				// 聚焦定位：DOM 更新后量节点盒当前位置，滚动增量 = 当前位置 − 期望位置
-				//（scroll 增量与视口位移 1:1，浏览器自动钳制滚动范围；比例不变时同步调用）。
-				// 033：consume = false 时保留 focusRef——聚焦动画的中间帧每帧重定位，
-				// 动画收尾帧（zoomAnimRef 已清空）才消费。
+				// 034 锚位应用：把节点盒中心滚到指定视口比例锚位（滚动增量与视口
+				// 位移 1:1，浏览器自动钳制滚动范围）。positionFocus（固定锚位）与
+				// 聚焦动画帧（插值锚位）共用。
+				function applyFocusAnchor(boxEl, anchor) {
+					const scroller = scrollRef.current;
+					if (!scroller || !boxEl || !boxEl.isConnected) return;
+					resetPanOffset();
+					const boxRect = boxEl.getBoundingClientRect();
+					const scrollerRect = scroller.getBoundingClientRect();
+					const curX = boxRect.left + boxRect.width / 2 - scrollerRect.left;
+					const curY = boxRect.top + boxRect.height / 2 - scrollerRect.top;
+					scroller.scrollLeft += curX - scroller.clientWidth * anchor.x;
+					scroller.scrollTop += curY - scroller.clientHeight * anchor.y;
+				}
+
+				// 聚焦定位：DOM 更新后把节点盒滚到 FOCUS_ANCHOR（全量校正）。
+				// 034：consume = false 时保留 focusRef——瞬时聚焦路径不再逐帧，仅
+				// 动画结束帧（zoomAnimRef 已清空）与同步调用消费。
 				function positionFocus(consume = true) {
 					const focus = focusRef.current;
 					if (!focus || !focus.boxEl || !focus.boxEl.isConnected) {
@@ -2593,16 +2782,119 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					if (consume) focusRef.current = null;
-					const scroller = scrollRef.current;
-					if (!scroller) return;
-					resetPanOffset();
-					const boxRect = focus.boxEl.getBoundingClientRect();
-					const scrollerRect = scroller.getBoundingClientRect();
-					const curX = boxRect.left + boxRect.width / 2 - scrollerRect.left;
-					const curY = boxRect.top + boxRect.height / 2 - scrollerRect.top;
-					scroller.scrollLeft += curX - scroller.clientWidth * 0.25;
-					scroller.scrollTop += curY - scroller.clientHeight / 2;
+					applyFocusAnchor(focus.boxEl, FOCUS_ANCHOR);
 				}
+
+				//#region 035 节点搜索：输入即搜 + 匹配间跳转 + 自动展开祖先 + 滚动定位
+				// 打开搜索（Cmd/Ctrl+F 或缩放条 🔍）。关闭 = 清 query/命中/高亮；
+				// 为定位展开的祖先保持展开——用户下一步多半还要看上下文。
+				function openSearch() {
+					setSearchOpen(true);
+				}
+				function closeSearch() {
+					setSearchOpen(false);
+					setSearchQuery("");
+					setSearchIndex(-1);
+					searchActiveIdRef.current = null;
+				}
+
+				// 输入即搜：每次按键 O(n) 现算命中并跳到第一个（VS Code find 同款手感）。
+				// 直接调纯函数拿新查询的结果（本渲染的 memo 还是旧 query 的）。
+				function onQueryChange(e) {
+					const query = e && e.target ? e.target.value : "";
+					const matches = searchTreeMatches(node, query);
+					setSearchQuery(query);
+					if (matches.length > 0) {
+						setSearchIndex(0);
+						searchActiveIdRef.current = matches[0];
+						revealSearchMatch(matches[0]);
+					} else {
+						setSearchIndex(-1);
+						searchActiveIdRef.current = null;
+					}
+				}
+
+				// 上一个/下一个：双向环绕（末尾→开头、开头→末尾）。
+				function stepSearch(delta) {
+					if (searchMatches.length === 0) return;
+					const next = stepMatchIndex(searchIndex, searchMatches.length, delta);
+					setSearchIndex(next);
+					searchActiveIdRef.current = searchMatches[next];
+					revealSearchMatch(searchMatches[next]);
+				}
+
+				// 定位一个命中：先展开它的祖先路径（折叠分支里的结果也真正可见），
+				// 再登记待定位 id——[searchReveal] layout effect 在 DOM 提交后按结构
+				// id 找盒、滚到聚焦锚位。不动 zoom（保留用户当前缩放，只改必要滚动）。
+				function revealSearchMatch(id) {
+					setCollapsed((prev) => expandAncestorsFor(prev, node, id));
+					setSearchReveal(id);
+				}
+
+				// 搜索定位提交后的滚动：与展开祖先同批 setState，此 effect 运行时
+				// 展开的子树已挂载。搜索定位 = 显式视角意图：与点击聚焦一样停自动
+				// 再适配，并截停在飞聚焦动画（其帧回调会把节点钉回旧锚位对着干）。
+				react.useLayoutEffect(() => {
+					if (!searchReveal) return;
+					const scroller = scrollRef.current;
+					const boxEl = scroller ? findBoxByNodeId(scroller, searchReveal) : null;
+					if (boxEl) {
+						userZoomedRef.current = true;
+						cancelZoomAnim();
+						applyFocusAnchor(boxEl, FOCUS_ANCHOR);
+					}
+					setSearchReveal(null);
+				}, [searchReveal]);
+
+				// 开箱聚焦输入框（全选既有词——当前实现关闭即清空，习惯上仍全选）。
+				react.useLayoutEffect(() => {
+					if (!searchOpen) return;
+					const input = searchInputRef.current;
+					if (!input || typeof input.focus !== "function") return;
+					input.focus();
+					if (typeof input.select === "function") input.select();
+				}, [searchOpen]);
+
+				// AI 更新后重算命中：保留 query；优先按稳定 id 找回原命中节点，
+				// 找不到回落最近有效下标/第一个；无命中显示 0。只调下标不滚动——
+				// AI 每次编辑都拽走视口会与「视角归用户」冲突，滚动只由导航触发。
+				react.useEffect(() => {
+					if (searchQuery === "") return;
+					const next = reconcileActiveMatch(searchActiveIdRef.current, searchIndex, searchMatches);
+					if (next !== searchIndex) setSearchIndex(next);
+					if (next >= 0) searchActiveIdRef.current = searchMatches[next];
+				}, [node]);
+
+				// Cmd/Ctrl+F 打开搜索。拦截范围 = 画布挂载（脑图 tab 可见且激活；
+				// 面板收起/切目录树即卸载，无僵尸监听）且目标不是别人的文本输入
+				//（聊天框里的 Cmd+F 留给宿主）；已有人处理过（defaultPrevented）不抢。
+				react.useEffect(() => {
+					const onKeyDown = (e) => {
+						if (e.defaultPrevented || e.altKey) return;
+						if (!(e.metaKey || e.ctrlKey)) return;
+						if (!e.key || e.key.toLowerCase() !== "f") return;
+						if (isTextEntry(e.target) && e.target !== searchInputRef.current) return;
+						e.preventDefault();
+						setSearchOpen(true);
+					};
+					window.addEventListener("keydown", onKeyDown);
+					return () => window.removeEventListener("keydown", onKeyDown);
+				}, []);
+
+				// Escape 关闭搜索：仅搜索打开期间注册（closeSearch 只调常参 setter，
+				// 闭包过期无害）；目标在他人输入框时不抢 Escape。
+				react.useEffect(() => {
+					if (!searchOpen) return;
+					const onKeyDown = (e) => {
+						if (e.key !== "Escape" || e.defaultPrevented) return;
+						if (isTextEntry(e.target) && e.target !== searchInputRef.current) return;
+						e.preventDefault();
+						closeSearch();
+					};
+					window.addEventListener("keydown", onKeyDown);
+					return () => window.removeEventListener("keydown", onKeyDown);
+				}, [searchOpen]);
+				//#endregion
 
 				// 017 右键菜单开合：点其它地方/失焦/改窗口即关闭（目录树菜单同款）；
 				// 点菜单内部（复制/导出按钮）不关——菜单里要展示「复制中…」与失败
@@ -2724,12 +3016,44 @@ window.__ModuleLoader__.load({
 						},
 						children: 
 						(0, react_jsx_runtime.jsx)("div", { style: S.canvasCenter, children: 
-							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom }, children: 
-								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse })
+							// 034：动画期间 zoom 走 DOM 直写（style.zoom），React state
+							// 停在动画前的旧值——动画中任何 re-render（AI 改树、hover）
+							// 若按 state 渲染会把 DOM 打回旧值造成跳变。渲染值在动画
+							// 在飞时改读 zoomRef（恒等于 DOM 当前值），style diff 后
+							// 不覆盖；动画结束 state 已同步，两种取值一致。
+							(0, react_jsx_runtime.jsx)("div", { ref: contentRef, style: { margin: "auto", zoom: zoomAnimRef.current ? zoomRef.current : zoom }, children:
+								(0, react_jsx_runtime.jsx)(TreeRow, { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel: handleCodePanel, collapsed, onToggleCollapse: toggleCollapse, matchIds: searchMatchIds, activeMatchId: searchActiveId })
 							})
 						})
 					}),
 					(0, react_jsx_runtime.jsxs)("div", { style: S.zoomBar, children: [
+						// 035 搜索入口：缩放条内一个轻量 🔍（线框图标与 M 按钮同风格），
+						// 两模式（BS Tab / 独立面板）共用画布，一处实现双模式生效。
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "搜索节点（⌘/Ctrl+F）",
+							"aria-label": "搜索节点",
+							"aria-expanded": searchOpen ? "true" : "false",
+							style: zoomBtnStyle("search", false),
+							onClick: () => (searchOpen ? closeSearch() : openSearch()),
+							onMouseEnter: () => setHover("search"),
+							onMouseLeave: () => setHover((h) => (h === "search" ? null : h)),
+							children: (0, react_jsx_runtime.jsx)("svg", {
+								width: 13,
+								height: 13,
+								viewBox: "0 0 14 14",
+								fill: "none",
+								stroke: "currentColor",
+								strokeWidth: 1.4,
+								strokeLinecap: "round",
+								"aria-hidden": "true",
+								style: { display: "block" },
+								children: [
+									(0, react_jsx_runtime.jsx)("circle", { cx: 6, cy: 6, r: 4 }),
+									(0, react_jsx_runtime.jsx)("path", { d: "M9.2 9.2 L12.5 12.5" }),
+								],
+							}),
+						}),
 						(0, react_jsx_runtime.jsx)("button", {
 							type: "button",
 							title: "缩小",
@@ -2761,6 +3085,68 @@ window.__ModuleLoader__.load({
 							children: "适配",
 						}),
 					] }),
+					// 035 节点搜索条：缩放条正下方的紧凑浮层（同款容器/主题变量）。
+					// 输入即搜；Enter/↓ 下一个、Shift+Enter/↑ 上一个（双向环绕）；
+					// 无命中显示「未找到」。纯视图态——不碰 markdown/revision。
+					searchOpen ? (0, react_jsx_runtime.jsxs)("div", { style: S.searchBar, children: [
+						(0, react_jsx_runtime.jsx)("input", {
+							ref: searchInputRef,
+							type: "text",
+							value: searchQuery,
+							placeholder: "搜索节点…",
+							"aria-label": "搜索当前脑图的节点文字",
+							title: "搜索当前脑图的节点文字（Enter 下一个，Shift+Enter 上一个，Esc 关闭）",
+							style: S.searchInput,
+							onChange: onQueryChange,
+							onKeyDown: (e) => {
+								if (e.key === "Enter") {
+									e.preventDefault();
+									stepSearch(e.shiftKey ? -1 : 1);
+								} else if (e.key === "ArrowDown") {
+									e.preventDefault();
+									stepSearch(1);
+								} else if (e.key === "ArrowUp") {
+									e.preventDefault();
+									stepSearch(-1);
+								}
+							},
+						}),
+						(0, react_jsx_runtime.jsx)("span", { style: S.searchCount, "aria-live": "polite", children: searchMatches.length === 0
+							? (searchQuery.trim() ? "未找到" : "0 / 0")
+								: `${searchIndexSafe >= 0 ? searchIndexSafe + 1 : 0} / ${searchMatches.length}` }),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "上一个匹配（Shift+Enter）",
+							"aria-label": "上一个匹配",
+							style: zoomBtnStyle("sprev", searchMatches.length === 0),
+							disabled: searchMatches.length === 0,
+							onClick: () => stepSearch(-1),
+							onMouseEnter: () => setHover("sprev"),
+							onMouseLeave: () => setHover((h) => (h === "sprev" ? null : h)),
+							children: "↑",
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "下一个匹配（Enter）",
+							"aria-label": "下一个匹配",
+							style: zoomBtnStyle("snext", searchMatches.length === 0),
+							disabled: searchMatches.length === 0,
+							onClick: () => stepSearch(1),
+							onMouseEnter: () => setHover("snext"),
+							onMouseLeave: () => setHover((h) => (h === "snext" ? null : h)),
+							children: "↓",
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "关闭搜索（Esc）",
+							"aria-label": "关闭搜索",
+							style: zoomBtnStyle("sclose", false),
+							onClick: closeSearch,
+							onMouseEnter: () => setHover("sclose"),
+							onMouseLeave: () => setHover((h) => (h === "sclose" ? null : h)),
+							children: "✕",
+						}),
+					] }) : null,
 					// 017 节点右键菜单：标题行（节点主题）+ 复制全文/复制为图片/导出为
 					// 图片三动作 + 错误行。复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
 					nodeMenu ? (0, react_jsx_runtime.jsxs)("div", {
@@ -4508,6 +4894,11 @@ window.__ModuleLoader__.load({
 			countDescendants,
 			pruneCollapsed,
 			TreeRow,
+			// 035 节点搜索：命中计算 / 下标步进（环绕）/ 命中保持 / 祖先展开（供测试）。
+			searchTreeMatches,
+			stepMatchIndex,
+			reconcileActiveMatch,
+			expandAncestorsFor,
 			// 019 皮肤层与血肉层纯函数（供测试）。
 			resolveToken,
 			resolveNodeStyle,

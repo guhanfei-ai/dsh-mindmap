@@ -77,7 +77,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -2501,10 +2501,17 @@ function createEffectDriver() {
 function loadClientWithEffectDriver() {
   const driver = createEffectDriver()
   let def
+  // 035：window 监听器改记录式桩——组件测试可捕获画布注册的 Cmd/Ctrl+F、
+  // Escape 等全局键盘监听并直接派发假事件（remove 按引用移除，模拟真实
+  // add/remove 配对，可断言无僵尸监听）。
+  const winListeners = []
   const win = {
     __ModuleLoader__: { load(v) { def = v } },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) { winListeners.push({ type, fn }) },
+    removeEventListener(type, fn) {
+      const i = winListeners.findIndex((l) => l.type === type && l.fn === fn)
+      if (i >= 0) winListeners.splice(i, 1)
+    },
   }
   const rafQueue = []
   const ctx = vm.createContext({
@@ -2521,7 +2528,7 @@ function loadClientWithEffectDriver() {
     if (id === 'react') return driver.hooks
     throw new Error('unexpected:'+id)
   })
-  return { driver, ctx, rafQueue, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, MindmapCanvas: rt.internals.MindmapCanvas, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
+  return { driver, ctx, rafQueue, winListeners, internals: rt.internals, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, MindmapCanvas: rt.internals.MindmapCanvas, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
 }
 
 // 驱动工作区的 effect，再重渲染一次读取最终画布；只调用 openTab 并不代表
@@ -2843,4 +2850,281 @@ test('030 component effects: unmount deletes current session snapshot (snapshot 
   // 卸载：执行 cleanup。
   driver.unmount()
   assert.equal(sessionStore.get('unmount-d'), null, 'D deleted after unmount')
+})
+
+// —— 035 节点搜索与快速定位：纯函数 + 画布组件行为 ——
+
+// 组件测试共用：渲染画布并跑完 effect，返回最新 JSX 树。
+function renderCanvasAfterEffects(harness, props, mounting = false) {
+  const { driver, MindmapCanvas } = harness
+  driver.beginRender()
+  MindmapCanvas(props)
+  if (mounting) driver.flushMount()
+  else driver.flushUpdate()
+  // 再渲染一次：命中协调（[node] effect）等 effect 在上一轮 flush 里改的
+  // state 只有下一轮 render 才进 JSX，断言要看 effect 之后的形态。
+  driver.beginRender()
+  const rendered = MindmapCanvas(props)
+  driver.flushUpdate()
+  return rendered
+}
+
+// 向捕获桩里的全部 keydown 监听派发一个假事件（同真实浏览器的事件广播）。
+function dispatchWinKeyDown(harness, event) {
+  for (const l of harness.winListeners) {
+    if (l.type === 'keydown') l.fn(event)
+  }
+}
+
+test('035 searchTreeMatches: case-insensitive substring over node topics in pre-order', () => {
+  // 注意：结果是 vm 沙箱 realm 的数组，deepEqual 前先 spread 成宿主数组
+  //（跨 realm 原型不同源会误报，本文件既有惯例）。结构：列表项挂在
+  // heading 之下（解析器 heading 栈语义），取节点要按真实嵌套下钻。
+  const tree = parseMarkdownToTree('# Payment Service\n- db pool\n  - Database Error\n- frontend', 'db notes')
+  const [heading] = tree.children
+  const [dbPool, frontend] = heading.children
+  const dbError = dbPool.children[0]
+  // 大小写不敏感 + 子串：payment 命中 "Payment Service"，database 命中 "Database Error"。
+  assert.deepEqual([...searchTreeMatches(tree, 'payment')], [heading.id])
+  assert.deepEqual([...searchTreeMatches(tree, 'DATABASE')], [dbError.id])
+  // db 同时命中根标题与 "db pool"（先序遍历：根 → 子节点；"database" 里没有 "db" 子串）。
+  assert.deepEqual([...searchTreeMatches(tree, 'db')], [tree.id, dbPool.id])
+  assert.equal(searchTreeMatches(tree, 'frontend').length, 1)
+  // 空查询 / 纯空白 / 无命中 → 空数组。
+  assert.equal(searchTreeMatches(tree, '').length, 0)
+  assert.equal(searchTreeMatches(tree, '   ').length, 0)
+  assert.equal(searchTreeMatches(tree, 'zzz-not-there').length, 0)
+  assert.equal(searchTreeMatches(null, 'db').length, 0)
+  // 代码块按可见摘要行匹配（topic = [lang] 摘要）。
+  const codeTree = parseMarkdownToTree('```bash\ndeploy --prod\n```', 'ops')
+  assert.deepEqual([...searchTreeMatches(codeTree, 'deploy')], [codeTree.children[0].id])
+  assert.deepEqual([...searchTreeMatches(codeTree, '--prod')], [codeTree.children[0].id])
+})
+
+test('035 stepMatchIndex: next/prev wrap in both directions; stale index normalizes; empty yields -1', () => {
+  // 下一个：0→1→2→0（末尾环绕回开头）。
+  assert.equal(stepMatchIndex(0, 3, 1), 1)
+  assert.equal(stepMatchIndex(1, 3, 1), 2)
+  assert.equal(stepMatchIndex(2, 3, 1), 0)
+  // 上一个：0→2（开头环绕回末尾）→1→0。
+  assert.equal(stepMatchIndex(0, 3, -1), 2)
+  assert.equal(stepMatchIndex(2, 3, -1), 1)
+  // 单命中：前后都是自身。
+  assert.equal(stepMatchIndex(0, 1, 1), 0)
+  assert.equal(stepMatchIndex(0, 1, -1), 0)
+  // 无命中 / 非法入参 → -1。
+  assert.equal(stepMatchIndex(0, 0, 1), -1)
+  assert.equal(stepMatchIndex(0, -3, 1), -1)
+  // 越界当前下标（AI 改写后命中列表已变）：归零再步进。
+  assert.equal(stepMatchIndex(9, 2, 1), 1)
+  assert.equal(stepMatchIndex(9, 2, -1), 1)
+})
+
+test('035 reconcileActiveMatch: keeps the node id, clamps the index, falls back to the first', () => {
+  const matches = ['a', 'b', 'c']
+  // 首选：按稳定结构 id 找回原命中。
+  assert.equal(reconcileActiveMatch('b', 0, matches), 1)
+  // 原 id 已消失（节点被删/改写）：回落最近的有效下标。
+  assert.equal(reconcileActiveMatch('gone', 2, matches), 2)
+  // 下标也越界：回落第一个。
+  assert.equal(reconcileActiveMatch('gone', 9, matches), 0)
+  assert.equal(reconcileActiveMatch(null, 9, matches), 0)
+  // 无命中 → -1（显示 0 / 0）。
+  assert.equal(reconcileActiveMatch('a', 0, []), -1)
+  assert.equal(reconcileActiveMatch('a', 0, null), -1)
+})
+
+test('035 expandAncestorsFor: expands only the ancestor path, keeps unrelated collapses', () => {
+  // A（heading，折叠）→ B（折叠）→ C → 目标；兄弟 X（折叠）→ other。
+  // 解析器语义：标题栈未弹出时，后续顶层列表项仍挂在 A 下（X 与 B 同层）。
+  const tree = parseMarkdownToTree('# A\n- B\n  - C\n    - target node\n- X\n  - other', 'doc')
+  const a = tree.children[0]
+  const [b, x] = a.children
+  const c = b.children[0]
+  const target = c.children[0]
+  const collapsed = new Set([a.id, b.id, x.id])
+  const next = expandAncestorsFor(collapsed, tree, target.id)
+  // 根→目标链上的 A、B 展开；目标自身的折叠态不被触碰；无关的 X 保留。
+  assert.equal(next.has(a.id), false)
+  assert.equal(next.has(b.id), false)
+  assert.equal(next.has(x.id), true)
+  assert.equal(next.size, 1)
+  // 目标不存在 / 空折叠集 → 原样返回（引用不变，React 免重渲染）。
+  assert.equal(expandAncestorsFor(collapsed, tree, 'no-such-id'), collapsed)
+  assert.equal(expandAncestorsFor(new Set(), tree, target.id).size, 0)
+  assert.equal(expandAncestorsFor(null, tree, target.id), null)
+  // 目标的祖先链上没有折叠节点：原样返回（引用不变）。
+  const untouched = new Set([x.id])
+  assert.equal(expandAncestorsFor(untouched, tree, target.id), untouched)
+})
+
+test('035 resolveNodeStyle: search match rings ride on theme tokens; active is stronger than plain', () => {
+  // 普通命中：品牌色浅色调 2px 描边环（不占布局）。
+  const matched = resolveNodeStyle({ kind: 'list' }, { states: { matched: true } })
+  assert.equal(matched.outline, `2px solid ${resolveToken('color.state.match', COLOR_THEMES.ocean)}`)
+  assert.equal(matched.outlineOffset, 1)
+  // 活动命中：主色描边 + 3px 外扩阴影（双层强调，强于普通命中）。
+  const active = resolveNodeStyle({ kind: 'list' }, { states: { matched: true, matchActive: true } })
+  const ring = resolveToken('color.state.selected', COLOR_THEMES.ocean)
+  assert.equal(active.outline, `2px solid ${ring}`)
+  assert.equal(active.outlineOffset, 2)
+  assert.ok(String(active.boxShadow).includes(`0 0 0 3px ${ring}`))
+  // 选中环仍是最高优先级（与活动命中并存时叠加，不被覆盖）。
+  const selected = resolveNodeStyle({ kind: 'list' }, { states: { matched: true, matchActive: true, selected: true } })
+  assert.ok(String(selected.boxShadow).startsWith(`0 0 0 2px ${ring}`))
+  // 无命中态：不产生任何描边/阴影残留。
+  const plain = resolveNodeStyle({ kind: 'list' }, { states: {} })
+  assert.equal(plain.outline, undefined)
+})
+
+test('035 canvas search: Cmd/Ctrl+F opens, typing counts, Enter/Shift+Enter wrap, Escape closes', () => {
+  const harness = loadClientWithEffectDriver()
+  const { driver } = harness
+  // 样式与组件断言必须用 harness 同一 vm 沙箱里的引用（跨沙箱对象身份不同源）。
+  const S2 = harness.internals.S
+  const TreeRow2 = harness.internals.TreeRow
+  const props = { node: parseMarkdownToTree('- one db\n- two db\n- three\n- four db', 'doc'), theme: null, fitKey: '035a.md', reveal: null }
+  const treeIds = props.node.children.map((n) => n.id)
+  const dbIds = [treeIds[0], treeIds[1], treeIds[3]]
+  // 派发假 Cmd+F（macOS 形态）与 Ctrl+F（Windows/Linux 形态）。
+  const findEvent = (metaKey, ctrlKey, target) => {
+    const ev = { key: 'f', metaKey, ctrlKey, altKey: false, defaultPrevented: false, target, preventDefault() { ev.defaultPrevented = true } }
+    return ev
+  }
+  try {
+    const mounted = renderCanvasAfterEffects(harness, props, true)
+    // 挂载期 rAF（fitKey 适配）排空，防其后续在假 DOM 上跑。
+    for (const fn of harness.rafQueue.splice(0)) if (fn) fn()
+    // 关闭态：搜索条不渲染，🔍 按钮 aria-expanded=false。
+    assert.equal(findInTree(mounted, (el) => el.props && el.props.placeholder === '搜索节点…'), null)
+    assert.equal(findInTree(mounted, (el) => el.props && el.props['aria-label'] === '搜索节点').props['aria-expanded'], 'false')
+    // Cmd+F：打开 + preventDefault；随后 Ctrl+F（已打开）同样无害。
+    const ev = findEvent(true, false, null)
+    dispatchWinKeyDown(harness, ev)
+    assert.equal(ev.defaultPrevented, true, 'Cmd+F intercepted while the mindmap canvas is active')
+    let rendered = renderCanvasAfterEffects(harness, props)
+    const input = findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…')
+    assert.ok(input, 'search input rendered after Cmd+F')
+    assert.equal(findInTree(rendered, (el) => el.props && el.props['aria-label'] === '搜索节点').props['aria-expanded'], 'true')
+    // 聊天输入框里的 Cmd+F 留给宿主：不拦截。
+    const chatEv = findEvent(false, true, { tagName: 'TEXTAREA', isContentEditable: false })
+    dispatchWinKeyDown(harness, chatEv)
+    assert.equal(chatEv.defaultPrevented, false, 'Cmd/Ctrl+F inside a text entry is left to the host')
+    // 输入即搜：3 个命中，计数 1 / 3，命中集穿透到 TreeRow。
+    input.props.onChange({ target: { value: 'DB' } })
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '1 / 3')
+    const treeRow = findInTree(rendered, (el) => el.type === TreeRow2)
+    assert.deepEqual([...treeRow.props.matchIds], dbIds)
+    assert.equal(treeRow.props.activeMatchId, dbIds[0])
+    // Enter → 2 / 3 → 3 / 3 → 环绕回 1 / 3（每轮重取 input——handler 闭包
+    // 捕获当轮 searchIndex，复用旧渲染的 handler 会原地踏步）。
+    for (const expected of ['2 / 3', '3 / 3', '1 / 3']) {
+      findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} })
+      rendered = renderCanvasAfterEffects(harness, props)
+      assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, expected)
+    }
+    // Shift+Enter 从 1 / 3 环绕回 3 / 3。
+    findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onKeyDown({ key: 'Enter', shiftKey: true, preventDefault() {} })
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '3 / 3')
+    // ↓ / ↑ 按钮与按键同路径：↓ → 1 / 3。
+    findInTree(rendered, (el) => el.props && el.props['aria-label'] === '下一个匹配').props.onClick()
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '1 / 3')
+    // 无命中：计数「未找到」，↑↓ 禁用，命中集为 null。
+    findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onChange({ target: { value: 'zzz' } })
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '未找到')
+    assert.equal(findInTree(rendered, (el) => el.props && el.props['aria-label'] === '上一个匹配').props.disabled, true)
+    assert.equal(findInTree(rendered, (el) => el.type === TreeRow2).props.matchIds, null)
+    // 空查询：0 / 0（而非「未找到」）。
+    findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onChange({ target: { value: '' } })
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '0 / 0')
+    // Escape：关闭搜索（清 query），监听器成对移除（无僵尸）。
+    const keydownCount = harness.winListeners.filter((l) => l.type === 'keydown').length
+    dispatchWinKeyDown(harness, { key: 'Escape', defaultPrevented: false, target: null, preventDefault() {} })
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…'), null)
+    assert.equal(harness.winListeners.filter((l) => l.type === 'keydown').length, keydownCount - 1, 'Escape listener unregistered on close')
+  } finally {
+    driver.unmount()
+  }
+})
+
+test('035 canvas search: jumping expands collapsed ancestors and scrolls the match into view (zoom untouched)', () => {
+  const harness = loadClientWithEffectDriver()
+  const { driver } = harness
+  const S2 = harness.internals.S
+  const TreeRow2 = harness.internals.TreeRow
+  // A（heading）→ wrapper（list，将被折叠）→ database target（藏在折叠子树里）。
+  const props = { node: parseMarkdownToTree('# A\n- wrapper\n  - database target', 'doc'), theme: null, fitKey: '035b.md', reveal: null }
+  const wrapper = props.node.children[0].children[0]
+  const target = wrapper.children[0]
+  try {
+    let rendered = renderCanvasAfterEffects(harness, props, true)
+    for (const fn of harness.rafQueue.splice(0)) if (fn) fn()
+    // 先折叠 wrapper：模拟大脑图下的真实起点（目标不可见）。
+    findInTree(rendered, (el) => el.type === TreeRow2).props.onToggleCollapse(wrapper.id)
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.type === TreeRow2).props.collapsed.has(wrapper.id), true, 'wrapper collapsed first')
+    // 打开搜索并输入：目标在折叠子树里也必须真正可见。
+    dispatchWinKeyDown(harness, { key: 'f', metaKey: true, ctrlKey: false, altKey: false, defaultPrevented: false, target: null, preventDefault() {} })
+    rendered = renderCanvasAfterEffects(harness, props)
+    // 挂假滚动区：findBoxByNodeId 命中目标盒；盒子中心 (950, 380) →
+    // 聚焦锚位 (25%, 50%) of 800×600 → 期望滚动 (950−200, 380−300) = (750, 80)。
+    const fake = {
+      clientWidth: 800, clientHeight: 600, scrollLeft: 0, scrollTop: 0, style: {},
+      setPointerCapture() {}, releasePointerCapture() {},
+      querySelectorAll: () => [{ isConnected: true, getAttribute: () => target.id, getBoundingClientRect: () => ({ left: 900, top: 360, right: 1000, bottom: 400, width: 100, height: 40 }) }],
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 }),
+    }
+    const scrollEl = findInTree(rendered, (el) => el.props && typeof el.props.onPointerDown === 'function' && typeof el.props.onPointerMove === 'function')
+    scrollEl.props.ref.current = fake
+    findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onChange({ target: { value: 'database' } })
+    rendered = renderCanvasAfterEffects(harness, props)
+    // 祖先路径已展开（wrapper 不再折叠），目标盒滚入聚焦锚位，zoom 状态未动。
+    assert.equal(findInTree(rendered, (el) => el.type === TreeRow2).props.collapsed.has(wrapper.id), false, 'collapsed ancestor auto-expanded')
+    assert.equal(fake.scrollLeft, 750)
+    assert.equal(fake.scrollTop, 80)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '1 / 1')
+  } finally {
+    driver.unmount()
+  }
+})
+
+test('035 canvas search: AI update reconciles to a surviving match; document switch resets the search', () => {
+  const harness = loadClientWithEffectDriver()
+  const { driver } = harness
+  const S2 = harness.internals.S
+  const mk = (md) => parseMarkdownToTree(md, 'doc')
+  let props = { node: mk('- one db\n- two db\n- three db\n- four db'), theme: null, fitKey: '035c.md', reveal: null }
+  try {
+    let rendered = renderCanvasAfterEffects(harness, props, true)
+    for (const fn of harness.rafQueue.splice(0)) if (fn) fn()
+    dispatchWinKeyDown(harness, { key: 'f', metaKey: true, ctrlKey: false, altKey: false, defaultPrevented: false, target: null, preventDefault() {} })
+    rendered = renderCanvasAfterEffects(harness, props)
+    findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onChange({ target: { value: 'db' } })
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '1 / 4')
+    // 走到第 4 个命中（four db）。每轮重取 input 并重渲染——handler 闭包
+    // 捕获当轮 searchIndex，复用旧渲染的 handler 会原地踏步。
+    for (let i = 0; i < 3; i++) {
+      findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…').props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} })
+      rendered = renderCanvasAfterEffects(harness, props)
+    }
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '4 / 4')
+    // AI 删掉 four db 并重渲染（同文档，结构 id 稳定）：原命中消失 → 安全回落
+    // 第一个存活命中，不抛错、不清 query。
+    props = { ...props, node: mk('- one db\n- two db\n- three db') }
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.style === S2.searchCount).props.children, '1 / 3', 'falls back to the first surviving match')
+    // 切换文档（fitKey 变化）：搜索状态整体重置。
+    props = { node: mk('# Fresh\n- clean slate'), theme: null, fitKey: 'other.md', reveal: null }
+    rendered = renderCanvasAfterEffects(harness, props)
+    assert.equal(findInTree(rendered, (el) => el.props && el.props.placeholder === '搜索节点…'), null, 'search reset on document switch')
+  } finally {
+    driver.unmount()
+  }
 })
