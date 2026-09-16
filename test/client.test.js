@@ -3050,6 +3050,9 @@ test('035 canvas search: Cmd/Ctrl+F opens, typing counts, Enter/Shift+Enter wrap
     assert.equal(harness.winListeners.filter((l) => l.type === 'keydown').length, keydownCount - 1, 'Escape listener unregistered on close')
   } finally {
     driver.unmount()
+    // 卸载（切到目录树 / BS 重载 / 关面板）：全部 keydown 监听按引用移除，
+    // 不留僵尸——下一次挂载各自重新注册，不会重复绑定。
+    assert.equal(harness.winListeners.filter((l) => l.type === 'keydown').length, 0, 'no zombie keydown listeners after unmount')
   }
 })
 
