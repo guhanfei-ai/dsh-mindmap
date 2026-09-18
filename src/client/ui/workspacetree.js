@@ -206,9 +206,10 @@
 				});
 			}
 			function directoryLabel(name, expanded) {
+				const label = treeDirLabel(name);
 				return (0, react_jsx_runtime.jsx)("span", {
 					style: { flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
-					children: variant === "sidebar" ? name : `${expanded ? "📂" : "📁"} ${name}`,
+					children: variant === "sidebar" ? label : `${expanded ? "📂" : "📁"} ${label}`,
 				});
 			}
 			function blockFileInteraction(event) {
@@ -439,11 +440,9 @@
 									style: S.treeMenuItem,
 									onClick: () => {
 										setTreeMenu(null);
-										fillDraft(treeMenu.kind === "dir"
-											? `我想在 ${treeMenu.rel} 目录里创建一个 Markdown 脑图`
-											: "我想创建一个脑图");
+										fillDraft(treeCreateDraft(treeMenu.rel));
 									},
-									children: treeMenu.kind === "dir" ? "在此目录新建 Markdown 脑图" : "新建 Markdown 脑图",
+									children: treeCreateLabel(treeMenu.rel),
 								}),
 							],
 						}) : null,

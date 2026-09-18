@@ -306,6 +306,11 @@
 			planGrowthReveal,
 			relPathWithin,
 			visibleTreeRows,
+			// 036 脑图收件箱：默认目录的显示文案与新建入口（供测试）。
+			DEFAULT_MINDMAP_DIR,
+			treeDirLabel,
+			treeCreateDraft,
+			treeCreateLabel,
 			// 025 草稿保护：宿主草稿读取面的能力探测（供测试）。
 			readDraftText,
 			draftBlocksAutoSend,

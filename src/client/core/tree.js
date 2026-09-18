@@ -40,6 +40,29 @@
 		}
 		//#endregion
 
+		//#region 036 脑图收件箱：默认目录的显示文案与新建入口（纯函数）
+		const DEFAULT_MINDMAP_DIR = ".mindmaps";
+		const DEFAULT_MINDMAP_DIR_LABEL = "脑图收件箱（.mindmaps）";
+
+		/** 目录树显示名：点号目录看着像工具残留，收件箱给一句人话（真实路径仍在 title 上）。 */
+		function treeDirLabel(name) {
+			const raw = String(name ?? "");
+			return raw === DEFAULT_MINDMAP_DIR ? DEFAULT_MINDMAP_DIR_LABEL : raw;
+		}
+
+		/** 新建入口文案：有目录上下文就写进那个目录，没有才交给默认收件箱。 */
+		function treeCreateDraft(relDirectory) {
+			const dir = String(relDirectory ?? "").trim();
+			return dir
+				? `我想在 ${dir} 目录里创建一个 Markdown 脑图`
+				: `我想新建一个脑图，按默认命名放进 ${DEFAULT_MINDMAP_DIR} 脑图收件箱`;
+		}
+
+		function treeCreateLabel(relDirectory) {
+			return String(relDirectory ?? "").trim() ? "在此目录新建 Markdown 脑图" : "在脑图收件箱新建脑图";
+		}
+		//#endregion
+
 		//#region 025 草稿保护：能力探测（宿主是否让插件读到聊天草稿）
 		/**
 		 * 读取当前聊天草稿。宿主契约只保证 setDraft/submit，读取面属可选能力：

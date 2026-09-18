@@ -77,7 +77,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -1076,6 +1076,26 @@ test('relPathWithin strips the cwd prefix and falls back to the entry name outsi
   assert.equal(relPathWithin('', 'a.md', 'a.md'), 'a.md')
   // Windows 分隔符折算
   assert.equal(relPathWithin('C:\\w', 'C:\\w\\a.md', 'a.md'), 'a.md')
+})
+
+test('treeDirLabel renames only the mindmap inbox, and the create entry follows the directory context', () => {
+  assert.equal(treeDirLabel(DEFAULT_MINDMAP_DIR), '脑图收件箱（.mindmaps）')
+  assert.equal(treeDirLabel('docs'), 'docs')
+  assert.equal(treeDirLabel('.git'), '.git')
+  assert.equal(treeDirLabel(undefined), '')
+  // 有目录上下文 = 尊重用户选的位置；没有才交给默认收件箱。
+  assert.equal(treeCreateDraft('planning'), '我想在 planning 目录里创建一个 Markdown 脑图')
+  assert.equal(treeCreateLabel('planning'), '在此目录新建 Markdown 脑图')
+  assert.match(treeCreateDraft(''), new RegExp(DEFAULT_MINDMAP_DIR))
+  assert.equal(treeCreateLabel(''), '在脑图收件箱新建脑图')
+  // 根目录右键的 rel 恒为空串，与「无目录上下文」同义。
+  assert.equal(treeCreateDraft(undefined), treeCreateDraft(''))
+})
+
+test('the client inbox constant matches the host default directory', async () => {
+  // 两端各写一份常量最容易漂：host 改了目录名，客户端标签就得跟着改。
+  const { internals: host } = await import('../index.js')
+  assert.equal(DEFAULT_MINDMAP_DIR, host.DEFAULT_MINDMAP_DIR)
 })
 
 test('resolveToken walks override → fallback chain → registry default', () => {

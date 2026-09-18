@@ -7,6 +7,7 @@ import vm from 'node:vm'
 function renderList(variant) {
   const entries = ['map.md', 'UPPER.MD', 'notes.txt', 'image.png', 'data.json'].map(name => ({ name, path: `/w/${name}`, isDir: false }))
   entries.push({ name: 'folder', path: '/w/folder', isDir: true })
+  entries.push({ name: '.mindmaps', path: '/w/.mindmaps', isDir: true, hidden: true })
   const fsTree = { cwd: '/w', nodes: { '/w': { path: '/w', name: 'workspace', parentPath: null, entries } }, expanded: { '/w': true }, loading: {}, error: null }
   const calls = []
   let definition
@@ -71,4 +72,14 @@ test('standalone list retains its M badge and existing hover behavior', () => {
   assert.ok(find(row('map.md'), el => el.props.children === 'M'))
   assert.equal(row('notes.txt').props['aria-disabled'], undefined)
   assert.equal(typeof row('notes.txt').props.onMouseEnter, 'function')
+})
+
+test('the inbox row shows its Chinese label while other folders keep their name', () => {
+  // 走构建产物 client.js，确认 treeDirLabel 真的接进了渲染路径（不只是纯函数）。
+  const { row, find } = renderList('sidebar')
+  const inbox = row('.mindmaps')
+  assert.ok(find(inbox, el => el.props.children === '脑图收件箱（.mindmaps）'))
+  // 真实路径仍在 title 上，文件系统里没改名。
+  assert.equal(inbox.props.title, '/w/.mindmaps')
+  assert.ok(find(row('folder'), el => el.props.children === 'folder'))
 })

@@ -19,7 +19,7 @@ A DeepSeek Harness plugin that turns a plain Markdown file into a live mindmap. 
 - **Live panel with zero extra channels** — the panel consumes the session snapshot (`mindmap_*` tool results), so every AI edit re-renders immediately.
 - **Reliable open, recoverable loading state** — AI create/open results always expand the panel (a structural-fingerprint selector drives snapshot recomputation even when the host reuses the nodes array reference); clicking a `.md` first reads it through the local read-only route, while AI fallback loading still recovers from case-only path mismatches, inline tool errors, and a ~30s watchdog timeout with one-click retry.
 - **Floating right panel or native sidebar tab** — when `dsh-better-sidebar` is installed, the mindmap registers as a native single-instance tab (`dsh-mindmap:mindmap`) inside Better Sidebar, with a compact one-row toolbar (mindmap list, current mindmap, and export on the same line); the header 思维脑图 button opens or focuses that tab. When Better Sidebar is absent, the panel falls back to a standalone floating right panel toggled by the 思维脑图 button — drag-resizable (280px ~ 80% viewport), persisted, and pushing the chat left (layout-push) so the two never overlap. AI create/open/view intents always open or focus the panel/tab and switch to the target document, including when it is currently closed or the same document is opened again. The mode switch is fully reversible: if Better Sidebar is unloaded mid-session, the standalone panel and layout-push CSS are restored automatically.
-- **Directory tree tab** — a persistent tree of the session working directory (served by plugin-owned read-only routes), lazy-loaded per directory; right-click to create a mindmap at the root or inside a directory; left-click a `.md` renders it through the read-only route first, then hands it to the AI for editing when the draft is empty. Labeled 目录 in standalone mode and 脑图列表 in sidebar mode.
+- **Directory tree tab** — a persistent tree of the session working directory (served by plugin-owned read-only routes), lazy-loaded per directory; right-click to create a mindmap in the inbox or inside a directory; left-click a `.md` renders it through the read-only route first, then hands it to the AI for editing when the draft is empty. Labeled 目录 in standalone mode and 脑图列表 in sidebar mode.
 - **Single-mindmap mode** — two tabs only: the tree/list tab and 脑图 (the current mindmap); opening another `.md` replaces the previous one.
 - **"What you see is what the AI edits"** — when the visible mindmap differs from the AI's working document, the panel automatically asks the AI to open it, keeping the chat focus in sync.
 - **MarkGrove-style mapping** — heading hierarchy, nested lists (empty items become placeholder nodes), code blocks as leaf nodes, paragraphs promoted to their own nodes (019 block concept), stable structural IDs, and orthogonal connector lines between nodes.
@@ -33,6 +33,21 @@ A DeepSeek Harness plugin that turns a plain Markdown file into a live mindmap. 
 Inside Better Sidebar, the mindmap list uses the host's 14px body typography. Markdown files carry a compact M badge; folders and other files use 14px outline icons. Other file formats are display-only, without hover feedback, opening, dragging, or context menus; folders remain expandable. Tabs, actions, and hints use the host's 12px typography role. Standalone mode retains its original appearance, and mindmap node typography, zoom, and image export are unchanged.
 
 The embedded M badge uses a transparent background and inherits the filename's theme color for both its bold letter and outline, so it follows light/dark themes and custom skins without relying on accent-color contrast.
+
+## Where new mindmaps go
+
+When you ask for a mindmap without naming a location — "创建一个脑图", "把刚才的讨论整理成脑图", "盘点一下这个问题" — the file lands in **`.mindmaps/`**, the mindmap inbox:
+
+```text
+.mindmaps/20260918-155230-项目盘点.md
+```
+
+- The `YYYYMMDD-HHmmss` stamp is read by the host from the real clock; the model only supplies the short description (cleaned and truncated to 24 characters). Two captures in the same second get `-2`, `-3`, … suffixes — an existing file is never overwritten, and the write-confirmation names the exact file it is about to create.
+- The path is checked twice: once when the confirmation is drawn, and again against the filesystem right before the write. If the target directory moved or was swapped for a symlink while you were reading the confirmation, the create is refused instead of writing outside the session working directory.
+- `.mindmaps/` is created on first use, not at install time. The directory tree shows it as **脑图收件箱（.mindmaps）**, because a dotted folder otherwise reads as tool residue.
+- Nothing is added to `.gitignore` for you. A mindmap stays an ordinary Markdown file: review it, diff it, commit it, or move it somewhere permanent.
+- Say the location instead and it is respected: `docs/架构脑图.md`, `planning/迭代计划.md`, or right-click a folder in the tree and choose 在此目录新建 Markdown 脑图. An explicit directory is never rewritten into the inbox (and still has to stay inside the session working directory).
+- Because the root node title *is* the filename, a default-created mindmap shows its own timestamp as the root title for now. Splitting filename from display title is a separate decision, so rename the root when you want a clean title.
 
 ## Requirements
 
@@ -59,7 +74,7 @@ dsh plugin --profile <profile> add <pkg>#v<version>
 
 | Tool | Description |
 | --- | --- |
-| `mindmap_create(name, directory?)` | Create `<name>.md` in the session working directory or an optional relative directory and show it in the panel (fails if it exists). |
+| `mindmap_create(name? \| description, directory?)` | Create a mindmap and show it in the panel (fails if the file already exists). With `name`, the file is `<name>.md`; without it, pass a short `description` and the host names the file `YYYYMMDD-HHmmss-<description>.md` inside the `.mindmaps/` inbox. Pass `directory` only when the user chose a location. |
 | `mindmap_open(path)` | Open an existing `.md` as a mindmap in the panel. |
 | `mindmap_get(path)` | Read the current Markdown content and revision of a mindmap document. |
 | `mindmap_update(path, content, renameRoot?, expectedRevision?)` | Write the full Markdown; pass the read revision to reject stale writes; optionally rename the root node (renames the file, collisions rejected). |

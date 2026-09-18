@@ -974,6 +974,29 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
+		//#region 036 脑图收件箱：默认目录的显示文案与新建入口（纯函数）
+		const DEFAULT_MINDMAP_DIR = ".mindmaps";
+		const DEFAULT_MINDMAP_DIR_LABEL = "脑图收件箱（.mindmaps）";
+
+		/** 目录树显示名：点号目录看着像工具残留，收件箱给一句人话（真实路径仍在 title 上）。 */
+		function treeDirLabel(name) {
+			const raw = String(name ?? "");
+			return raw === DEFAULT_MINDMAP_DIR ? DEFAULT_MINDMAP_DIR_LABEL : raw;
+		}
+
+		/** 新建入口文案：有目录上下文就写进那个目录，没有才交给默认收件箱。 */
+		function treeCreateDraft(relDirectory) {
+			const dir = String(relDirectory ?? "").trim();
+			return dir
+				? `我想在 ${dir} 目录里创建一个 Markdown 脑图`
+				: `我想新建一个脑图，按默认命名放进 ${DEFAULT_MINDMAP_DIR} 脑图收件箱`;
+		}
+
+		function treeCreateLabel(relDirectory) {
+			return String(relDirectory ?? "").trim() ? "在此目录新建 Markdown 脑图" : "在脑图收件箱新建脑图";
+		}
+		//#endregion
+
 		//#region 025 草稿保护：能力探测（宿主是否让插件读到聊天草稿）
 		/**
 		 * 读取当前聊天草稿。宿主契约只保证 setDraft/submit，读取面属可选能力：
@@ -3661,9 +3684,10 @@ window.__ModuleLoader__.load({
 				});
 			}
 			function directoryLabel(name, expanded) {
+				const label = treeDirLabel(name);
 				return (0, react_jsx_runtime.jsx)("span", {
 					style: { flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
-					children: variant === "sidebar" ? name : `${expanded ? "📂" : "📁"} ${name}`,
+					children: variant === "sidebar" ? label : `${expanded ? "📂" : "📁"} ${label}`,
 				});
 			}
 			function blockFileInteraction(event) {
@@ -3894,11 +3918,9 @@ window.__ModuleLoader__.load({
 									style: S.treeMenuItem,
 									onClick: () => {
 										setTreeMenu(null);
-										fillDraft(treeMenu.kind === "dir"
-											? `我想在 ${treeMenu.rel} 目录里创建一个 Markdown 脑图`
-											: "我想创建一个脑图");
+										fillDraft(treeCreateDraft(treeMenu.rel));
 									},
-									children: treeMenu.kind === "dir" ? "在此目录新建 Markdown 脑图" : "新建 Markdown 脑图",
+									children: treeCreateLabel(treeMenu.rel),
 								}),
 							],
 						}) : null,
@@ -4886,6 +4908,11 @@ window.__ModuleLoader__.load({
 			planGrowthReveal,
 			relPathWithin,
 			visibleTreeRows,
+			// 036 脑图收件箱：默认目录的显示文案与新建入口（供测试）。
+			DEFAULT_MINDMAP_DIR,
+			treeDirLabel,
+			treeCreateDraft,
+			treeCreateLabel,
 			// 025 草稿保护：宿主草稿读取面的能力探测（供测试）。
 			readDraftText,
 			draftBlocksAutoSend,

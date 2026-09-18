@@ -1,12 +1,27 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 
 import { apply, internals } from '../index.js'
 
-const { sanitizeStem, resolveMindmapPath, resolveTreePath, listDirectoryLevel, isTrustedRequest, buildResult } = internals
+const {
+  DEFAULT_MINDMAP_DIR,
+  sanitizeStem,
+  sanitizeDescription,
+  timestampStamp,
+  planCreatePaths,
+  stemForAttempt,
+  firstFreeAttempt,
+  createMindmapFile,
+  resolveWriteTimeTarget,
+  resolveMindmapPath,
+  resolveTreePath,
+  listDirectoryLevel,
+  isTrustedRequest,
+  buildResult,
+} = internals
 
 function execution(cwd) {
   return {
@@ -100,6 +115,13 @@ function parseResult(value) {
   return JSON.parse(value)
 }
 
+/** 取回 create 审批里用户实际确认的那条路径（reason 中以 `at "<path>"` 呈现）。 */
+function approvedPath(decision) {
+  const found = /at "((?:[^"\\]|\\.)*)"/.exec(decision?.reason ?? '')
+  if (!found) throw new Error(`approval reason lost the target path: ${decision?.reason}`)
+  return JSON.parse(`"${found[1]}"`)
+}
+
 test('apply registers the four tools and the GUIDANCE section', () => {
   const { tools, sections } = createContext()
   assert.deepEqual(
@@ -115,16 +137,131 @@ test('apply registers the four tools and the GUIDANCE section', () => {
   assert.ok(sections[0].text.includes('never a fragment'))
 })
 
-test('mindmap_create writes an empty file and reports root title', async () => {
+test('mindmap_create files an explicit name into the inbox and reports root title', async () => {
   const cwd = await tmpWorkspace()
   const { byName } = createContext()
   const result = parseResult(await byName('mindmap_create').execute({ name: '产品规划' }, execution(cwd)))
   assert.equal(result.ok, true)
   assert.equal(result.op, 'create')
-  assert.equal(result.path, join(cwd, '产品规划.md'))
+  assert.equal(result.path, join(cwd, DEFAULT_MINDMAP_DIR, '产品规划.md'))
   assert.equal(result.rootTitle, '产品规划')
   assert.equal(result.content, '')
-  assert.equal(await readFile(join(cwd, '产品规划.md'), 'utf8'), '')
+  assert.equal(await readFile(join(cwd, DEFAULT_MINDMAP_DIR, '产品规划.md'), 'utf8'), '')
+  // 036：收件箱按需创建，且不替用户动 .gitignore——脑图是普通 Markdown，
+  // 审阅、diff、提交由用户自己决定。
+  assert.deepEqual(await readdir(cwd), [DEFAULT_MINDMAP_DIR])
+})
+
+test('mindmap_create auto-names a nameless request with the host timestamp', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  const result = parseResult(await byName('mindmap_create').execute({ description: '项目盘点' }, execution(cwd)))
+  assert.match(result.path, new RegExp(`^${join(cwd, DEFAULT_MINDMAP_DIR).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/\\d{8}-\\d{6}-项目盘点\\.md$`))
+  assert.match(result.rootTitle, /^\d{8}-\d{6}-项目盘点$/)
+  assert.equal(await readFile(result.path, 'utf8'), '')
+  // 根标题暂时带上时间戳（036 第四节）：文件名与显示标题分离是独立需求。
+  assert.equal(JSON.parse(await byName('mindmap_get').execute({ path: result.path }, execution(cwd))).op, 'get')
+})
+
+test('mindmap_create reuses an existing inbox without disturbing it', async () => {
+  const cwd = await tmpWorkspace()
+  const dir = join(cwd, DEFAULT_MINDMAP_DIR)
+  await mkdir(dir)
+  await writeFile(join(dir, 'keep.md'), '# keep\n', 'utf8')
+  const { byName } = createContext()
+  const first = parseResult(await byName('mindmap_create').execute({ description: '第一颗' }, execution(cwd)))
+  const second = parseResult(await byName('mindmap_create').execute({ description: '第二颗' }, execution(cwd)))
+  assert.notEqual(first.path, second.path)
+  assert.deepEqual(
+    (await readdir(dir)).sort(),
+    ['keep.md', first.path.split('/').pop(), second.path.split('/').pop()].sort(),
+  )
+  assert.equal(await readFile(join(dir, 'keep.md'), 'utf8'), '# keep\n')
+})
+
+test('mindmap_create requires either a name or a description', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  const create = byName('mindmap_create')
+  await assert.rejects(create.execute({}, execution(cwd)), /needs either `name`/)
+  await assert.rejects(create.execute({ description: '   ' }, execution(cwd)), /needs either `name`/)
+  await assert.rejects(create.execute({ name: '  ' }, execution(cwd)), /needs either `name`/)
+})
+
+test('timestampStamp renders local time as YYYYMMDD-HHmmss with zero padding', () => {
+  assert.equal(timestampStamp(new Date(2026, 0, 5, 9, 8, 7)), '20260105-090807')
+  assert.equal(timestampStamp(new Date(2026, 8, 18, 15, 52, 30)), '20260918-155230')
+})
+
+test('sanitizeDescription cleans whitespace, truncates and rejects unsafe phrases', () => {
+  assert.equal(sanitizeDescription('  项目   盘点 '), '项目 盘点')
+  assert.equal(sanitizeDescription('迭代计划。'), '迭代计划。')
+  assert.equal(sanitizeDescription('x'.repeat(internals.MAX_DESCRIPTION_CHARS + 12)).length, internals.MAX_DESCRIPTION_CHARS)
+  // 截断只按字符数走，不切开代理对（emoji 是一个 code point）。
+  assert.equal([...sanitizeDescription('🧠'.repeat(30))].length, internals.MAX_DESCRIPTION_CHARS)
+  assert.throws(() => sanitizeDescription(''), /must not be empty/)
+  assert.throws(() => sanitizeDescription('  ..  '), /must not be empty/)
+  assert.throws(() => sanitizeDescription('a/b'), /not allowed/)
+  assert.throws(() => sanitizeDescription('a\\b'), /not allowed/)
+  // eslint-disable-next-line no-control-regex
+  assert.throws(() => sanitizeDescription('a\u0007b'), /control characters/)
+})
+
+test('planCreatePaths is pure and pins the stamp for both approval and execute', () => {
+  const now = new Date(2026, 8, 18, 15, 52, 30)
+  assert.deepEqual(planCreatePaths('/w', { description: '项目盘点' }, now), {
+    stem: '20260918-155230-项目盘点',
+    relative: join('.mindmaps', '20260918-155230-项目盘点.md'),
+    defaultDir: true,
+    autoNamed: true,
+  })
+  // 显式名 + 无目录：落进收件箱，但主干是用户的命名意图，不能自动改名。
+  const explicit = planCreatePaths('/w', { name: '路线图' }, now)
+  assert.deepEqual([explicit.stem, explicit.defaultDir, explicit.autoNamed], ['路线图', true, false])
+  // 显式目录优先，且没有 `.mindmaps` 影子。
+  const placed = planCreatePaths('/w', { name: '架构', directory: 'docs' }, now)
+  assert.deepEqual([placed.relative, placed.defaultDir], [join('docs', '架构.md'), false])
+  assert.throws(() => planCreatePaths(null, { description: 'x' }, now), /no working directory/)
+})
+
+test('stemForAttempt and firstFreeAttempt pick the next free default name', async () => {
+  assert.equal(stemForAttempt('stem', 1), 'stem')
+  assert.equal(stemForAttempt('stem', 2), 'stem-2')
+  assert.equal(stemForAttempt('stem', 3), 'stem-3')
+  const dir = await tmpWorkspace()
+  assert.equal(await firstFreeAttempt(dir, 'stem'), 1)
+  await writeFile(join(dir, 'stem.md'), '# 已有\n', 'utf8')
+  await writeFile(join(dir, 'stem-2.md'), '', 'utf8')
+  assert.equal(await firstFreeAttempt(dir, 'stem'), 3)
+  // 目录不存在（收件箱还没建）时不报错，首个候选即空位。
+  assert.equal(await firstFreeAttempt(join(dir, 'nope'), 'stem'), 1)
+})
+
+test('createMindmapFile prefers the approved candidate and steps only when it is taken', async () => {
+  const dir = await tmpWorkspace()
+  const plan = (stem, attempt = 1, autoNamed = true) => ({ relative: `${stem}.md`, stem, attempt, autoNamed })
+  // 候选空着就写候选，一个字节都不挪。
+  assert.equal(await createMindmapFile(dir, plan('free')), join(dir, 'free.md'))
+  await writeFile(join(dir, 'stem.md'), '# 已有内容\n', 'utf8')
+  // 审批到写盘之间被别人抢注：往后挪一个空闲后缀，且绝不覆盖抢注者的字节。
+  assert.equal(await createMindmapFile(dir, plan('stem')), join(dir, 'stem-2.md'))
+  assert.equal(await readFile(join(dir, 'stem.md'), 'utf8'), '# 已有内容\n')
+  // 显式命名维持既有语义：只试那一条，撞名报错让他去开那份旧的，绝不代他改名。
+  await assert.rejects(createMindmapFile(dir, plan('stem', 1, false)), /already exists.*mindmap_open/)
+  assert.deepEqual((await readdir(dir)).sort(), ['free.md', 'stem-2.md', 'stem.md'])
+})
+
+test('resolveWriteTimeTarget re-resolves the path and rejects a directory swapped for an outside symlink', async () => {
+  const dir = await tmpWorkspace()
+  const outside = await tmpWorkspace()
+  assert.equal(await resolveWriteTimeTarget(dir, 'notes/x.md'), join(dir, 'notes', 'x.md'))
+  await mkdir(join(dir, 'notes'))
+  await rename(join(dir, 'notes'), join(dir, 'notes-old'))
+  await symlink(outside, join(dir, 'notes'))
+  // 审批阶段这条路径合法；写盘瞬间重解析发现它已经出界，一律拒。
+  await assert.rejects(resolveWriteTimeTarget(dir, 'notes/x.md'), /Refusing to create the mindmap.*stay inside/)
+  await assert.rejects(resolveMindmapPath(dir, 'notes/x.md'), /stay inside/)
+  assert.deepEqual(await readdir(outside), [])
 })
 
 test('mindmap_create can create inside a relative directory without escaping cwd', async () => {
@@ -142,10 +279,11 @@ test('mindmap_create accepts a name with .md suffix and rejects unsafe names', a
   const { byName } = createContext()
   const create = byName('mindmap_create')
   const result = parseResult(await create.execute({ name: 'notes.md' }, execution(cwd)))
-  assert.equal(result.path, join(cwd, 'notes.md'))
+  assert.equal(result.path, join(cwd, DEFAULT_MINDMAP_DIR, 'notes.md'))
   await assert.rejects(create.execute({ name: 'a/b' }, execution(cwd)), /not allowed/)
   await assert.rejects(create.execute({ name: '..' }, execution(cwd)), /Invalid mindmap name/)
-  await assert.rejects(create.execute({ name: '  ' }, execution(cwd)), /must not be empty/)
+  // 只有空白的名等同于没给名：报「二选一」比报「名字不能为空」更可执行。
+  await assert.rejects(create.execute({ name: '  ' }, execution(cwd)), /needs either `name`/)
   await assert.rejects(create.execute({ name: 'x'.repeat(81) }, execution(cwd)), /must not exceed/)
 })
 
@@ -154,6 +292,186 @@ test('mindmap_create fails when the file already exists', async () => {
   const { byName } = createContext()
   await byName('mindmap_create').execute({ name: 'dup' }, execution(cwd))
   await assert.rejects(byName('mindmap_create').execute({ name: 'dup' }, execution(cwd)), /already exists/)
+})
+
+test('mindmap_create rejects an inbox blocked by a same-named file', async () => {
+  const cwd = await tmpWorkspace()
+  await writeFile(join(cwd, DEFAULT_MINDMAP_DIR), 'not a directory', 'utf8')
+  const { byName } = createContext()
+  await assert.rejects(
+    byName('mindmap_create').execute({ description: '无处安放' }, execution(cwd)),
+    /exists and is not a directory/,
+  )
+  assert.equal(await readFile(join(cwd, DEFAULT_MINDMAP_DIR), 'utf8'), 'not a directory')
+})
+
+test('mindmap_create rejects an inbox symlinked out of the working directory', async () => {
+  const cwd = await tmpWorkspace()
+  const outside = await tmpWorkspace()
+  await symlink(outside, join(cwd, DEFAULT_MINDMAP_DIR))
+  const { byName } = createContext()
+  await assert.rejects(
+    byName('mindmap_create').execute({ description: '越狱' }, execution(cwd)),
+    /stay inside/,
+  )
+  assert.deepEqual(await readdir(outside), [])
+})
+
+test('the approval target of a default create is the path actually written', async () => {
+  const cwd = await tmpWorkspace()
+  const session = { header: { cwd } }
+  const { listeners, byName } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const resultListener = listeners.get('tools/result')
+  const args = { description: '待确认' }
+  const exec = { ...execution(cwd), agent: { session }, name: 'mindmap_create', arguments: args }
+  const ask = await listener(exec, async () => ({ kind: 'allow' }))
+  assert.equal(ask.kind, 'ask')
+  const target = approvedPath(ask)
+  assert.equal(target, join(cwd, DEFAULT_MINDMAP_DIR, `${target.split('/').pop()}`))
+  assert.match(target.split('/').pop(), /^\d{8}-\d{6}-待确认\.md$/)
+  // 审批算出的路径必须就是写盘的那条：否则会话授权既记错文件、又白要一次确认。
+  const created = parseResult(await byName('mindmap_create').execute(args, exec))
+  assert.equal(created.path, target)
+  resultListener(exec, { isError: false })
+  assert.deepEqual(await listener(exec, async () => ({ kind: 'allow' })), { kind: 'allow' })
+})
+
+test('the approval candidate is always a free name, and the write lands exactly there', async () => {
+  const cwd = await tmpWorkspace()
+  const inbox = join(cwd, DEFAULT_MINDMAP_DIR)
+  const session = { header: { cwd } }
+  const { listeners, byName } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const args = { description: '项目盘点' }
+  const first = parseResult(await byName('mindmap_create').execute(args, execution(cwd)))
+  // 连做两轮「审批 → 写盘」：第二轮若与第一轮同秒，探测必须把 -2 报出来；
+  // 跨到下一秒则是全新名字。两种情况下不变式都一样——确认的路径没被占用。
+  for (let round = 0; round < 2; round += 1) {
+    const exec = { ...execution(cwd), agent: { session }, name: 'mindmap_create', arguments: args }
+    const target = approvedPath(await listener(exec, async () => ({ kind: 'allow' })))
+    assert.equal((await readdir(inbox)).includes(target.split('/').pop()), false, round)
+    // 确认框不能报一条已经被占用、因此必定写不进去的路径：那等于让用户确认一个
+    // 永远不会存在的文件，而实际写盘的 -2 他从没见过。
+    assert.notEqual(target, first.path)
+    const created = parseResult(await byName('mindmap_create').execute(args, exec))
+    assert.equal(created.path, target, round)
+    assert.equal(created.rootTitle, target.split('/').pop().replace(/\.md$/, ''), round)
+  }
+  const names = await readdir(inbox)
+  assert.equal(names.length, 3)
+  assert.equal(await readFile(first.path, 'utf8'), '')
+})
+
+test('a default name claimed while the confirmation is pending rebinds the grant to the real path', async () => {
+  const cwd = await tmpWorkspace()
+  const inbox = join(cwd, DEFAULT_MINDMAP_DIR)
+  const session = { header: { cwd } }
+  const { listeners, byName } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const resultListener = listeners.get('tools/result')
+  const allow = async () => ({ kind: 'allow' })
+  const args = { description: '并发盘点' }
+  const exec = { ...execution(cwd), agent: { session }, name: 'mindmap_create', arguments: args }
+  const approved = approvedPath(await listener(exec, allow))
+  // 用户还在读确认框，另一个调用把这个名字抢注了——探测与写盘之间唯一的残留窗口。
+  await mkdir(inbox, { recursive: true })
+  await writeFile(approved, '# 别人先建的\n', 'utf8')
+  const created = parseResult(await byName('mindmap_create').execute(args, exec))
+  // 抢注者的字节分毫未动，本次只挪到下一个空闲后缀，且没有半成品。
+  assert.equal(await readFile(approved, 'utf8'), '# 别人先建的\n')
+  assert.deepEqual((await readdir(inbox)).sort(), [approved, created.path].map((p) => p.split('/').pop()).sort())
+  // 工具结果报出的必须是真实落盘路径（用户可见的最终路径）。
+  assert.notEqual(created.path, approved)
+  assert.equal(created.path, join(inbox, `${approved.split('/').pop().replace(/\.md$/, '')}-2.md`))
+  assert.equal(created.rootTitle, created.path.split('/').pop().replace(/\.md$/, ''))
+  resultListener(exec, { isError: false })
+  const relOf = (path) => `${DEFAULT_MINDMAP_DIR}/${path.split('/').pop()}`
+  const update = (path) => ({ ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: relOf(path), content: 'x' } })
+  // 会话授权记的是实际创建的那条：新文档免确认，抢注者那份仍须单独确认。
+  assert.deepEqual(await listener(update(created.path), allow), { kind: 'allow' })
+  assert.equal((await listener(update(approved), allow)).kind, 'ask')
+})
+
+test('a directory replaced by an outside symlink during the confirmation window blocks the write', async () => {
+  const cwd = await tmpWorkspace()
+  const outside = await tmpWorkspace()
+  await mkdir(join(cwd, 'notes'))
+  const session = { header: { cwd } }
+  const { listeners, byName } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const resultListener = listeners.get('tools/result')
+  const allow = async () => ({ kind: 'allow' })
+  const args = { name: 'review', directory: 'notes' }
+  const exec = { ...execution(cwd), agent: { session }, name: 'mindmap_create', arguments: args }
+  // 审批确认的是当时合法的 cwd 内路径。
+  assert.equal(approvedPath(await listener(exec, allow)), join(cwd, 'notes', 'review.md'))
+  // 用户还在读确认框：目录被改名，原位换成指向工作区外的符号链接。
+  await rename(join(cwd, 'notes'), join(cwd, 'notes-old'))
+  await symlink(outside, join(cwd, 'notes'))
+  // 审批阶段查过不算数：写盘前按当前文件系统重新解析，越界一律拒。
+  await assert.rejects(byName('mindmap_create').execute(args, exec), /Refusing to create the mindmap/)
+  assert.deepEqual(await readdir(outside), [])
+  // 工作区内的原目录还在原地，只是被改了名，没有被覆盖或塞进文件。
+  assert.deepEqual(await readdir(join(cwd, 'notes-old')), [])
+  assert.deepEqual((await readdir(cwd)).sort(), ['notes', 'notes-old'])
+  // 失败结果不发授权：目录恢复原样后，同一条路径仍须重新确认才能写。
+  resultListener(exec, { isError: true })
+  await rm(join(cwd, 'notes'))
+  await rename(join(cwd, 'notes-old'), join(cwd, 'notes'))
+  const update = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'notes/review.md', content: 'x' } }
+  assert.equal((await listener(update, allow)).kind, 'ask')
+})
+
+test('an inbox swapped for an outside symlink during the confirmation window blocks the write', async () => {
+  const cwd = await tmpWorkspace()
+  const outside = await tmpWorkspace()
+  const session = { header: { cwd } }
+  const { listeners, byName } = createContext({ approvalMode: 'session' })
+  const listener = listeners.get('tools/pre-execute')
+  const args = { description: '越狱' }
+  const exec = { ...execution(cwd), agent: { session }, name: 'mindmap_create', arguments: args }
+  // 审批时收件箱还不存在，计划的是「第一次需要时按需创建」。
+  assert.equal(dirname(approvedPath(await listener(exec, async () => ({ kind: 'allow' })))), join(cwd, DEFAULT_MINDMAP_DIR))
+  // 确认期间收件箱位置被占成指向工作区外的符号链接。
+  await symlink(outside, join(cwd, DEFAULT_MINDMAP_DIR))
+  await assert.rejects(byName('mindmap_create').execute(args, exec), /stay inside/)
+  assert.deepEqual(await readdir(outside), [])
+})
+
+test('inbox paths round-trip through open, get, update and renameRoot', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  const created = parseResult(await byName('mindmap_create').execute({ description: '迭代计划' }, execution(cwd)))
+  const rel = `${DEFAULT_MINDMAP_DIR}/${created.path.split('/').pop()}`
+  const opened = parseResult(await byName('mindmap_open').execute({ path: rel }, execution(cwd)))
+  assert.equal(opened.path, created.path)
+  assert.equal(opened.rootTitle, created.rootTitle)
+  const updated = parseResult(await byName('mindmap_update').execute(
+    { path: rel, content: '# 迭代计划\n- 目标\n', expectedRevision: opened.revision },
+    execution(cwd),
+  ))
+  assert.equal(updated.path, created.path)
+  assert.equal(await readFile(created.path, 'utf8'), '# 迭代计划\n- 目标\n')
+  const renamed = parseResult(await byName('mindmap_update').execute({ path: rel, renameRoot: '本季度迭代' }, execution(cwd)))
+  assert.equal(renamed.renamedFrom, created.path)
+  assert.equal(renamed.path, join(cwd, DEFAULT_MINDMAP_DIR, '本季度迭代.md'))
+  assert.equal(renamed.rootTitle, '本季度迭代')
+  assert.deepEqual(await readdir(join(cwd, DEFAULT_MINDMAP_DIR)), ['本季度迭代.md'])
+})
+
+test('GUIDANCE and the create schema teach the inbox default', () => {
+  const { sections, byName } = createContext()
+  const guidance = sections[0].text
+  assert.ok(guidance.includes('mindmap_create(name? | description, directory?)'))
+  assert.ok(guidance.includes(`\`${DEFAULT_MINDMAP_DIR}/\``), 'GUIDANCE must name the inbox directory')
+  assert.match(guidance, /the host stamps the real current time/)
+  assert.match(guidance, /never overwritten/)
+  // 036 并发一致性：抢注后挪名要在结果里报真实路径，模型不能假设就是确认过的那条。
+  assert.match(guidance, /reports the final path in the tool result/)
+  const create = byName('mindmap_create')
+  assert.deepEqual(create.parameters.required, [])
+  assert.deepEqual(Object.keys(create.parameters.properties).sort(), ['description', 'directory', 'name'])
 })
 
 test('mindmap_open reads content and requires the file to exist', async () => {
@@ -573,6 +891,18 @@ test('tree route lists the session cwd with directories first', async () => {
   assert.equal(parsed.value.entries[0].isDir, true)
   assert.equal(parsed.value.entries[1].isDir, false)
   assert.equal(parsed.value.entries[1].hidden, false)
+})
+
+test('tree route lists the inbox as a hidden entry the tree still shows', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName, routes, sessions } = createContext()
+  sessions.set('s1', { header: { cwd } })
+  await byName('mindmap_create').execute({ description: '收件箱' }, execution(cwd))
+  const res = fakeRes()
+  await routes[0].handler(fakeReq({ headers: TRUSTED, body: JSON.stringify({ sessionId: 's1' }) }), res)
+  const entry = JSON.parse(res.body).value.entries.find((e) => e.name === DEFAULT_MINDMAP_DIR)
+  assert.equal(entry.isDir, true)
+  assert.equal(entry.hidden, true)
 })
 
 test('tree route expands a subdirectory inside the cwd and rejects escapes', async () => {
