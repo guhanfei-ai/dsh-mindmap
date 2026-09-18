@@ -156,7 +156,7 @@
 				* 修正 scroll，视图不跳变（内容回到视口内时浏览器会自动钳制回 0）。
 				*/
 				function MindmapCanvas(props) {
-							const { node, theme, fitKey, reveal } = props;
+							const { node, theme, fitKey, reveal, inputActions } = props;
 							const scrollRef = react.useRef(null);
 							const contentRef = react.useRef(null);
 							const zoomRef = react.useRef(1);
@@ -180,11 +180,12 @@
 						const fitStampRef = react.useRef([]);
 						const [zoom, setZoomState] = react.useState(1);
 							const [hover, setHover] = react.useState(null);
-							// 017 节点右键菜单：{x, y, node}；null = 关闭。busy = "copy" |
-							// "export" 表示对应动作进行中（两项都禁用），error 展示失败原因。
+							// 037 节点右键菜单：{x, y, node}；null = 关闭。busy 标记 chat/text/
+							// copy/export 中的当前动作；任一动作在途时整张菜单禁用。
 							const [nodeMenu, setNodeMenu] = react.useState(null);
 							const [nodeMenuBusy, setNodeMenuBusy] = react.useState(null);
 							const [nodeMenuError, setNodeMenuError] = react.useState("");
+							const [nodeMenuHover, setNodeMenuHover] = react.useState(null);
 							const nodeMenuRef = react.useRef(null);
 							// 019 选中态：点击聚焦的节点下选选中环（002 §6 状态体系）。
 							const [selectedId, setSelectedId] = react.useState(null);
@@ -605,6 +606,39 @@
 				// 递归 TreeRow 传回调。聚焦视为用户手动缩放（停自动再适配）。
 				// 033：目标比例经 clampFocusJump 单次最多 ×2/÷2（巨图点叶子不再一步
 				// 怼到 100%，连点渐进 drill）；zoom 变化经 animateZoomTo 平滑过渡。
+				function focusNodeBox(boxEl) {
+					if (!boxEl || !boxEl.isConnected) return false;
+					setSelectedId(boxEl.getAttribute("data-mindmap-node-id"));
+					const rowEl = boxEl.closest("[data-mindmap-row]");
+					if (!rowEl) return false;
+					const scroller = scrollRef.current;
+					if (!scroller) return false;
+					const current = zoomRef.current;
+					const rowRect = rowEl.getBoundingClientRect();
+					const focus = clampFocusJump(
+						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
+						current,
+					);
+					const boxRect = boxEl.getBoundingClientRect();
+					const scrollerRect = scroller.getBoundingClientRect();
+					const startAnchor = {
+						x: (boxRect.left + boxRect.width / 2 - scrollerRect.left) / scroller.clientWidth,
+						y: (boxRect.top + boxRect.height / 2 - scrollerRect.top) / scroller.clientHeight,
+					};
+					userZoomedRef.current = true;
+					if (focus !== current) {
+						anchorRef.current = null;
+						cancelZoomAnim();
+						focusRef.current = { boxEl, startAnchor };
+						animateZoomTo(focus);
+					} else {
+						cancelZoomAnim();
+						focusRef.current = { boxEl, startAnchor };
+						positionFocus();
+					}
+					return true;
+				}
+
 				function onCanvasClick(e) {
 					// 021：刚拖过画布（平移）的这次 click 不是点击，直接吞掉——
 					// 否则每次平移松手都会顺手把选中环清掉。
@@ -621,39 +655,7 @@
 						return;
 					}
 					// 019：聚焦同时记选中态（盒包裹上挂了 data-mindmap-node-id）。
-					setSelectedId(boxEl.getAttribute("data-mindmap-node-id"));
-					const rowEl = boxEl.closest("[data-mindmap-row]");
-					if (!rowEl) return;
-					const scroller = scrollRef.current;
-					if (!scroller) return;
-					const current = zoomRef.current;
-					const rowRect = rowEl.getBoundingClientRect();
-					// 033 跳变钳制：相对当前比例单次最多 ×2 / ÷2。
-					const focus = clampFocusJump(
-						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
-						current,
-					);
-					// 034：记录点击时节点中心的视口比例位置——动画锚位插值起点
-					//（第一帧期望位置 = 点击时位置，消除首帧滚动瞬移）。
-					const boxRect = boxEl.getBoundingClientRect();
-					const scrollerRect = scroller.getBoundingClientRect();
-					const startAnchor = {
-						x: (boxRect.left + boxRect.width / 2 - scrollerRect.left) / scroller.clientWidth,
-						y: (boxRect.top + boxRect.height / 2 - scrollerRect.top) / scroller.clientHeight,
-					};
-					userZoomedRef.current = true;
-					if (focus !== current) {
-						anchorRef.current = null;
-						// 034：先完整截停旧动画（清过期 focusRef + 同步中间值），
-						// 再登记本次聚焦——顺序不能反（cancel 会清 focusRef）。
-						cancelZoomAnim();
-						focusRef.current = { boxEl, startAnchor };
-						animateZoomTo(focus);
-					} else {
-						cancelZoomAnim();
-						focusRef.current = { boxEl, startAnchor };
-						positionFocus();
-					}
+					focusNodeBox(boxEl);
 				}
 
 				// 034 锚位应用：把节点盒中心滚到指定视口比例锚位（滚动增量与视口
@@ -852,14 +854,24 @@
 					setCollapsed((prev) => toggleCollapsed(prev, id));
 				}
 
-				// 017 右键节点：记录菜单锚点与目标子树（清掉上次的忙碌/错误态）。
+				// 037 节点焦点聊天：沿用目录树的自动发送能力，但不覆盖用户已有草稿。
+				function submitNodeChat(text) {
+					return submitNodeFocusMessage(inputActions, text);
+				}
+
+				// 037 右键节点：先完成与左键相同的注意力聚焦，再记录菜单锚点。
 				function onNodeContextMenu(e, target) {
+					const boxEl = e && e.currentTarget && typeof e.currentTarget.closest === "function"
+						? e.currentTarget
+						: (e && e.target && typeof e.target.closest === "function" ? e.target.closest("[data-mindmap-node]") : null);
+					focusNodeBox(boxEl);
 					setNodeMenuBusy(null);
 					setNodeMenuError("");
+					setNodeMenuHover(null);
 					setNodeMenu({ x: e.clientX, y: e.clientY, node: target });
 				}
 
-				// 017 菜单动作：text = 节点全文写剪贴板（020）；copy = PNG 写系统剪贴板
+				// 037 菜单动作：chat = 节点焦点上下文自动发送；text = 子树文本写剪贴板；copy = PNG 写系统剪贴板
 				// （可粘贴到聊天/文档）；export = PNG 下载为文件。图片范围 = 该节点
 				// 及其全部子孙（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
 				async function onNodeMenuAction(mode) {
@@ -868,7 +880,8 @@
 					setNodeMenuBusy(mode);
 					setNodeMenuError("");
 					try {
-						if (mode === "text") await copyPlainText(nodeFullText(target));
+						if (mode === "chat") submitNodeChat(nodeFocusPrompt(node, target));
+						else if (mode === "text") await copyPlainText(nodeTreeText(target));
 						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
 						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
@@ -885,6 +898,13 @@
 				const zoomBtnStyle = (key, disabled) => (disabled
 					? { ...S.zoomBtn, ...S.zoomBtnDisabled }
 					: (hover === key ? { ...S.zoomBtn, ...S.zoomBtnHover } : S.zoomBtn));
+				const nodeMenuItemStyle = (key) => (nodeMenuBusy
+					? { ...S.treeMenuItem, ...S.treeMenuItemDisabled }
+					: (nodeMenuHover === key ? { ...S.treeMenuItem, ...S.treeMenuItemHover } : S.treeMenuItem));
+				const nodeMenuHoverProps = (key) => ({
+					onMouseEnter: () => setNodeMenuHover(key),
+					onMouseLeave: () => setNodeMenuHover((current) => (current === key ? null : current)),
+				});
 
 				return (0, react_jsx_runtime.jsxs)("div", {
 					style: S.canvasWrap,
@@ -1046,8 +1066,7 @@
 							children: "✕",
 						}),
 					] }) : null,
-					// 017 节点右键菜单：标题行（节点主题）+ 复制全文/复制为图片/导出为
-					// 图片三动作 + 错误行。复用目录树菜单容器样式（fixed 定位，left/top = 视口坐标）。
+					// 037 节点右键菜单：标题 + 核心聊天入口 + 分隔线 + 文本/图片动作。
 					nodeMenu ? (0, react_jsx_runtime.jsxs)("div", {
 						ref: nodeMenuRef,
 						style: { ...S.treeMenu, left: nodeMenu.x, top: nodeMenu.y },
@@ -1058,28 +1077,40 @@
 								title: nodeMenu.node.topic || "待填写",
 								children: truncateForExport(nodeMenu.node.topic, 18) || "待填写",
 							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuItemStyle("chat"),
+								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("chat"),
+								title: "把当前节点的定位路径与自身内容发送到当前对话，围绕该节点继续聊天",
+								onClick: () => onNodeMenuAction("chat"),
+								children: nodeMenuBusy === "chat" ? "发送中…" : "围绕该节点与 AI 聊天",
+							}),
 							// 020：标题与动作项之间拉一根分隔线。
 							(0, react_jsx_runtime.jsx)("div", { style: S.nodeMenuDivider }),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
-								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								style: nodeMenuItemStyle("text"),
 								disabled: Boolean(nodeMenuBusy),
-								title: "把该节点自身内容的完整文本复制到剪贴板（截断块/代码块/表格块均取全文）",
+								...nodeMenuHoverProps("text"),
+								title: "把该节点及其全部子节点按层级缩进复制为文本",
 								onClick: () => onNodeMenuAction("text"),
-								children: nodeMenuBusy === "text" ? "复制中…" : "复制全文",
+								children: nodeMenuBusy === "text" ? "复制中…" : "复制节点及子节点为文本",
 							}),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
-								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								style: nodeMenuItemStyle("copy"),
 								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("copy"),
 								title: "把该节点及其全部子孙渲染为 PNG 并复制到剪贴板",
 								onClick: () => onNodeMenuAction("copy"),
 								children: nodeMenuBusy === "copy" ? "复制中…" : "复制为图片",
 							}),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
-								style: nodeMenuBusy ? { ...S.treeMenuItem, ...S.treeMenuItemDisabled } : S.treeMenuItem,
+								style: nodeMenuItemStyle("export"),
 								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("export"),
 								title: "把该节点及其全部子孙渲染为 PNG 并下载为文件",
 								onClick: () => onNodeMenuAction("export"),
 								children: nodeMenuBusy === "export" ? "导出中…" : "导出为图片",

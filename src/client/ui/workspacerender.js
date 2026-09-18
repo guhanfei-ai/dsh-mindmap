@@ -103,7 +103,7 @@
 					: (doc && doc.op === "local")
 						? renderLoading()
 						: renderTree() })
-				: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal }),
+				: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions }),
 			tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 				style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 				onContextMenu: (e) => e.preventDefault(),
@@ -194,7 +194,7 @@
 				: (doc && doc.op === "local")
 					? renderLoading()
 					: renderTree() })
-			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal }),
+			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions }),
 		tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 			style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 			onContextMenu: (e) => e.preventDefault(),

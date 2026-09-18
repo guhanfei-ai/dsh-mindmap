@@ -314,6 +314,7 @@
 			// 025 草稿保护：宿主草稿读取面的能力探测（供测试）。
 			readDraftText,
 			draftBlocksAutoSend,
+			submitNodeFocusMessage,
 			// 025 子树折叠：视图态纯函数 + 节点行组件（供测试）。
 			toggleCollapsed,
 			countDescendants,
@@ -332,6 +333,13 @@
 			isTableSeparator,
 			parseTableRow,
 			nodeFullText,
+			nodeTreeText,
+			nodeFocusPrompt,
+			EMPTY_NODE_MARKER,
+			PATH_SEPARATOR,
+			escapePathSegment,
+			nodePathTo,
+			nodePathLabel,
 			renderInline,
 			// 链接点击：供测试验证开窗成功才拦默认行为（宿主拦截时退回原生导航）。
 			openLink,

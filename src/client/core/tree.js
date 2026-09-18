@@ -91,6 +91,19 @@
 			const draft = readDraftText(inputActions);
 			return typeof draft === "string" && draft.trim() !== "";
 		}
+
+		/** 037 节点焦点消息：保护现有草稿后，原子地写入并提交到当前 DSH 对话。 */
+		function submitNodeFocusMessage(inputActions, text) {
+			if (draftBlocksAutoSend(inputActions)) {
+				throw new Error("当前聊天框已有未发送内容，请先处理后再围绕节点聊天");
+			}
+			if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") {
+				throw new Error("当前对话不支持自动发送节点焦点消息");
+			}
+			inputActions.setDraft(String(text ?? ""));
+			inputActions.submit();
+			return true;
+		}
 		//#endregion
 
 		//#region 025 子树折叠：画布视图态纯函数（不进 markdown 资产，只影响呈现）
@@ -204,5 +217,4 @@
 			return next;
 		}
 		//#endregion
-
 

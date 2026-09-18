@@ -84,6 +84,94 @@
 			}
 			return data.raw || node.topic || "";
 		}
+
+		// 037 节点焦点上下文：空节点必须保留在路径里，不能被当成缺失节点。
+		const EMPTY_NODE_MARKER = "（这是一个空节点，节点客观存在，但节点容器内没有内容）";
+		const PATH_SEPARATOR = " >>> ";
+
+		/** 路径展示专用转义：不改节点原文，只避免分段包裹符破坏定位边界。 */
+		function escapePathSegment(text) {
+			return String(text ?? "")
+				.replace(/\r?\n/g, " ")
+				.replace(/【/g, "〔")
+				.replace(/】/g, "〕");
+		}
+
+		/** 节点在路径中的显示段；空 topic 用明确的空节点语义占位。 */
+		function nodePathLabel(node) {
+			const topic = String((node && node.topic) ?? "").trim();
+			return `【${escapePathSegment(topic || EMPTY_NODE_MARKER)}】`;
+		}
+
+		/** 找到根到目标节点的路径；目标不在当前树时退回目标自身，避免丢失焦点。 */
+		function nodePathTo(root, target) {
+			if (!target) return [];
+			const targetId = target.id;
+			const path = [];
+			const visit = (node) => {
+				if (!node) return false;
+				path.push(node);
+				if (node === target || (targetId != null && node.id === targetId)) return true;
+				for (const child of node.children || []) {
+					if (visit(child)) return true;
+				}
+				path.pop();
+				return false;
+			};
+			if (visit(root)) return path;
+			return [target];
+		}
+
+		/**
+		 * 037 复制节点及子节点为文本：每个节点一行，每层 2 个半角空格。
+		 * 多行节点内容的每一行都带同一层级前缀，空节点用明确标记保留其存在性。
+		 */
+		function nodeTreeText(root) {
+			if (!root) return "";
+			const lines = [];
+			const visit = (node, depth) => {
+				const prefix = " ".repeat(Math.max(0, depth) * 2);
+				const own = String(nodeFullText(node) || "");
+				const body = own || EMPTY_NODE_MARKER;
+				for (const line of body.split(/\r?\n/)) lines.push(`${prefix}${line}`);
+				for (const child of node.children || []) visit(child, depth + 1);
+			};
+			visit(root, 0);
+			return lines.join("\n");
+		}
+
+		/**
+		 * 037 围绕节点聊天：只发送当前节点自身与根→当前节点路径，绝不展开子树。
+		 * 末尾协议要求模型完成一次短握手后等待用户继续，不让模型先复述上下文。
+		 */
+		function nodeFocusPrompt(root, target) {
+			if (!target) return "";
+			const path = nodePathTo(root, target).map(nodePathLabel).join(PATH_SEPARATOR);
+			const own = String(nodeFullText(target) || "") || EMPTY_NODE_MARKER;
+			return [
+				"【插件功能声明】",
+				"你正在接收的是思维脑图插件发起的一次“节点焦点对齐”请求。",
+				"这是插件功能的一部分，不是用户普通聊天内容。",
+				"",
+				"【功能意图】",
+				"用户在思维脑图中选中了一个节点。插件现在要把你的注意力定位到这个节点上，后续对话将围绕这个节点继续进行。",
+				"",
+				"【定位路径】",
+				"以下路径表示从根节点到当前选中节点的完整父子关系；每个节点用【】包裹，使用“>>>”表示向下定位：",
+				path,
+				"",
+				"【当前选中节点内容】",
+				own,
+				"",
+				"【范围限制】",
+				"本次只提供当前选中节点及其定位路径，不展开当前节点的子节点、孙子节点或其他下级内容。",
+				"",
+				"【严格回复协议】",
+				"如果你已经理解上述插件功能意图和定位路径，你的下一条回复必须且只能是下面这一句话：",
+				"已理解和对齐您选中的节点，我们开始聊吧~",
+				"不得输出任何其他字符，不得添加解释、前缀、后缀、Markdown、表情或其他句子。回复完这句话后，等待用户继续提问。",
+			].join("\n");
+		}
 		//#endregion
 		
 		/**
@@ -393,4 +481,3 @@
 			return { nodes, edges, totalMs: (fresh.length - 1) * step + durationMs };
 		}
 		//#endregion
-

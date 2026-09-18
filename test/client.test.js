@@ -77,7 +77,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -320,10 +320,60 @@ test('nodeFullText returns the complete own content per kind (020 copy full text
 })
 
 test('nodeFullText round-trips escaped table cells without changing their columns', () => {
-  const table = parseMarkdownToTree('| value |\n| --- |\n| a \\| b |', 'doc').children[0]
-  const copied = nodeFullText(table)
-  const reparsed = parseMarkdownToTree(copied, 'doc').children[0]
-  assert.deepEqual([...reparsed.data.rows.map((row) => [...row])], [['value'], ['a | b']])
+	const table = parseMarkdownToTree('| value |\n| --- |\n| a \\| b |', 'doc').children[0]
+	const copied = nodeFullText(table)
+	const reparsed = parseMarkdownToTree(copied, 'doc').children[0]
+	assert.deepEqual([...reparsed.data.rows.map((row) => [...row])], [['value'], ['a | b']])
+})
+
+test('037 nodeTreeText copies the selected subtree with two-space indentation', () => {
+  const root = {
+    id: 'focus', kind: 'heading', topic: '当前节点', data: {}, children: [
+      { id: 'child', kind: 'text', topic: '子节点', data: { raw: '子节点' }, children: [
+        { id: 'code', kind: 'code', topic: '[code] line 1', data: { code: 'line 1\nline 2' }, children: [] },
+      ] },
+      { id: 'empty', kind: 'placeholder', topic: '', data: {}, children: [] },
+    ],
+  }
+  assert.equal(nodeTreeText(root), [
+    '当前节点',
+    '  子节点',
+    '    line 1',
+    '    line 2',
+    `  ${EMPTY_NODE_MARKER}`,
+  ].join('\n'))
+})
+
+test('037 nodeFocusPrompt describes the plugin and path but never includes descendants', () => {
+  const grandchild = { id: 'grandchild', kind: 'text', topic: '禁止出现的孙节点', data: { raw: '禁止出现的孙节点' }, children: [] }
+  const target = { id: 'target', kind: 'text', topic: '当前焦点', data: { raw: '当前焦点的完整内容' }, children: [grandchild] }
+  const parent = { id: 'parent', kind: 'heading', topic: '父节点', data: {}, children: [target] }
+  const root = { id: 'root', kind: 'root', topic: '文档根', data: {}, children: [parent] }
+  const prompt = nodeFocusPrompt(root, target)
+
+  assert.ok(prompt.includes('这是插件功能的一部分，不是用户普通聊天内容。'))
+  assert.ok(prompt.includes('【文档根】 >>> 【父节点】 >>> 【当前焦点】'))
+  assert.ok(prompt.includes('当前焦点的完整内容'))
+  assert.ok(prompt.includes('不展开当前节点的子节点、孙子节点或其他下级内容'))
+  assert.equal(prompt.includes('禁止出现的孙节点'), false)
+  assert.equal(prompt.split('已理解和对齐您选中的节点，我们开始聊吧~').length - 1, 1)
+})
+
+test('037 nodeFocusPrompt keeps an objectively existing empty node in the full path', () => {
+  const empty = { id: 'empty', kind: 'placeholder', topic: '', data: {}, children: [] }
+  const parent = { id: 'parent', kind: 'heading', topic: 'yyy', data: {}, children: [empty] }
+  const root = { id: 'root', kind: 'root', topic: 'xxx', data: {}, children: [parent] }
+  const prompt = nodeFocusPrompt(root, empty)
+
+  assert.ok(prompt.includes(`【xxx】 >>> 【yyy】 >>> 【${EMPTY_NODE_MARKER}】`))
+  assert.ok(prompt.includes(`【当前选中节点内容】\n${EMPTY_NODE_MARKER}`))
+  assert.deepEqual([...nodePathTo(root, empty).map(nodePathLabel)], ['【xxx】', '【yyy】', `【${EMPTY_NODE_MARKER}】`])
+})
+
+test('037 path segments escape display delimiters without changing node content', () => {
+  assert.equal(escapePathSegment('a【b】\nc >>> d'), 'a〔b〕 c >>> d')
+  assert.equal(PATH_SEPARATOR, ' >>> ')
+  assert.equal(nodePathLabel({ topic: 'a【b】' }), '【a〔b〕】')
 })
 
 test('table parsing limits pathological grid expansion', () => {
@@ -797,6 +847,23 @@ test('draftBlocksAutoSend only blocks on a draft it can actually read', () => {
   // 可读且为空 → 放行；可读且非空 → 拦截
   assert.equal(draftBlocksAutoSend({ getDraft: () => '   ' }), false)
   assert.equal(draftBlocksAutoSend({ getDraft: () => '写到一半' }), true)
+})
+
+test('037 submitNodeFocusMessage writes the prompt before submitting and protects drafts', () => {
+  const calls = []
+  const actions = {
+    getDraft: () => '',
+    setDraft(value) { calls.push(['draft', value]) },
+    submit() { calls.push(['submit']) },
+  }
+  assert.equal(submitNodeFocusMessage(actions, '节点焦点消息'), true)
+  assert.deepEqual(calls, [['draft', '节点焦点消息'], ['submit']])
+
+  assert.throws(
+    () => submitNodeFocusMessage({ getDraft: () => '用户正在输入', setDraft() {}, submit() {} }, '不能覆盖'),
+    /已有未发送内容/,
+  )
+  assert.throws(() => submitNodeFocusMessage(null, '无法发送'), /不支持自动发送/)
 })
 
 // —— 025 子树折叠 ——
