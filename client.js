@@ -284,6 +284,14 @@ window.__ModuleLoader__.load({
 		const MAX_TABLE_COLUMNS = 100;
 		const MAX_TABLE_ROWS = 1000;
 		const MAX_TABLE_CELLS = 10000;
+		// 引用块递归深度上限：一行内海量 > 逐层剥前缀递归（实测 2000 层即栈溢出），
+		// 超限后剩余引用标记按普通段落文本处理——病理内容不炸面板，树始终可解析。
+		const MAX_QUOTE_DEPTH = 32;
+		// 链接 URL 允许一层括号嵌套（维基式 (bar)）：配平的 () 属于 URL，未配平则整体不命中。
+		// 四处共用（render INLINE_PATTERN / 此处 hasInlineFormat / export 剥离 / render 切片契约），
+		// 任一处亲缘度被改歪，drift guard 测试即断言失败。JS 正则字面量不支持插值，
+		// 故抽成字符串片段，各处用 new RegExp 拼接——source 经脚本验证与原字面量逐字符一致。
+		const LINK_URL = "(?:[^()]|\\([^()]*\\))*";
 
 		/** 缩进宽度：tab 按 4 空格折算。 */
 		function indentWidth(raw) {
@@ -299,7 +307,14 @@ window.__ModuleLoader__.load({
 		 * 否则是 text 块。
 		 */
 		function hasInlineFormat(text) {
-			return /(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(~~[^~]+~~)|(`[^`]+`)|(!?\[[^\]]*\]\([^)]*\))/.test(String(text ?? ""));
+			// 链接 URL 的嵌套括号亲缘度见 LINK_URL（与 render.js / export.js 四处同源）。
+			return new RegExp(
+				"(\\*\\*[^*]+\\*\\*)" +
+				"|(\\*[^*\\s][^*]*\\*)" +
+				"|(~~[^~]+~~)" +
+				"|(`[^`]+`)" +
+				"|(!?\\[[^\\]]*\\]\\(" + LINK_URL + "\\))"
+			).test(String(text ?? ""));
 		}
 		
 		/** 表格分隔行：由 | - : 空白组成且至少含一个 -。 */
@@ -332,7 +347,8 @@ window.__ModuleLoader__.load({
 				// data.rows 不含分隔行（解析时剔除）；复制时补回，粘回 Markdown 仍是合法表格。
 				const escapeCell = (cell) => String(cell ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 				const lines = data.rows.map((row) => `| ${row.map(escapeCell).join(" | ")} |`);
-				if (data.rows.length > 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
+				// 只要有表头就补分隔行（含表头-only 表格）——粘回 Markdown 仍是合法表格。
+				if (data.rows.length >= 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
 				return lines.join("\n");
 			}
 			return data.raw || node.topic || "";
@@ -469,7 +485,8 @@ window.__ModuleLoader__.load({
 			 * 块级解析循环（标题/列表/代码/引用/表格/段落）。引用块内容递归走本函数，
 			 * echoRoot=false 时不参与根标题回声。节点挂入 container（顶层 = root.children）。
 			 */
-			function parseBlockLines(container, lineList, echoRoot) {
+			function parseBlockLines(container, lineList, echoRoot, depth) {
+				const quoteDepth = depth || 0;
 				const headingStack = [];
 				let listStack = [];
 				const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
@@ -633,6 +650,11 @@ window.__ModuleLoader__.load({
 						// 递归走同一套块规则；首个 text/md 段提升为自身内容（001 §3.1），
 						// 其余内容成为子节点。
 					if (/^\s*>/.test(line)) {
+						// 深度上限见 MAX_QUOTE_DEPTH：超限后剩余 > 前缀按字面文本处理，不再递归。
+						if (quoteDepth >= MAX_QUOTE_DEPTH) {
+							paraBuffer.push(line.trim());
+							continue;
+						}
 						flushParagraph();
 						listStack = [];
 						const inner = [];
@@ -640,7 +662,7 @@ window.__ModuleLoader__.load({
 						for (; j < lineList.length && /^\s*>/.test(lineList[j]); j++) inner.push(lineList[j].replace(/^\s*>\s?/, ""));
 						i = j - 1;
 						const innerNodes = [];
-						parseBlockLines(innerNodes, inner, false);
+						parseBlockLines(innerNodes, inner, false, quoteDepth + 1);
 						let topic = "";
 						const promoteIdx = innerNodes.findIndex((n) => n.kind === "text" || n.kind === "md");
 						if (promoteIdx >= 0) {
@@ -682,6 +704,26 @@ window.__ModuleLoader__.load({
 			};
 			dedupe(root);
 			return root;
+		}
+
+		/**
+		 * 038 解析兜底：把 parseMarkdownToTree 包成「永不抛」的结果对。
+		 * 病理内容或畸形入参（宿主给了非字符串）都不该炸掉整个面板；
+		 * 出错时留痕（console.warn，供排查）+ 回传 error 让 UI 显示显式失败态——
+		 * 旧版直接返回 null，渲染层随即静默走目录分支，tab 与内容自相矛盾且无迹可查。
+		 * 调用方据 `error` 判定，不做静默降级。返回 { tree, error } 结果对。
+		 */
+		function parseTreeResult(content, rootTitle) {
+			if (content === null || content === undefined) return { tree: null, error: null };
+			try {
+				return { tree: parseMarkdownToTree(content, rootTitle), error: null };
+			} catch (error) {
+				// 沙箱/宿主环境可能没有 console，防御后再留痕。
+				if (typeof console !== "undefined" && console && typeof console.warn === "function") {
+					console.warn("[dsh-mindmap] markdown 解析失败：", error);
+				}
+				return { tree: null, error: String((error && error.message) || error) };
+			}
 		}
 		//#endregion
 
@@ -1268,9 +1310,10 @@ window.__ModuleLoader__.load({
 
 		/** 019 行内格式剥离：导出为纯文本（URL 原样保留——完整不缩减，003 §7）。 */
 		function stripInlineForExport(text) {
+			// 链接 URL 的嵌套括号亲缘度见 markdown.js 的 LINK_URL（四处同源）。
 			return String(text ?? "")
-				.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, "$2")
-				.replace(/\[([^\]]*)\]\(([^)]*)\)/g, (m, label, url) => (label ? `${label}(${url})` : url))
+				.replace(new RegExp("!\\[([^\\]]*)\\]\\((" + LINK_URL + ")\\)", "g"), "$2")
+				.replace(new RegExp("\\[([^\\]]*)\\]\\((" + LINK_URL + ")\\)", "g"), (m, label, url) => (label ? `${label}(${url})` : url))
 				.replace(/`([^`]+)`/g, "$1")
 				.replace(/\*\*([^*]+)\*\*/g, "$1")
 				.replace(/~~([^~]+)~~/g, "$1")
@@ -1896,7 +1939,16 @@ window.__ModuleLoader__.load({
 		// 先命中先生效，裸链接放最后，避免吞掉已被 [文字](url) 消费的 URL。
 		// 裸链接字符类排除 CJK 标点与全角符号（，。、；（）……），
 		// 否则中文句读被吞进 URL；ASCII 括号放行，由配平裁剪兜底。
-		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s\u3000-\u303f\uff00-\uffef]+)/g;
+		// 链接 URL 的嵌套括号亲缘度见 markdown.js 的 LINK_URL（四处同源）。
+		const INLINE_PATTERN = new RegExp(
+			"(!?\\[[^\\]]*\\]\\(" + LINK_URL + "\\))" +
+			"|(`[^`]+`)" +
+			"|(\\*\\*[^*]+\\*\\*)" +
+			"|(~~[^~]+~~)" +
+			"|(\\*[^*\\s][^*]*\\*)" +
+			"|(https?:\\/\\/[^\\s\\u3000-\\u303f\\uff00-\\uffef]+)",
+			"g"
+		);
 
 		/** 大一统链接点击：在机器浏览器打开（新标签页），不触发画布聚焦缩放。 */
 		function openLink(event, url) {
@@ -1913,6 +1965,23 @@ window.__ModuleLoader__.load({
 			}
 			if (!opened) return;
 			event.preventDefault();
+		}
+
+		/**
+		 * 038 行内链接 token 拆解：`[文字](url)` / `![alt](url)` → { bang, label, url }。
+		 * token 形态由 INLINE_PATTERN 第 1 组保证（label 不含 `]`、以 `)` 收尾），这里做
+		 * 纯切片而不重复解析：旧版用**第二个正则**重解析 token，两处正则一旦不同步
+		 * （实测：只改一处）parsed 为 null，`parsed[3]` 直接 TypeError 炸整个渲染。
+		 * 契约失配时返回 null，调用方原样退化为纯文本——不抛异常、不丢字符。
+		 */
+		function parseInlineLinkToken(token) {
+			if (typeof token !== "string" || token.length < 4) return null;
+			const bang = token[0] === "!";
+			const open = token.indexOf("](");
+			// open 必须正好是标签的收尾方括号：更早/未命中说明 label 里混了 `]`，
+			// 形态与 INLINE_PATTERN 的 `[^\]]*` 契约不符。
+			if (open < 0 || open !== token.indexOf("]") || !token.endsWith(")")) return null;
+			return { bang, label: token.slice(bang ? 2 : 1, open), url: token.slice(open + 2, -1) };
 		}
 
 		/**
@@ -1934,24 +2003,27 @@ window.__ModuleLoader__.load({
 				if (m[1]) {
 					// [文字](url) 或 ![alt](url)。图片块暂缓（003 §9）：图语法退化为
 					// 指向原图的链接，同时把 alt 与原图地址都完整呈现（不缩减）。
-					const parsed = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
+					// URL 的括号嵌套由 INLINE_PATTERN 负责识别，这里只做切片（契约见
+					// parseInlineLinkToken）。
+					const parsed = parseInlineLinkToken(token);
 					// scheme 白名单：只放行 http/https/mailto。javascript:/data:
 					// 等不进 href，整串原样退化为纯文本（不缩减，也不可执行）。
-					if (!/^\s*(https?:|mailto:)/i.test(parsed[3])) {
+					// parsed 为 null（token 形态意外）同样退化为纯文本，不炸渲染。
+					if (!parsed || !/^\s*(https?:|mailto:)/i.test(parsed.url)) {
 						out.push(token);
 					} else {
 						// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
-						const label = parsed[1]
-							? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
-							: (parsed[2] || parsed[3]);
+						const label = parsed.bang
+							? (parsed.label ? `${parsed.label} (${parsed.url})` : parsed.url)
+							: (parsed.label || parsed.url);
 						out.push((0, react_jsx_runtime.jsx)("a", {
 							key,
-							href: parsed[3],
+							href: parsed.url,
 							target: "_blank",
 							rel: "noopener noreferrer",
 							style: S.inlineLink,
-							title: parsed[3],
-							onClick: (e) => openLink(e, parsed[3]),
+							title: parsed.url,
+							onClick: (e) => openLink(e, parsed.url),
 							children: label,
 						}, key));
 					}
@@ -2224,6 +2296,24 @@ window.__ModuleLoader__.load({
 					: null,
 				] });
 				}
+
+		//#region 038 脑图区主体模式：目录 / 加载中 / 解析失败 / 画布（纯函数，经 internals 供测试）
+		/**
+		 * 解析失败必须显式成态：旧版把解析异常吞成 null，渲染层随即走目录分支——
+		 * tab 停在脑图上、内容区却是目录列表，用户看不到任何提示（038 评审发现）。
+		 * 抽成纯函数让四个分支都能单测，组件只按返回值分派。
+		 */
+		// 四态枚举：workspacerender.js 的分派与测试断言都引用这份常量，
+		// 避免裸串散落、拼写失配静默走错分支。
+		const BODY_MODE = Object.freeze({ tree: "tree", loading: "loading", error: "error", canvas: "canvas" });
+		function mindmapBodyMode(active, treeTab, doc, tree, parseError) {
+			if (active === treeTab) return BODY_MODE.tree;
+			if (doc && doc.op === "local") return BODY_MODE.loading;
+			if (parseError) return BODY_MODE.error;
+			if (!tree) return BODY_MODE.tree;
+			return BODY_MODE.canvas;
+		}
+		//#endregion
 
 				//#region 016 脑图画布：居中呈现 + 缩放控制（右上角）
 				// 缩放契约：范围 [0.25, 3]，每级 ×1.2；适配计算四周留 48px 余量
@@ -3483,10 +3573,14 @@ window.__ModuleLoader__.load({
 				: (lastPath && lastPath !== hiddenPath ? lastPath : null);
 			const active = view === "mindmap" && shown ? shown : TREE_TAB;
 			const doc = active !== TREE_TAB && merged.byPath[active] ? merged.byPath[active] : null;
-			const tree = react.useMemo(
-				() => (doc ? parseMarkdownToTree(doc.content, doc.rootTitle) : null),
+			const parsed = react.useMemo(
+				() => parseTreeResult(doc && doc.content, doc && doc.rootTitle),
 				[doc && doc.content, doc && doc.rootTitle],
 			);
+			const tree = parsed.tree;
+			// 038 解析失败不再静默：error 非空时脑图区显示显式失败态（见 mindmapBodyMode），
+			// 而不是渲染层悄悄退回目录、tab 与内容自相矛盾（旧版吞异常返 null）。
+			const parseError = parsed.error;
 
 			// 018 生长动画调度：新树与上一版（同 path）的稳定 id 集做 diff，只对新增/
 			// 变化节点出渐显计划（planGrowthReveal 广度优先错峰、总时长 ≤ 2s）；播完定时清空，
@@ -4102,6 +4196,17 @@ window.__ModuleLoader__.load({
 
 	// 027 目录/列表标签文案：sidebar 模式叫「脑图列表」，standalone 模式叫「目录」。
 	const treeTabLabel = variant === "sidebar" ? "脑图列表" : "目录";
+	// 038 脑图区主体模式（目录 / 加载中 / 解析失败 / 画布）：判定抽成纯函数，两个 variant
+	// 共用同一份分派，不再各写一遍三元链；解析失败有独立分支，不再静默走目录。
+	// 四态常量见 render.js 的 BODY_MODE（mindmapBodyMode 返回值与其同源）。
+	const bodyMode = mindmapBodyMode(active, TREE_TAB, doc, tree, parseError);
+	const parseErrorView = bodyMode === BODY_MODE.error
+		? (0, react_jsx_runtime.jsxs)("div", { style: S.loadingWrap, children: [
+			(0, react_jsx_runtime.jsx)("span", { style: S.loadingFailMark, children: "⚠" }),
+			(0, react_jsx_runtime.jsx)("p", { style: S.loadingErrorText, children: `脑图解析失败：${parseError}` }),
+			(0, react_jsx_runtime.jsx)("p", { style: S.loadingText, children: "原文件内容未改动；可切回目录查看，或让 AI 修正后重新打开。" }),
+		] })
+		: null;
 
 	if (variant === "sidebar") {
 		// 027 sidebar 模式：单行紧凑工具栏。BS 外层已有 Tab 头部与关闭按钮，
@@ -4158,13 +4263,13 @@ window.__ModuleLoader__.load({
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
 			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
-			active === TREE_TAB || (doc && doc.op === "local") || !tree
-				? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
+			bodyMode === BODY_MODE.canvas
+				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions })
+				: (0, react_jsx_runtime.jsx)("div", { style: S.body, children: bodyMode === BODY_MODE.tree
 					? renderTree()
-					: (doc && doc.op === "local")
+					: bodyMode === BODY_MODE.loading
 						? renderLoading()
-						: renderTree() })
-				: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions }),
+						: parseErrorView }),
 			tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 				style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 				onContextMenu: (e) => e.preventDefault(),
@@ -5024,6 +5129,8 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.internals = Object.freeze({
 			parseMarkdownToTree,
+			// 038 解析兜底：永不抛的结果对 { tree, error }（供测试验证失败态分支）。
+			parseTreeResult,
 			reduceDocuments,
 			mergeDocuments,
 			autoOpenTarget,
@@ -5076,6 +5183,9 @@ window.__ModuleLoader__.load({
 			nodePathTo,
 			nodePathLabel,
 			renderInline,
+			// 038 行内链接 token 拆解 + 脑图区主体模式判定（纯函数，供测试）。
+			parseInlineLinkToken,
+			mindmapBodyMode,
 			// 链接点击：供测试验证开窗成功才拦默认行为（宿主拦截时退回原生导航）。
 			openLink,
 			stripInlineForExport,

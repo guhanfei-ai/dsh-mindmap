@@ -19,7 +19,11 @@ function loadBrowserModule() {
   // 判断是否在浏览器环境。测试需要控制 document（注入/清理 CSS 样式节点）。
   // 用 createContext + runInContext：沙箱 context 对象保留引用，测试可后设
   // context.document = fakeDoc 来模拟浏览器环境（初始 undefined = 非浏览器）。
-  const context = vm.createContext({ URL, window })
+  // 038：注入捕获式 console —— 沙箱默认没有 console，解析兜底里的留痕需要它；
+  // warnCalls 供用例断言「解析失败确实留痕」（非静默降级）。
+  const warnCalls = []
+  const sandboxConsole = { warn: (...args) => warnCalls.push(args), log() {}, error() {} }
+  const context = vm.createContext({ URL, window, console: sandboxConsole })
   vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), context)
   assert.equal(definition.id, 'dsh-mindmap')
   const runtime = definition.factory((id) => {
@@ -34,7 +38,7 @@ function loadBrowserModule() {
     }
     throw new Error(`Unexpected browser dependency: ${id}`)
   })
-  return { runtime, window, context }
+  return { runtime, window, context, warnCalls }
 }
 
 // react 桩：组件不真正渲染，只保证钩子在模块加载与 apply 时可用。
@@ -76,8 +80,8 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
   return { ...toolResultNode(name, payload, options), subCalls }
 }
 
-const { runtime, window: fakeWindow, context: sandboxContext } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { runtime, window: fakeWindow, context: sandboxContext, warnCalls: sandboxWarnCalls } = loadBrowserModule()
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -317,6 +321,14 @@ test('nodeFullText returns the complete own content per kind (020 copy full text
   // 引用块取整块引用源码。
   assert.equal(nodeFullText(quote), 'q1\nq2')
   assert.equal(nodeFullText(null), '')
+})
+
+test('nodeFullText keeps the separator row for header-only tables (038 regression)', () => {
+  // 表头-only 表格（分隔行后无数据行）复制时也必须补分隔行，
+  // 否则粘回 Markdown 不再是合法表格。
+  const table = parseMarkdownToTree('| a | b |\n| --- | --- |\n', 'doc').children[0]
+  assert.equal(table.kind, 'table')
+  assert.equal(nodeFullText(table), '| a | b |\n| --- | --- |')
 })
 
 test('nodeFullText round-trips escaped table cells without changing their columns', () => {
@@ -1223,6 +1235,25 @@ test('renderInline linkifies bare URLs and markdown links in full (no truncation
   assert.equal(stripInlineForExport('**b** and [doc](https://a.b)'), 'b and doc(https://a.b)')
 })
 
+test('renderInline markdown links keep balanced nested parens in the URL (038 regression)', () => {
+  // 维基式带括号 URL：配平的括号属于 URL，md 链接形态与裸链接分支同语义。
+  const out = renderInline('see [t](https://a.com/x_(y)) end', 'k')
+  const link = out.find((el) => el && el.props && el.props.href)
+  assert.equal(link.props.href, 'https://a.com/x_(y)')
+  // hasInlineFormat 同步认得带括号链接（md 块判定）。
+  assert.equal(hasInlineFormat('see [t](https://a.com/x_(y))'), true)
+  // 导出剥离同款配平，URL 完整保留。
+  assert.equal(stripInlineForExport('[t](https://a.com/x_(y))'), 't(https://a.com/x_(y))')
+  // 未配平的括号：md 链接形态整体不命中，URL 退回裸链接渲染（完整可点），
+  // 方括号与前缀保留为文本——可见文本不丢字符。
+  const broken = renderInline('see [t](https://a.com/x_(y) end', 'k')
+  const brokenParts = Array.isArray(broken) ? broken : [broken]
+  const brokenLink = brokenParts.find((el) => el && el.props && el.props.href)
+  assert.equal(brokenLink.props.href, 'https://a.com/x_(y)')
+  assert.ok(brokenParts.some((p) => typeof p === 'string' && p === 'see [t]('))
+  assert.ok(brokenParts.some((p) => typeof p === 'string' && p === ' end'))
+})
+
 test('renderInline bare links stop at CJK punctuation and never swallow trailing prose', () => {
   // 中文标点不再进 URL：， 是句读不是链接的一部分
   const cjk = renderInline('详见 https://a.com/x，然后继续', 'k')
@@ -1258,6 +1289,137 @@ test('renderInline only linkifies allowlisted schemes (http/https/mailto)', () =
   const mail = renderInline('写信 [me](mailto:a@b.c)', 'k')
   const mailLink = mail.find((el) => el && el.props && el.props.href)
   assert.equal(mailLink.props.href, 'mailto:a@b.c')
+})
+
+test('parseMarkdownToTree survives pathological quote nesting without stack overflow (038 regression)', () => {
+  // 一行内海量 > 逐层递归会栈溢出（实测 2000 层即崩）；深度上限后剩余 > 前缀
+  // 按字面文本处理，树始终可解析。
+  const deep = '>'.repeat(5000) + ' deep'
+  const tree = parseMarkdownToTree(deep, 'doc')
+  assert.equal(tree.kind, 'root')
+  assert.ok(tree.children.length >= 1)
+  // 正常多层引用不受影响（远低于上限）。
+  const normal = parseMarkdownToTree('> a\n>> b\n>>> c', 'doc')
+  assert.equal(normal.children[0].kind, 'quote')
+})
+
+test('quote depth cap degrades only past the limit and keeps every character (038 boundary)', () => {
+  // 边界钉死：<=32 层正常成 quote；33 层起多余 `>` 前缀降级为字面文本（内容不丢，
+  // 只是引用标记泄漏）。旧用例只覆盖「5000 层不崩」与「3 层正常」，中间边界无守护。
+  const deepest = (tree) => {
+    let node = tree
+    let quotes = 0
+    while (node.children && node.children.length) {
+      node = node.children[0]
+      if (node.kind === 'quote') quotes += 1
+    }
+    return { quotes, topic: String(node.topic) }
+  }
+  const atLimit = deepest(parseMarkdownToTree('>'.repeat(32) + ' deep', 'doc'))
+  assert.equal(atLimit.quotes, 32)
+  assert.equal(atLimit.topic, 'deep')
+  const past = deepest(parseMarkdownToTree('>'.repeat(33) + ' deep', 'doc'))
+  assert.equal(past.quotes, 32)
+  assert.equal(past.topic, '> deep')
+  const far = deepest(parseMarkdownToTree('>'.repeat(40) + ' deep', 'doc'))
+  assert.equal(far.topic, '>>>>>>>> deep')
+})
+
+test('parseInlineLinkToken splits [..](..) / ![..](..) and rejects unexpected shapes (038)', () => {
+  // 拆分从「第二个正则重解析」改成纯切片：这里锁定切片契约，形态意外必须返回 null
+  // 而不是抛错（旧版正则不同步时 parsed[3] 会 TypeError 炸整个渲染）。
+  assert.deepEqual({ ...parseInlineLinkToken('[文字](https://a.com/x_(y))') }, { bang: false, label: '文字', url: 'https://a.com/x_(y)' })
+  assert.deepEqual({ ...parseInlineLinkToken('![alt](https://a.com/i_(1).png)') }, { bang: true, label: 'alt', url: 'https://a.com/i_(1).png' })
+  assert.deepEqual({ ...parseInlineLinkToken('[](https://a.com)') }, { bang: false, label: '', url: 'https://a.com' })
+  // label 里混入 `]`（与 INLINE_PATTERN 的 [^\]]* 契约不符）
+  assert.equal(parseInlineLinkToken('[a]b](https://a.com)'), null)
+  // 未闭合 / 无 `](` / 非字符串
+  assert.equal(parseInlineLinkToken('[a](https://a.com'), null)
+  assert.equal(parseInlineLinkToken('plain text'), null)
+  assert.equal(parseInlineLinkToken(null), null)
+  assert.equal(parseInlineLinkToken(42), null)
+})
+
+test('renderInline never throws and never drops visible characters on malformed links (038)', () => {
+  // 病理/畸形链接只允许两种结局：正常渲染，或退化为纯文本——绝不抛异常（面板不炸）。
+  const flatten = (out) => (Array.isArray(out) ? out : [out]).map((el) => {
+    if (typeof el === 'string') return el
+    if (el && el.props && typeof el.props.children === 'string') return el.props.children
+    return ''
+  }).join('')
+  const malformed = [
+    '[a]b](https://a.com/x)',
+    '[](x',
+    '![alt](',
+    '[](  )',
+    '前文 ](https://a.com) 后文',
+    '[标签](https://a.com/a_(b_(c)))',
+    '[t](https://a.com/x_(y)',
+  ]
+  for (const text of malformed) {
+    let out
+    assert.doesNotThrow(() => { out = renderInline(text, 'k') }, `renderInline 抛错：${text}`)
+    const visible = flatten(out)
+    // 关键字面不丢（`]`、`(`、文字标签等原样可见或作为链接文字呈现）
+    for (const chunk of text.split(/https?:\/\/\S+/)) {
+      const piece = chunk.trim()
+      if (piece) assert.ok(visible.includes(piece) || visible.includes(piece.replace(/[[\]()!]/g, '')), `字符丢失：${text} → ${visible}`)
+    }
+  }
+})
+
+test('parseTreeResult never throws: null in → empty out, parser failure → error + warn (038)', () => {
+  // 旧版解析兜底直接返 null，渲染层静默走目录分支；新版回传 error 并在控制台留痕。
+  const ok = parseTreeResult('# 标题\n正文', 'doc')
+  assert.equal(ok.tree.kind, 'root')
+  assert.equal(ok.error, null)
+  const empty = parseTreeResult(null, 'doc')
+  assert.equal(empty.tree, null)
+  assert.equal(empty.error, null)
+  assert.equal(parseTreeResult(undefined, 'doc').tree, null)
+  // 畸形入参（宿主给了非字符串且 toString 抛错）→ 不抛、回传 error、留痕一次
+  const before = sandboxWarnCalls.length
+  const boom = { toString() { throw new Error('病理输入') } }
+  const failed = parseTreeResult(boom, 'doc')
+  assert.equal(failed.tree, null)
+  assert.equal(failed.error, '病理输入')
+  assert.equal(sandboxWarnCalls.length, before + 1, '解析失败必须留痕（非静默降级）')
+  assert.ok(String(sandboxWarnCalls[before][0]).includes('[dsh-mindmap]'))
+})
+
+test('mindmapBodyMode gives parse failure its own state instead of silently falling back (038)', () => {
+  const TREE = '__tree__'
+  const doc = { op: 'open', path: '/w/a.md' }
+  const tree = { kind: 'root', topic: 'a', children: [] }
+  assert.equal(mindmapBodyMode(TREE, TREE, null, null, null), 'tree')
+  assert.equal(mindmapBodyMode('/w/a.md', TREE, { op: 'local' }, null, null), 'loading')
+  assert.equal(mindmapBodyMode('/w/a.md', TREE, doc, tree, null), 'canvas')
+  // 解析失败优先于「树的缺失兜底」：必须是 error，不能退回 tree（tab 与内容自相矛盾）
+  assert.equal(mindmapBodyMode('/w/a.md', TREE, doc, null, 'boom'), 'error')
+  assert.equal(mindmapBodyMode('/w/a.md', TREE, doc, null, null), 'tree')
+  // 目录 tab 与本地加载态优先级高于解析失败
+  assert.equal(mindmapBodyMode(TREE, TREE, doc, null, 'boom'), 'tree')
+  assert.equal(mindmapBodyMode('/w/a.md', TREE, { op: 'local' }, null, 'boom'), 'loading')
+})
+
+test('all four inline-link sources agree on nested-paren URLs (038 drift guard)', () => {
+  // 同源正则在四处各存一份（render INLINE_PATTERN / markdown hasInlineFormat /
+  // export 剥离 / 渲染内切片）。任一处亲缘度被改歪，这里就会有断言失败。
+  const cases = [
+    // 一层括号嵌套：md 形态命中的 URL 完整保留
+    { text: '[t](https://a.com/x_(y))', hasFormat: true, href: 'https://a.com/x_(y)', exported: 't(https://a.com/x_(y))' },
+    { text: '![p](https://a.com/i_(1).png)', hasFormat: true, href: 'https://a.com/i_(1).png', exported: 'https://a.com/i_(1).png' },
+    // 两层嵌套：md 形态不命中（超出亲缘度），URL 仍由裸链接分支完整呈现、导出保留原文
+    { text: '[t](https://a.com/a_(b_(c)))', hasFormat: false, href: 'https://a.com/a_(b_(c))', exported: '[t](https://a.com/a_(b_(c)))' },
+  ]
+  for (const c of cases) {
+    assert.equal(hasInlineFormat(c.text), c.hasFormat, `hasInlineFormat 不一致：${c.text}`)
+    const out = renderInline(c.text, 'k')
+    const list = Array.isArray(out) ? out : [out]
+    const link = list.find((el) => el && el.props && el.props.href)
+    assert.equal(link && link.props.href, c.href, `href 不一致：${c.text}`)
+    assert.equal(stripInlineForExport(c.text), c.exported, `导出一致性：${c.text}`)
+  }
 })
 
 test('openLink preventDefaults only when window.open succeeds (blocked falls back to native navigation)', () => {

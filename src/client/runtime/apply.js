@@ -289,6 +289,8 @@
 		exports.inject = inject;
 		exports.internals = Object.freeze({
 			parseMarkdownToTree,
+			// 038 解析兜底：永不抛的结果对 { tree, error }（供测试验证失败态分支）。
+			parseTreeResult,
 			reduceDocuments,
 			mergeDocuments,
 			autoOpenTarget,
@@ -341,6 +343,9 @@
 			nodePathTo,
 			nodePathLabel,
 			renderInline,
+			// 038 行内链接 token 拆解 + 脑图区主体模式判定（纯函数，供测试）。
+			parseInlineLinkToken,
+			mindmapBodyMode,
 			// 链接点击：供测试验证开窗成功才拦默认行为（宿主拦截时退回原生导航）。
 			openLink,
 			stripInlineForExport,

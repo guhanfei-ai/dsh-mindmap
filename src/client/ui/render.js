@@ -4,7 +4,16 @@
 		// 先命中先生效，裸链接放最后，避免吞掉已被 [文字](url) 消费的 URL。
 		// 裸链接字符类排除 CJK 标点与全角符号（，。、；（）……），
 		// 否则中文句读被吞进 URL；ASCII 括号放行，由配平裁剪兜底。
-		const INLINE_PATTERN = /(!?\[[^\]]*\]\([^)]*\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*\s][^*]*\*)|(https?:\/\/[^\s\u3000-\u303f\uff00-\uffef]+)/g;
+		// 链接 URL 的嵌套括号亲缘度见 markdown.js 的 LINK_URL（四处同源）。
+		const INLINE_PATTERN = new RegExp(
+			"(!?\\[[^\\]]*\\]\\(" + LINK_URL + "\\))" +
+			"|(`[^`]+`)" +
+			"|(\\*\\*[^*]+\\*\\*)" +
+			"|(~~[^~]+~~)" +
+			"|(\\*[^*\\s][^*]*\\*)" +
+			"|(https?:\\/\\/[^\\s\\u3000-\\u303f\\uff00-\\uffef]+)",
+			"g"
+		);
 
 		/** 大一统链接点击：在机器浏览器打开（新标签页），不触发画布聚焦缩放。 */
 		function openLink(event, url) {
@@ -21,6 +30,23 @@
 			}
 			if (!opened) return;
 			event.preventDefault();
+		}
+
+		/**
+		 * 038 行内链接 token 拆解：`[文字](url)` / `![alt](url)` → { bang, label, url }。
+		 * token 形态由 INLINE_PATTERN 第 1 组保证（label 不含 `]`、以 `)` 收尾），这里做
+		 * 纯切片而不重复解析：旧版用**第二个正则**重解析 token，两处正则一旦不同步
+		 * （实测：只改一处）parsed 为 null，`parsed[3]` 直接 TypeError 炸整个渲染。
+		 * 契约失配时返回 null，调用方原样退化为纯文本——不抛异常、不丢字符。
+		 */
+		function parseInlineLinkToken(token) {
+			if (typeof token !== "string" || token.length < 4) return null;
+			const bang = token[0] === "!";
+			const open = token.indexOf("](");
+			// open 必须正好是标签的收尾方括号：更早/未命中说明 label 里混了 `]`，
+			// 形态与 INLINE_PATTERN 的 `[^\]]*` 契约不符。
+			if (open < 0 || open !== token.indexOf("]") || !token.endsWith(")")) return null;
+			return { bang, label: token.slice(bang ? 2 : 1, open), url: token.slice(open + 2, -1) };
 		}
 
 		/**
@@ -42,24 +68,27 @@
 				if (m[1]) {
 					// [文字](url) 或 ![alt](url)。图片块暂缓（003 §9）：图语法退化为
 					// 指向原图的链接，同时把 alt 与原图地址都完整呈现（不缩减）。
-					const parsed = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(token);
+					// URL 的括号嵌套由 INLINE_PATTERN 负责识别，这里只做切片（契约见
+					// parseInlineLinkToken）。
+					const parsed = parseInlineLinkToken(token);
 					// scheme 白名单：只放行 http/https/mailto。javascript:/data:
 					// 等不进 href，整串原样退化为纯文本（不缩减，也不可执行）。
-					if (!/^\s*(https?:|mailto:)/i.test(parsed[3])) {
+					// parsed 为 null（token 形态意外）同样退化为纯文本，不炸渲染。
+					if (!parsed || !/^\s*(https?:|mailto:)/i.test(parsed.url)) {
 						out.push(token);
 					} else {
 						// 普通链接标签取文字（无文字显地址）；图语法带 alt 时两者都完整呈现。
-						const label = parsed[1]
-							? (parsed[2] ? `${parsed[2]} (${parsed[3]})` : parsed[3])
-							: (parsed[2] || parsed[3]);
+						const label = parsed.bang
+							? (parsed.label ? `${parsed.label} (${parsed.url})` : parsed.url)
+							: (parsed.label || parsed.url);
 						out.push((0, react_jsx_runtime.jsx)("a", {
 							key,
-							href: parsed[3],
+							href: parsed.url,
 							target: "_blank",
 							rel: "noopener noreferrer",
 							style: S.inlineLink,
-							title: parsed[3],
-							onClick: (e) => openLink(e, parsed[3]),
+							title: parsed.url,
+							onClick: (e) => openLink(e, parsed.url),
 							children: label,
 						}, key));
 					}
@@ -332,3 +361,21 @@
 					: null,
 				] });
 				}
+
+		//#region 038 脑图区主体模式：目录 / 加载中 / 解析失败 / 画布（纯函数，经 internals 供测试）
+		/**
+		 * 解析失败必须显式成态：旧版把解析异常吞成 null，渲染层随即走目录分支——
+		 * tab 停在脑图上、内容区却是目录列表，用户看不到任何提示（038 评审发现）。
+		 * 抽成纯函数让四个分支都能单测，组件只按返回值分派。
+		 */
+		// 四态枚举：workspacerender.js 的分派与测试断言都引用这份常量，
+		// 避免裸串散落、拼写失配静默走错分支。
+		const BODY_MODE = Object.freeze({ tree: "tree", loading: "loading", error: "error", canvas: "canvas" });
+		function mindmapBodyMode(active, treeTab, doc, tree, parseError) {
+			if (active === treeTab) return BODY_MODE.tree;
+			if (doc && doc.op === "local") return BODY_MODE.loading;
+			if (parseError) return BODY_MODE.error;
+			if (!tree) return BODY_MODE.tree;
+			return BODY_MODE.canvas;
+		}
+		//#endregion

@@ -27,9 +27,10 @@
 
 		/** 019 行内格式剥离：导出为纯文本（URL 原样保留——完整不缩减，003 §7）。 */
 		function stripInlineForExport(text) {
+			// 链接 URL 的嵌套括号亲缘度见 markdown.js 的 LINK_URL（四处同源）。
 			return String(text ?? "")
-				.replace(/!\[([^\]]*)\]\(([^)]*)\)/g, "$2")
-				.replace(/\[([^\]]*)\]\(([^)]*)\)/g, (m, label, url) => (label ? `${label}(${url})` : url))
+				.replace(new RegExp("!\\[([^\\]]*)\\]\\((" + LINK_URL + ")\\)", "g"), "$2")
+				.replace(new RegExp("\\[([^\\]]*)\\]\\((" + LINK_URL + ")\\)", "g"), (m, label, url) => (label ? `${label}(${url})` : url))
 				.replace(/`([^`]+)`/g, "$1")
 				.replace(/\*\*([^*]+)\*\*/g, "$1")
 				.replace(/~~([^~]+)~~/g, "$1")

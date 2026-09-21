@@ -108,10 +108,14 @@
 				: (lastPath && lastPath !== hiddenPath ? lastPath : null);
 			const active = view === "mindmap" && shown ? shown : TREE_TAB;
 			const doc = active !== TREE_TAB && merged.byPath[active] ? merged.byPath[active] : null;
-			const tree = react.useMemo(
-				() => (doc ? parseMarkdownToTree(doc.content, doc.rootTitle) : null),
+			const parsed = react.useMemo(
+				() => parseTreeResult(doc && doc.content, doc && doc.rootTitle),
 				[doc && doc.content, doc && doc.rootTitle],
 			);
+			const tree = parsed.tree;
+			// 038 解析失败不再静默：error 非空时脑图区显示显式失败态（见 mindmapBodyMode），
+			// 而不是渲染层悄悄退回目录、tab 与内容自相矛盾（旧版吞异常返 null）。
+			const parseError = parsed.error;
 
 			// 018 生长动画调度：新树与上一版（同 path）的稳定 id 集做 diff，只对新增/
 			// 变化节点出渐显计划（planGrowthReveal 广度优先错峰、总时长 ≤ 2s）；播完定时清空，

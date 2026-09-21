@@ -31,6 +31,14 @@
 		const MAX_TABLE_COLUMNS = 100;
 		const MAX_TABLE_ROWS = 1000;
 		const MAX_TABLE_CELLS = 10000;
+		// 引用块递归深度上限：一行内海量 > 逐层剥前缀递归（实测 2000 层即栈溢出），
+		// 超限后剩余引用标记按普通段落文本处理——病理内容不炸面板，树始终可解析。
+		const MAX_QUOTE_DEPTH = 32;
+		// 链接 URL 允许一层括号嵌套（维基式 (bar)）：配平的 () 属于 URL，未配平则整体不命中。
+		// 四处共用（render INLINE_PATTERN / 此处 hasInlineFormat / export 剥离 / render 切片契约），
+		// 任一处亲缘度被改歪，drift guard 测试即断言失败。JS 正则字面量不支持插值，
+		// 故抽成字符串片段，各处用 new RegExp 拼接——source 经脚本验证与原字面量逐字符一致。
+		const LINK_URL = "(?:[^()]|\\([^()]*\\))*";
 
 		/** 缩进宽度：tab 按 4 空格折算。 */
 		function indentWidth(raw) {
@@ -46,7 +54,14 @@
 		 * 否则是 text 块。
 		 */
 		function hasInlineFormat(text) {
-			return /(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(~~[^~]+~~)|(`[^`]+`)|(!?\[[^\]]*\]\([^)]*\))/.test(String(text ?? ""));
+			// 链接 URL 的嵌套括号亲缘度见 LINK_URL（与 render.js / export.js 四处同源）。
+			return new RegExp(
+				"(\\*\\*[^*]+\\*\\*)" +
+				"|(\\*[^*\\s][^*]*\\*)" +
+				"|(~~[^~]+~~)" +
+				"|(`[^`]+`)" +
+				"|(!?\\[[^\\]]*\\]\\(" + LINK_URL + "\\))"
+			).test(String(text ?? ""));
 		}
 		
 		/** 表格分隔行：由 | - : 空白组成且至少含一个 -。 */
@@ -79,7 +94,8 @@
 				// data.rows 不含分隔行（解析时剔除）；复制时补回，粘回 Markdown 仍是合法表格。
 				const escapeCell = (cell) => String(cell ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 				const lines = data.rows.map((row) => `| ${row.map(escapeCell).join(" | ")} |`);
-				if (data.rows.length > 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
+				// 只要有表头就补分隔行（含表头-only 表格）——粘回 Markdown 仍是合法表格。
+				if (data.rows.length >= 1) lines.splice(1, 0, `| ${data.rows[0].map(() => "---").join(" | ")} |`);
 				return lines.join("\n");
 			}
 			return data.raw || node.topic || "";
@@ -216,7 +232,8 @@
 			 * 块级解析循环（标题/列表/代码/引用/表格/段落）。引用块内容递归走本函数，
 			 * echoRoot=false 时不参与根标题回声。节点挂入 container（顶层 = root.children）。
 			 */
-			function parseBlockLines(container, lineList, echoRoot) {
+			function parseBlockLines(container, lineList, echoRoot, depth) {
+				const quoteDepth = depth || 0;
 				const headingStack = [];
 				let listStack = [];
 				const parentRec = () => (headingStack.length ? headingStack[headingStack.length - 1] : null);
@@ -380,6 +397,11 @@
 						// 递归走同一套块规则；首个 text/md 段提升为自身内容（001 §3.1），
 						// 其余内容成为子节点。
 					if (/^\s*>/.test(line)) {
+						// 深度上限见 MAX_QUOTE_DEPTH：超限后剩余 > 前缀按字面文本处理，不再递归。
+						if (quoteDepth >= MAX_QUOTE_DEPTH) {
+							paraBuffer.push(line.trim());
+							continue;
+						}
 						flushParagraph();
 						listStack = [];
 						const inner = [];
@@ -387,7 +409,7 @@
 						for (; j < lineList.length && /^\s*>/.test(lineList[j]); j++) inner.push(lineList[j].replace(/^\s*>\s?/, ""));
 						i = j - 1;
 						const innerNodes = [];
-						parseBlockLines(innerNodes, inner, false);
+						parseBlockLines(innerNodes, inner, false, quoteDepth + 1);
 						let topic = "";
 						const promoteIdx = innerNodes.findIndex((n) => n.kind === "text" || n.kind === "md");
 						if (promoteIdx >= 0) {
@@ -429,6 +451,26 @@
 			};
 			dedupe(root);
 			return root;
+		}
+
+		/**
+		 * 038 解析兜底：把 parseMarkdownToTree 包成「永不抛」的结果对。
+		 * 病理内容或畸形入参（宿主给了非字符串）都不该炸掉整个面板；
+		 * 出错时留痕（console.warn，供排查）+ 回传 error 让 UI 显示显式失败态——
+		 * 旧版直接返回 null，渲染层随即静默走目录分支，tab 与内容自相矛盾且无迹可查。
+		 * 调用方据 `error` 判定，不做静默降级。返回 { tree, error } 结果对。
+		 */
+		function parseTreeResult(content, rootTitle) {
+			if (content === null || content === undefined) return { tree: null, error: null };
+			try {
+				return { tree: parseMarkdownToTree(content, rootTitle), error: null };
+			} catch (error) {
+				// 沙箱/宿主环境可能没有 console，防御后再留痕。
+				if (typeof console !== "undefined" && console && typeof console.warn === "function") {
+					console.warn("[dsh-mindmap] markdown 解析失败：", error);
+				}
+				return { tree: null, error: String((error && error.message) || error) };
+			}
 		}
 		//#endregion
 
