@@ -21,6 +21,10 @@ const {
   listDirectoryLevel,
   isTrustedRequest,
   buildResult,
+  Config,
+  parseLegacyMindmapSection,
+  isAllDefaults,
+  CONFIG_DEFAULTS,
 } = internals
 
 function execution(cwd) {
@@ -998,4 +1002,83 @@ test('listDirectoryLevel caps entries at maxEntries and flags truncation', async
   const full = await listDirectoryLevel(cwd)
   assert.equal(full.entries.length, 5)
   assert.equal(full.truncated, false)
+})
+
+// 0.1.7 适配：Config schema 的每个字段都标记了 volatile meta（extra('volatile', true)），
+// 否则 0.1.7 宿主的 settings 存储 volatileForm/isVolatilePath 门禁会拒绝读写，
+// 设置面板写不进、legacy 导入被静默丢弃。
+test('Config schema fields are all marked volatile for 0.1.7 settings storage', () => {
+  const dict = Config.dict
+  const expectedKeys = Object.keys(CONFIG_DEFAULTS)
+  for (const key of expectedKeys) {
+    const schema = dict[key]
+    assert.ok(schema, `Config should have a schema for ${key}`)
+    assert.equal(schema.meta.volatile, true, `Config.${key} should have meta.volatile === true`)
+  }
+})
+
+test('parseLegacyMindmapSection extracts scalar fields from imported settings.yaml', () => {
+  // 典型 mindmap 段（本机实测格式）
+  const raw1 = `ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+mindmap:
+  lineStyle: elbow
+  cardStyle: rounded
+  colorTheme: ocean
+  growthAnimation: true
+  defaultPanelWidth: 42
+  approvalMode: session
+jumpserver:
+  baseUrl: http://jumpserver.example.com
+`
+  const result1 = parseLegacyMindmapSection(raw1)
+  assert.deepEqual(result1, {
+    lineStyle: 'elbow',
+    cardStyle: 'rounded',
+    colorTheme: 'ocean',
+    growthAnimation: true,
+    defaultPanelWidth: 42,
+    approvalMode: 'session',
+  })
+
+  // mindmap 段缺失
+  assert.equal(parseLegacyMindmapSection('other:\n  foo: bar\n'), null)
+
+  // 非字符串输入
+  assert.equal(parseLegacyMindmapSection(null), null)
+  assert.equal(parseLegacyMindmapSection(undefined), null)
+
+  // mindmap 段下只有无效值（不在枚举范围内）
+  const raw2 = `mindmap:
+  lineStyle: invalid
+  cardStyle: also-invalid
+`
+  assert.equal(parseLegacyMindmapSection(raw2), null)
+
+  // mindmap 段下混有效和无效值：只取有效的
+  const raw3 = `mindmap:
+  lineStyle: curve
+  cardStyle: bogus
+  colorTheme: sunset
+`
+  const result3 = parseLegacyMindmapSection(raw3)
+  assert.deepEqual(result3, { lineStyle: 'curve', colorTheme: 'sunset' })
+
+  // requireApproval 的布尔解析
+  const raw4 = `mindmap:
+  requireApproval: false
+`
+  assert.deepEqual(parseLegacyMindmapSection(raw4), { requireApproval: false })
+
+  // 空文件
+  assert.equal(parseLegacyMindmapSection(''), null)
+})
+
+test('isAllDefaults returns true only when every field matches its default', () => {
+  assert.equal(isAllDefaults({ ...CONFIG_DEFAULTS }), true)
+  assert.equal(isAllDefaults(null), true)
+  assert.equal(isAllDefaults({}), true)
+  assert.equal(isAllDefaults({ ...CONFIG_DEFAULTS, lineStyle: 'curve' }), false)
+  assert.equal(isAllDefaults({ ...CONFIG_DEFAULTS, colorTheme: 'sunset' }), false)
+  assert.equal(isAllDefaults({ ...CONFIG_DEFAULTS, growthAnimation: false }), false)
 })

@@ -18,8 +18,9 @@
 //   015 起经 settings namespace 可运行时切换。
 // - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
 //   link 开发需先 npm i）。工具参数 schema 仍手写 JSON Schema（003 偏差 1）。
-import { access, mkdir, open, opendir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, open, opendir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
@@ -41,14 +42,84 @@ function normalizeApprovalMode(value, requireApproval = true) {
   return 'session'
 }
 
+/**
+ * 0.1.7 迁移：从 settings.yaml.imported 的 mindmap 段提取标量字段。
+ * 该文件是宿主自动改名后的旧 settings.yaml，格式是顶层 YAML 段，
+ * mindmap 段下全是 `key: value` 标量行——不引入 YAML 库，只按行解析。
+ * 容错：文件不存在、解析失败、mindmap 段缺失一律返回 null（静默跳过）。
+ *
+ * `raw` 是文件的完整文本；返回已校验过的可写入字段对象，或 null。
+ */
+const MIGRATABLE_KEYS = {
+  requireApproval: (v) => v === 'true' || v === 'false',
+  approvalMode: (v) => APPROVAL_MODES.includes(v) || v === 'once-per-document' || v === 'always',
+  defaultPanelWidth: (v) => /^\d+$/.test(v) && Number(v) >= 20 && Number(v) <= 80,
+  lineStyle: (v) => v === 'curve' || v === 'elbow',
+  cardStyle: (v) => v === 'rounded' || v === 'square',
+  colorTheme: (v) => v === 'ocean' || v === 'sunset' || v === 'forest',
+  growthAnimation: (v) => v === 'true' || v === 'false',
+}
+
+const MIGRATABLE_PARSERS = {
+  requireApproval: (v) => v === 'true',
+  defaultPanelWidth: (v) => Number(v),
+  growthAnimation: (v) => v === 'true',
+}
+
+function parseLegacyMindmapSection(raw) {
+  if (typeof raw !== 'string') return null
+  const lines = raw.split('\n')
+  let inMindmap = false
+  const found = {}
+  for (const line of lines) {
+    if (/^mindmap:\s*$/.test(line)) { inMindmap = true; continue }
+    if (inMindmap) {
+      if (/^\S/.test(line)) break
+      const m = /^\s{2,}(\w+):\s*(.+?)\s*$/.exec(line)
+      if (!m) continue
+      const key = m[1]
+      const val = m[2]
+      if (MIGRATABLE_KEYS[key] && MIGRATABLE_KEYS[key](val)) {
+        found[key] = MIGRATABLE_PARSERS[key] ? MIGRATABLE_PARSERS[key](val) : val
+      }
+    }
+  }
+  return Object.keys(found).length ? found : null
+}
+
+/**
+ * 判断当前 settings value 是否全为默认值（说明新存储里还没写入过用户偏好，
+ * 是需要迁移的空状态）。entryConfig 是组合层 base，Config schema 的默认值
+ * 和 entryConfig 的默认值一致。
+ */
+const CONFIG_DEFAULTS = {
+  requireApproval: true,
+  approvalMode: 'session',
+  defaultPanelWidth: 42,
+  lineStyle: 'elbow',
+  cardStyle: 'rounded',
+  colorTheme: 'ocean',
+  growthAnimation: true,
+}
+
+function isAllDefaults(value) {
+  if (!value || typeof value !== 'object') return true
+  // 空对象（新存储里没有任何值）= 需要迁移
+  if (Object.keys(value).length === 0) return true
+  for (const key in CONFIG_DEFAULTS) {
+    if (value[key] !== CONFIG_DEFAULTS[key]) return false
+  }
+  return true
+}
+
 export const Config = Schema.object({
-  requireApproval: Schema.boolean().default(true).description('Legacy switch: false skips ordinary confirmations only, and is lifted when the settings panel picks an explicit approval mode. Rename, clearing content, and broad rewrites always require approval.'),
-  approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. High-risk writes always require approval.'),
-  defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).'),
-  lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).'),
-  cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.'),
-  colorTheme: Schema.union(['ocean', 'sunset', 'forest']).default('ocean').description('Node color theme.'),
-  growthAnimation: Schema.boolean().default(true).description('Progressive growth animation: newly added/changed nodes fade in one by one after each update (total capped at ~2s). Turn off for instant full render.'),
+  requireApproval: Schema.boolean().default(true).description('Legacy switch: false skips ordinary confirmations only, and is lifted when the settings panel picks an explicit approval mode. Rename, clearing content, and broad rewrites always require approval.').extra('volatile', true),
+  approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. High-risk writes always require approval.').extra('volatile', true),
+  defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).').extra('volatile', true),
+  lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).').extra('volatile', true),
+  cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.').extra('volatile', true),
+  colorTheme: Schema.union(['ocean', 'sunset', 'forest']).default('ocean').description('Node color theme.').extra('volatile', true),
+  growthAnimation: Schema.boolean().default(true).description('Progressive growth animation: newly added/changed nodes fade in one by one after each update (total capped at ~2s). Turn off for instant full render.').extra('volatile', true),
 })
 
 const MAX_CONTENT_BYTES = 2 * 1024 * 1024
@@ -585,6 +656,23 @@ export function apply(ctx, config = {}) {
   ctx.inject(['settings'], (sctx) => {
     const scope = sctx.settings.register(SETTINGS_NAMESPACE, Config, { base: entryConfig })
     activeConfig = () => scope.get()
+    // 0.1.7 迁移：宿主把 ~/.dsh/settings.yaml 改名 .imported 后，legacy 导入
+    // 因 Config 无 volatile 字段而静默失败（volatile 已修，但 .imported 只导入一次，
+    // 不会重跑）。启动时自查：settings value 全为默认值 → 读 .imported 的 mindmap
+    // 段 → 校验后一次性写入新存储。失败静默跳过；不删除 .imported（宿主管理的文件）。
+    ;(async () => {
+      try {
+        if (!isAllDefaults(scope.get())) return
+        const imported = join(homedir(), '.dsh', 'settings.yaml.imported')
+        const raw = await readFile(imported, 'utf8').catch(() => null)
+        if (!raw) return
+        const legacy = parseLegacyMindmapSection(raw)
+        if (!legacy) return
+        await scope.update(legacy)
+      } catch {
+        // 迁移失败不影响插件运行：用户仍可在设置面板手动配置。
+      }
+    })()
     sctx.effect(() => () => {
       activeConfig = () => entryConfig
     })
@@ -963,4 +1051,8 @@ export const internals = Object.freeze({
   isTrustedRequest,
   buildResult,
   revisionOfContent,
+  Config,
+  parseLegacyMindmapSection,
+  isAllDefaults,
+  CONFIG_DEFAULTS,
 })
