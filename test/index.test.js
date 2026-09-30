@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 
-import { apply, internals } from '../index.js'
+import { apply, Config as exportedConfig, internals } from '../index.js'
 
 const {
   DEFAULT_MINDMAP_DIR,
@@ -25,6 +25,7 @@ const {
   parseLegacyMindmapSection,
   isAllDefaults,
   CONFIG_DEFAULTS,
+  migrateLegacyMindmap,
 } = internals
 
 function execution(cwd) {
@@ -34,14 +35,34 @@ function execution(cwd) {
   }
 }
 
-function createContext(config = {}) {
+function createContext(config = {}, options = {}) {
   const tools = []
   const sections = []
   const listeners = new Map()
   const routes = []
   const sessions = new Map()
-  let settingsState
+  let settingsState = { ...CONFIG_DEFAULTS, ...config, ...options.settingsValue }
+  // Normal tests represent an already-saved default preference, so startup
+  // migration never reads the developer machine's real .imported file.
+  let settingsUser = { approvalMode: 'session', ...options.settingsUser }
+  let revision = 0
+  const settingsUpdates = []
+  const settingsService = {
+    describe() {
+      options.onDescribe?.()
+      return [{ ns: 'mindmap', schema: Config.toJSON(), value: { ...settingsState }, user: { ...settingsUser }, revision }]
+    },
+    async update(ns, patch, expectedRevision) {
+      assert.equal(ns, 'mindmap')
+      if (expectedRevision !== undefined && expectedRevision !== revision) throw new Error('settings revision conflict')
+      settingsUpdates.push({ ns, patch, expectedRevision })
+      settingsState = { ...settingsState, ...patch }
+      settingsUser = { ...settingsUser, ...patch }
+      revision += 1
+    },
+  }
   const ctx = {
+    root: { loader: { await: options.loaderAwait ?? (async () => {}) } },
     on(name, listener) {
       listeners.set(name, listener)
       return () => listeners.delete(name)
@@ -72,28 +93,12 @@ function createContext(config = {}) {
       fn()
       return () => {}
     },
-    // 015 settings 命名空间注入：模拟 dsh-settings 的注册面（config → base）。
+    // 0.1.7+ settings 服务面：真实宿主仅有 describe/update，没有 register。
     inject(names, callback) {
       if (names && names.includes('settings')) {
         callback({
-          settings: {
-            register(ns, schema, options = {}) {
-              const base = options.base ?? {}
-              settingsState = { ...base }
-              return {
-                get: () => ({
-                  requireApproval: settingsState.requireApproval !== false,
-                  approvalMode: settingsState.approvalMode ?? 'session',
-                  defaultPanelWidth: typeof settingsState.defaultPanelWidth === 'number' ? settingsState.defaultPanelWidth : 42,
-                  lineStyle: settingsState.lineStyle === 'curve' ? 'curve' : 'elbow',
-                  cardStyle: settingsState.cardStyle === 'square' ? 'square' : 'rounded',
-                  colorTheme: settingsState.colorTheme ?? 'ocean',
-                  growthAnimation: settingsState.growthAnimation !== false,
-                }),
-                update: async () => {},
-              }
-            },
-          },
+          settings: settingsService,
+          root: ctx.root,
           effect(fn) {
             fn()
             return () => {}
@@ -108,7 +113,7 @@ function createContext(config = {}) {
     if (!tool) throw new Error(`tool not registered: ${name}`)
     return tool
   }
-  return { tools, sections, listeners, routes, sessions, byName, get settingsState() { return settingsState } }
+  return { tools, sections, listeners, routes, sessions, byName, settingsService, settingsUpdates, get settingsState() { return settingsState } }
 }
 
 async function tmpWorkspace() {
@@ -1008,6 +1013,7 @@ test('listDirectoryLevel caps entries at maxEntries and flags truncation', async
 // 否则 0.1.7 宿主的 settings 存储 volatileForm/isVolatilePath 门禁会拒绝读写，
 // 设置面板写不进、legacy 导入被静默丢弃。
 test('Config schema fields are all marked volatile for 0.1.7 settings storage', () => {
+  assert.equal(exportedConfig, Config, 'loader must discover the flat Config export')
   const dict = Config.dict
   const expectedKeys = Object.keys(CONFIG_DEFAULTS)
   for (const key of expectedKeys) {
@@ -1015,6 +1021,91 @@ test('Config schema fields are all marked volatile for 0.1.7 settings storage', 
     assert.ok(schema, `Config should have a schema for ${key}`)
     assert.equal(schema.meta.volatile, true, `Config.${key} should have meta.volatile === true`)
   }
+})
+
+test('host approval follows describe/update changes without the removed register API', async () => {
+  const cwd = await tmpWorkspace()
+  const { listeners, settingsService, settingsUpdates } = createContext()
+  assert.equal(settingsService.register, undefined)
+  const listener = listeners.get('tools/pre-execute')
+  const next = async () => ({ kind: 'allow' })
+  const write = { ...execution(cwd), name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } }
+  assert.equal((await listener(write, next)).kind, 'ask')
+  await settingsService.update('mindmap', { approvalMode: 'off' }, 0)
+  assert.deepEqual(await listener(write, next), { kind: 'allow' })
+  await settingsService.update('mindmap', { approvalMode: 'per-operation' }, 1)
+  assert.equal((await listener(write, next)).kind, 'ask')
+  assert.deepEqual(settingsUpdates.map((item) => item.expectedRevision), [0, 1])
+})
+
+test('startup migration waits for the loader before looking up its settings descriptor', async () => {
+  let releaseLoader
+  const ready = new Promise((resolve) => { releaseLoader = resolve })
+  let described = 0
+  createContext({}, { loaderAwait: () => ready, onDescribe: () => { described += 1 } })
+  assert.equal(described, 0)
+  releaseLoader()
+  await ready
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(described, 1)
+})
+
+test('legacy migration restores untouched settings once through describe/update', async () => {
+  const cwd = await tmpWorkspace()
+  const imported = join(cwd, 'settings.yaml.imported')
+  const legacy = 'mindmap:\n  lineStyle: elbow\n  cardStyle: rounded\n  colorTheme: ocean\n'
+  await writeFile(imported, legacy, 'utf8')
+  const descriptor = { ns: 'mindmap', value: { ...CONFIG_DEFAULTS }, user: {}, revision: 4 }
+  const writes = []
+  const settings = {
+    describe: () => [descriptor],
+    async update(ns, patch, expectedRevision) {
+      writes.push({ ns, patch, expectedRevision })
+      descriptor.value = { ...descriptor.value, ...patch }
+      descriptor.user = { ...patch }
+      descriptor.revision += 1
+    },
+  }
+  await migrateLegacyMindmap(settings, imported)
+  assert.deepEqual(writes, [{
+    ns: 'mindmap',
+    patch: { lineStyle: 'elbow', cardStyle: 'rounded', colorTheme: 'ocean' },
+    expectedRevision: 4,
+  }])
+  await migrateLegacyMindmap(settings, imported)
+  assert.equal(writes.length, 1, 'persisted defaults should not be restored again on restart')
+  assert.equal(await readFile(imported, 'utf8'), legacy)
+})
+
+test('legacy migration preserves current choices and refuses stale revisions', async () => {
+  const cwd = await tmpWorkspace()
+  const imported = join(cwd, 'settings.yaml.imported')
+  await writeFile(imported, 'mindmap:\n  approvalMode: off\n', 'utf8')
+  const descriptor = { ns: 'mindmap', value: { ...CONFIG_DEFAULTS }, user: { approvalMode: 'session' }, revision: 2 }
+  const writes = []
+  const settings = {
+    describe: () => [descriptor],
+    async update(ns, patch, expectedRevision) {
+      writes.push({ ns, patch, expectedRevision })
+      if (expectedRevision !== descriptor.revision) throw new Error('settings revision conflict')
+    },
+  }
+  await migrateLegacyMindmap(settings, imported)
+  assert.equal(writes.length, 0, 'an explicitly saved default must win over imported data')
+  descriptor.user = {}
+  descriptor.value = { ...CONFIG_DEFAULTS, lineStyle: 'curve' }
+  await migrateLegacyMindmap(settings, imported)
+  assert.equal(writes.length, 0, 'a non-default current value must win over imported data')
+  descriptor.value = { ...CONFIG_DEFAULTS }
+  descriptor.revision += 1
+  await assert.rejects(migrateLegacyMindmap({
+    describe: () => [descriptor],
+    update: async (...args) => {
+      descriptor.revision += 1 // 模拟读文件期间面板另一次保存
+      return settings.update(...args)
+    },
+  }, imported), /revision conflict/)
+  assert.deepEqual(writes, [{ ns: 'mindmap', patch: { approvalMode: 'off' }, expectedRevision: 3 }])
 })
 
 test('parseLegacyMindmapSection extracts scalar fields from imported settings.yaml', () => {

@@ -88,9 +88,8 @@ function parseLegacyMindmapSection(raw) {
 }
 
 /**
- * 判断当前 settings value 是否全为默认值（说明新存储里还没写入过用户偏好，
- * 是需要迁移的空状态）。entryConfig 是组合层 base，Config schema 的默认值
- * 和 entryConfig 的默认值一致。
+ * 判断当前 settings value 是否全为默认值。迁移还要检查 descriptor.user，
+ * 否则用户明确保存了默认值后，每次启动都会被旧文件覆盖。
  */
 const CONFIG_DEFAULTS = {
   requireApproval: true,
@@ -110,6 +109,21 @@ function isAllDefaults(value) {
     if (value[key] !== CONFIG_DEFAULTS[key]) return false
   }
   return true
+}
+
+/** 只恢复尚无用户覆盖值的旧设置；修订号防止读取旧文件期间覆盖新的面板写入。 */
+async function migrateLegacyMindmap(settings, imported, isActive = () => true) {
+  const descriptor = settings.describe().find((row) => row.ns === SETTINGS_NAMESPACE)
+  if (!descriptor || !isAllDefaults(descriptor.value) || Object.keys(descriptor.user ?? {}).length) return
+  const raw = await readFile(imported, 'utf8').catch(() => null)
+  const legacy = parseLegacyMindmapSection(raw)
+  if (!legacy || !isActive()) return
+  await settings.update(SETTINGS_NAMESPACE, legacy, descriptor.revision)
+}
+
+/** 0.1.7+ 的 Config 字段可能是随设置变更而更新的 volatile 引用。 */
+function configValue(value) {
+  return value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
 }
 
 export const Config = Schema.object({
@@ -636,45 +650,51 @@ function defineTool(spec) {
 }
 
 export function apply(ctx, config = {}) {
-  // 入口配置作为 settings 组合层的 base：视觉三件套与默认宽度在这里
-  // 透传（带 schema 同款默认值），用户设置层仍可在设置面板覆盖。
-  const entryConfig = {
-    requireApproval: config.requireApproval !== false,
-    approvalMode: normalizeApprovalMode(config.approvalMode, config.requireApproval !== false),
-    defaultPanelWidth: typeof config.defaultPanelWidth === 'number' ? config.defaultPanelWidth : 42,
-    lineStyle: config.lineStyle === 'curve' ? 'curve' : 'elbow',
-    cardStyle: config.cardStyle === 'square' ? 'square' : 'rounded',
-    colorTheme: config.colorTheme === 'sunset' || config.colorTheme === 'forest' ? config.colorTheme : 'ocean',
-    growthAnimation: config.growthAnimation !== false,
+  // 新宿主从平铺导出的 Config 发现 schema，entry 的 config 由宿主提供；
+  // 未取得设置描述符时，回退到入口配置（兼容旧宿主和 volatile 引用）。
+  const entryConfig = () => {
+    const requireApproval = configValue(config.requireApproval) !== false
+    const approvalMode = configValue(config.approvalMode)
+    const defaultPanelWidth = configValue(config.defaultPanelWidth)
+    const lineStyle = configValue(config.lineStyle)
+    const cardStyle = configValue(config.cardStyle)
+    const colorTheme = configValue(config.colorTheme)
+    return {
+      requireApproval,
+      approvalMode: normalizeApprovalMode(approvalMode, requireApproval),
+      defaultPanelWidth: typeof defaultPanelWidth === 'number' ? defaultPanelWidth : 42,
+      lineStyle: lineStyle === 'curve' ? 'curve' : 'elbow',
+      cardStyle: cardStyle === 'square' ? 'square' : 'rounded',
+      colorTheme: colorTheme === 'sunset' || colorTheme === 'forest' ? colorTheme : 'ocean',
+      growthAnimation: configValue(config.growthAnimation) !== false,
+    }
   }
 
-  // 015 设置面板：settings 服务可用时以命名空间解析值为准
-  // （schema 默认 → 组合层 base → 用户设置层），否则回退入口配置
-  // （dsh-grafana 同款模式；link 环境缺 schemastery 时见 003 偏差 1 的
-  // 依赖说明——发布包正常安装依赖）。
-  let activeConfig = () => entryConfig
+  let activeConfig = entryConfig
   ctx.inject(['settings'], (sctx) => {
-    const scope = sctx.settings.register(SETTINGS_NAMESPACE, Config, { base: entryConfig })
-    activeConfig = () => scope.get()
-    // 0.1.7 迁移：宿主把 ~/.dsh/settings.yaml 改名 .imported 后，legacy 导入
-    // 因 Config 无 volatile 字段而静默失败（volatile 已修，但 .imported 只导入一次，
-    // 不会重跑）。启动时自查：settings value 全为默认值 → 读 .imported 的 mindmap
-    // 段 → 校验后一次性写入新存储。失败静默跳过；不删除 .imported（宿主管理的文件）。
-    ;(async () => {
-      try {
-        if (!isAllDefaults(scope.get())) return
-        const imported = join(homedir(), '.dsh', 'settings.yaml.imported')
-        const raw = await readFile(imported, 'utf8').catch(() => null)
-        if (!raw) return
-        const legacy = parseLegacyMindmapSection(raw)
-        if (!legacy) return
-        await scope.update(legacy)
-      } catch {
-        // 迁移失败不影响插件运行：用户仍可在设置面板手动配置。
-      }
-    })()
+    const settings = sctx.settings
+    let active = true
+    if (typeof settings.register === 'function') {
+      // 0.1.5 等旧宿主仍由插件注册 namespace。
+      const scope = settings.register(SETTINGS_NAMESPACE, Config, { base: entryConfig() })
+      activeConfig = () => scope.get()
+    } else {
+      // 0.1.7+ 只有 describe/update 服务面；描述符的 value 是已解析的实时值。
+      activeConfig = () => ({
+        ...entryConfig(),
+        ...settings.describe().find((row) => row.ns === SETTINGS_NAMESPACE)?.value,
+      })
+      // .imported 是宿主改名后的旧文件：只在新存储无用户覆盖时恢复，
+      // 不删除旧文件，失败也不妨碍工具和设置面板继续工作。
+      void (async () => {
+        // describe 只包含 state=2 的插件；等 loader 完成加载后再尝试迁移。
+        await sctx.root?.loader?.await?.()
+        if (active) await migrateLegacyMindmap(settings, join(homedir(), '.dsh', 'settings.yaml.imported'), () => active)
+      })().catch(() => {})
+    }
     sctx.effect(() => () => {
-      activeConfig = () => entryConfig
+      active = false
+      activeConfig = entryConfig
     })
   })
 
@@ -1055,4 +1075,5 @@ export const internals = Object.freeze({
   parseLegacyMindmapSection,
   isAllDefaults,
   CONFIG_DEFAULTS,
+  migrateLegacyMindmap,
 })
