@@ -96,23 +96,32 @@
 		}
 
 		/**
-		 * 布局 + 生成导出用 SVG 字符串。左→右分层：x = 父盒右缘 + 间距（可变盒宽），
-		 * 叶子自上而下占行，父节点垂直居中于其子块；连线为水平贝塞尔。
+		 * 布局 + 生成导出用 SVG 字符串。与面板渲染同一套方向语义（039）：
+		 * horizontal 左→右分层，x = 父盒右缘 + 间距（可变盒宽），叶子自上而下占行，
+		 * 父节点垂直居中于其子块；vertical 上→下分层，y = 父盒下缘 + 间距，
+		 * 叶子自左而右占列，父节点水平居中于其子块。两者连线均为对应轴的中轴贝塞尔。
+		 * 坐标系契约不变——p.x 恒为左缘、p.y 恒为竖直中心，故下方绘制段无需感知方向。
 		 * 019：盒高随内容生长（表格/引用画专属形态）；色值取主题静态亮色快照
 		 *（导出 SVG 走 data-URL，宿主 CSS 变量不可用）。
 		 */
-		function buildExportSvg(tree, themeName) {
+		function buildExportSvg(tree, themeName, layoutDirection) {
 			const palette = exportPalette(themeName);
+			const vertical = normalizeLayoutDirection(layoutDirection) === "vertical";
 			const placed = [];
 			const edges = [];
 			let cursor = EXPORT.pad;
+			const centerXOf = (entry) => entry.x + entry.size.w / 2;
 			const place = (node, parentEntry) => {
 				const size = measureExportBox(node);
 				const entry = {
 					node,
 					size,
-					x: parentEntry ? parentEntry.x + parentEntry.size.w + EXPORT.hGap : EXPORT.pad,
-					y: 0,
+					x: vertical
+						? 0
+						: (parentEntry ? parentEntry.x + parentEntry.size.w + EXPORT.hGap : EXPORT.pad),
+					y: vertical
+						? (parentEntry ? parentEntry.y + parentEntry.size.h / 2 + EXPORT.vGap + size.h / 2 : EXPORT.pad + size.h / 2)
+						: 0,
 				};
 				placed.push(entry);
 				if (parentEntry) edges.push({ from: parentEntry, to: entry });
@@ -124,8 +133,15 @@
 						if (!first) first = childEntry;
 						last = childEntry;
 					}
-					entry.y = (first.y + last.y) / 2;
+					// 有子节点：沿生长轴居中于子块（横向居中 y，纵向居中 x）。
+					if (vertical) entry.x = (centerXOf(first) + centerXOf(last)) / 2 - size.w / 2;
+					else entry.y = (first.y + last.y) / 2;
+				} else if (vertical) {
+					// 叶子沿横轴依次占列。
+					entry.x = cursor;
+					cursor += size.w + EXPORT.hGap;
 				} else {
+					// 叶子沿纵轴依次占行。
 					entry.y = cursor + size.h / 2;
 					cursor += size.h + EXPORT.vGap;
 				}
@@ -133,17 +149,33 @@
 			};
 			place(tree, null);
 			const width = placed.reduce((mx, p) => Math.max(mx, p.x + p.size.w), 0) + EXPORT.pad;
-			const height = Math.max(EXPORT.pad * 2 + EXPORT.lineHeight, cursor - EXPORT.vGap + EXPORT.pad);
+			// 横向的高度来自叶子占行游标；纵向改为按已放置盒的下缘取最大值。
+			const height = vertical
+				? placed.reduce((mx, p) => Math.max(mx, p.y + p.size.h / 2), 0) + EXPORT.pad
+				: Math.max(EXPORT.pad * 2 + EXPORT.lineHeight, cursor - EXPORT.vGap + EXPORT.pad);
 			const parts = [];
 			parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">`);
 			parts.push(`<rect x="0" y="0" width="${width}" height="${height}" fill="${palette.canvasBg}"/>`);
 			for (const e of edges) {
-				const x1 = e.from.x + e.from.size.w;
-				const y1 = e.from.y;
-				const x2 = e.to.x;
-				const y2 = e.to.y;
-				const mid = (x1 + x2) / 2;
-				parts.push(`<path d="M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}" fill="none" stroke="${palette.connector}" stroke-width="1.5"/>`);
+				// 039 连线换轴：横向 = 父盒右缘 → 子盒左缘、控制点取 x 中点；
+				// 纵向 = 父盒下缘中点 → 子盒上缘中点、控制点取 y 中点。
+				let d;
+				if (vertical) {
+					const x1 = e.from.x + e.from.size.w / 2;
+					const y1 = e.from.y + e.from.size.h / 2;
+					const x2 = e.to.x + e.to.size.w / 2;
+					const y2 = e.to.y - e.to.size.h / 2;
+					const mid = (y1 + y2) / 2;
+					d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
+				} else {
+					const x1 = e.from.x + e.from.size.w;
+					const y1 = e.from.y;
+					const x2 = e.to.x;
+					const y2 = e.to.y;
+					const mid = (x1 + x2) / 2;
+					d = `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
+				}
+				parts.push(`<path d="${d}" fill="none" stroke="${palette.connector}" stroke-width="1.5"/>`);
 			}
 			for (const p of placed) {
 				const node = p.node;
@@ -227,8 +259,8 @@
 		}
 
 		/** 浏览器侧导出：SVG → canvas → PNG 下载。tree 可为整树或任意子树（017）。 */
-		async function exportPng(tree, rootTitle, themeName) {
-			const { svg, width, height } = buildExportSvg(tree, themeName);
+		async function exportPng(tree, rootTitle, themeName, layoutDirection) {
+			const { svg, width, height } = buildExportSvg(tree, themeName, layoutDirection);
 			const canvas = await renderSvgToCanvas(svg, width, height);
 			const dataUrl = canvas.toDataURL("image/png");
 			const a = document.createElement("a");
@@ -265,11 +297,11 @@
 		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全
 		 * 上下文等）或写入被拒时抛错，由菜单提示改用「导出为图片」。
 		 */
-		async function copyPng(tree, themeName) {
+		async function copyPng(tree, themeName, layoutDirection) {
 			if (typeof ClipboardItem === "undefined" || !navigator.clipboard || typeof navigator.clipboard.write !== "function") {
 				throw new Error("当前环境不支持复制图片，请改用「导出为图片」");
 			}
-			const { svg, width, height } = buildExportSvg(tree, themeName);
+			const { svg, width, height } = buildExportSvg(tree, themeName, layoutDirection);
 			const blobPromise = renderSvgToCanvas(svg, width, height).then((canvas) => new Promise((resolve, reject) => {
 				canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG 生成失败"))), "image/png");
 			}));

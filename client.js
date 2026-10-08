@@ -137,6 +137,20 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 039 布局方向：树向哪个方向生长。horizontal = 根在左、子节点向右分层
+		 * （历史行为，默认）；vertical = 根在顶、子节点向下分层（组织结构图形态）。
+		 * 归一化刻意收得很紧——未知值一律回落 horizontal，旧设置读不到时行为不变。
+		 */
+		function normalizeLayoutDirection(value) {
+			return value === "vertical" ? "vertical" : "horizontal";
+		}
+
+		/** 039 该主题是否纵向布局（渲染与导出共用同一判据，避免两处各写一遍）。 */
+		function isVerticalLayout(theme) {
+			return normalizeLayoutDirection(theme && theme.layoutDirection) === "vertical";
+		}
+
+		/**
 		 * 节点样式解析（002 §5 语义配方 + §6 状态）：纯函数，同输入同输出。
 		 * 输入 = 节点语义身份（kind / 标题级别）+ 交互状态 + 主题覆写表；
 		 * 输出 = 可直接铺进节点盒 style 的外观属性（骨架属性不在其中）。
@@ -1379,23 +1393,32 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 布局 + 生成导出用 SVG 字符串。左→右分层：x = 父盒右缘 + 间距（可变盒宽），
-		 * 叶子自上而下占行，父节点垂直居中于其子块；连线为水平贝塞尔。
+		 * 布局 + 生成导出用 SVG 字符串。与面板渲染同一套方向语义（039）：
+		 * horizontal 左→右分层，x = 父盒右缘 + 间距（可变盒宽），叶子自上而下占行，
+		 * 父节点垂直居中于其子块；vertical 上→下分层，y = 父盒下缘 + 间距，
+		 * 叶子自左而右占列，父节点水平居中于其子块。两者连线均为对应轴的中轴贝塞尔。
+		 * 坐标系契约不变——p.x 恒为左缘、p.y 恒为竖直中心，故下方绘制段无需感知方向。
 		 * 019：盒高随内容生长（表格/引用画专属形态）；色值取主题静态亮色快照
 		 *（导出 SVG 走 data-URL，宿主 CSS 变量不可用）。
 		 */
-		function buildExportSvg(tree, themeName) {
+		function buildExportSvg(tree, themeName, layoutDirection) {
 			const palette = exportPalette(themeName);
+			const vertical = normalizeLayoutDirection(layoutDirection) === "vertical";
 			const placed = [];
 			const edges = [];
 			let cursor = EXPORT.pad;
+			const centerXOf = (entry) => entry.x + entry.size.w / 2;
 			const place = (node, parentEntry) => {
 				const size = measureExportBox(node);
 				const entry = {
 					node,
 					size,
-					x: parentEntry ? parentEntry.x + parentEntry.size.w + EXPORT.hGap : EXPORT.pad,
-					y: 0,
+					x: vertical
+						? 0
+						: (parentEntry ? parentEntry.x + parentEntry.size.w + EXPORT.hGap : EXPORT.pad),
+					y: vertical
+						? (parentEntry ? parentEntry.y + parentEntry.size.h / 2 + EXPORT.vGap + size.h / 2 : EXPORT.pad + size.h / 2)
+						: 0,
 				};
 				placed.push(entry);
 				if (parentEntry) edges.push({ from: parentEntry, to: entry });
@@ -1407,8 +1430,15 @@ window.__ModuleLoader__.load({
 						if (!first) first = childEntry;
 						last = childEntry;
 					}
-					entry.y = (first.y + last.y) / 2;
+					// 有子节点：沿生长轴居中于子块（横向居中 y，纵向居中 x）。
+					if (vertical) entry.x = (centerXOf(first) + centerXOf(last)) / 2 - size.w / 2;
+					else entry.y = (first.y + last.y) / 2;
+				} else if (vertical) {
+					// 叶子沿横轴依次占列。
+					entry.x = cursor;
+					cursor += size.w + EXPORT.hGap;
 				} else {
+					// 叶子沿纵轴依次占行。
 					entry.y = cursor + size.h / 2;
 					cursor += size.h + EXPORT.vGap;
 				}
@@ -1416,17 +1446,33 @@ window.__ModuleLoader__.load({
 			};
 			place(tree, null);
 			const width = placed.reduce((mx, p) => Math.max(mx, p.x + p.size.w), 0) + EXPORT.pad;
-			const height = Math.max(EXPORT.pad * 2 + EXPORT.lineHeight, cursor - EXPORT.vGap + EXPORT.pad);
+			// 横向的高度来自叶子占行游标；纵向改为按已放置盒的下缘取最大值。
+			const height = vertical
+				? placed.reduce((mx, p) => Math.max(mx, p.y + p.size.h / 2), 0) + EXPORT.pad
+				: Math.max(EXPORT.pad * 2 + EXPORT.lineHeight, cursor - EXPORT.vGap + EXPORT.pad);
 			const parts = [];
 			parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">`);
 			parts.push(`<rect x="0" y="0" width="${width}" height="${height}" fill="${palette.canvasBg}"/>`);
 			for (const e of edges) {
-				const x1 = e.from.x + e.from.size.w;
-				const y1 = e.from.y;
-				const x2 = e.to.x;
-				const y2 = e.to.y;
-				const mid = (x1 + x2) / 2;
-				parts.push(`<path d="M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}" fill="none" stroke="${palette.connector}" stroke-width="1.5"/>`);
+				// 039 连线换轴：横向 = 父盒右缘 → 子盒左缘、控制点取 x 中点；
+				// 纵向 = 父盒下缘中点 → 子盒上缘中点、控制点取 y 中点。
+				let d;
+				if (vertical) {
+					const x1 = e.from.x + e.from.size.w / 2;
+					const y1 = e.from.y + e.from.size.h / 2;
+					const x2 = e.to.x + e.to.size.w / 2;
+					const y2 = e.to.y - e.to.size.h / 2;
+					const mid = (y1 + y2) / 2;
+					d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
+				} else {
+					const x1 = e.from.x + e.from.size.w;
+					const y1 = e.from.y;
+					const x2 = e.to.x;
+					const y2 = e.to.y;
+					const mid = (x1 + x2) / 2;
+					d = `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
+				}
+				parts.push(`<path d="${d}" fill="none" stroke="${palette.connector}" stroke-width="1.5"/>`);
 			}
 			for (const p of placed) {
 				const node = p.node;
@@ -1510,8 +1556,8 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 浏览器侧导出：SVG → canvas → PNG 下载。tree 可为整树或任意子树（017）。 */
-		async function exportPng(tree, rootTitle, themeName) {
-			const { svg, width, height } = buildExportSvg(tree, themeName);
+		async function exportPng(tree, rootTitle, themeName, layoutDirection) {
+			const { svg, width, height } = buildExportSvg(tree, themeName, layoutDirection);
 			const canvas = await renderSvgToCanvas(svg, width, height);
 			const dataUrl = canvas.toDataURL("image/png");
 			const a = document.createElement("a");
@@ -1548,11 +1594,11 @@ window.__ModuleLoader__.load({
 		 * 异步渲染期间保持用户激活态（Chrome 契约）；环境不支持（非安全
 		 * 上下文等）或写入被拒时抛错，由菜单提示改用「导出为图片」。
 		 */
-		async function copyPng(tree, themeName) {
+		async function copyPng(tree, themeName, layoutDirection) {
 			if (typeof ClipboardItem === "undefined" || !navigator.clipboard || typeof navigator.clipboard.write !== "function") {
 				throw new Error("当前环境不支持复制图片，请改用「导出为图片」");
 			}
-			const { svg, width, height } = buildExportSvg(tree, themeName);
+			const { svg, width, height } = buildExportSvg(tree, themeName, layoutDirection);
 			const blobPromise = renderSvgToCanvas(svg, width, height).then((canvas) => new Promise((resolve, reject) => {
 				canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG 生成失败"))), "image/png");
 			}));
@@ -1644,6 +1690,11 @@ window.__ModuleLoader__.load({
 			// 025：子列左距 16 + 折叠开关（16 宽 + 左右各 4 外距）= 折叠前的 40，
 			// 连线长度与既有版式保持一致。
 			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "16px", minWidth: 0 },
+			// 039 纵向布局的镜像版式：节点盒与子行的主轴换成竖轴，子节点改为
+			// 横向平铺，间距 16 从 marginLeft 改挂 marginTop——两处数值刻意保持
+			// 与横向一致，切换方向时连线长度不变。
+			rowVertical: { display: "flex", flexDirection: "column", alignItems: "center", minWidth: 0 },
+			childrenRowVertical: { display: "flex", flexDirection: "row", gap: "8px", marginTop: "16px", alignItems: "flex-start", minWidth: 0 },
 			// 025 折叠开关：压在连线起点上的小圆钮，叶子节点不渲染。
 			collapseToggle: { flex: "none", width: "16px", height: "16px", margin: "0 4px", padding: 0, borderRadius: "50%", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-secondary)", font: "inherit", fontSize: "11px", lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 1 },
 			// 面板树连线层：正交折线（MarkGrove 的 orthogonalPath 风格），
@@ -1785,6 +1836,8 @@ window.__ModuleLoader__.load({
 						if (v === null) setError("设置服务不可用：settings namespace 未注册或 connection 缺失");
 						setValue({
 							approvalMode: v && v.requireApproval === false ? "off" : v && ["per-operation", "session", "off"].includes(v.approvalMode) ? v.approvalMode : "session",
+							// 039 布局方向：未知值/旧设置读不到都回落横向。
+							layoutDirection: normalizeLayoutDirection(v && v.layoutDirection),
 							lineStyle: v && v.lineStyle === "curve" ? "curve" : "elbow",
 							cardStyle: v && v.cardStyle === "square" ? "square" : "rounded",
 							colorTheme: v && COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
@@ -1838,6 +1891,19 @@ window.__ModuleLoader__.load({
 				save({ defaultPanelWidth: value.defaultPanelWidth });
 			};
 			return (0, react_jsx_runtime.jsxs)("div", { style: S.settingsWrap, children: [
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "布局" }),
+				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "方向" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: "horizontal", label: "横向" }, { value: "vertical", label: "纵向" }],
+							value: value.layoutDirection,
+							disabled: saving,
+							onChange: (v) => setField({ layoutDirection: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "横向：根节点在左，子节点逐层向右展开（默认）。纵向：根节点在最上方，子节点逐层向下展开，即组织结构图形态。面板画布与导出图片使用同一方向。" }),
+				] }),
 				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "节点主题" }),
 				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
 					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
@@ -2147,7 +2213,8 @@ window.__ModuleLoader__.load({
 			});
 		}
 
-		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
+		/** 递归树：节点盒 + 子节点列/行 + 连线层（015 支持折线/曲线两种线型；
+		 * 039 支持横向左→右与纵向上→下两种生长方向）。 */
 		function TreeRow(props) {
 			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse, matchIds, activeMatchId } = props;
 			// 025 折叠：纯视图态——markdown 资产不变，导出仍取完整子树。
@@ -2160,6 +2227,8 @@ window.__ModuleLoader__.load({
 			const overrides = COLOR_THEMES[theme && theme.colorTheme] || COLOR_THEMES.ocean;
 			const connectorColor = resolveToken("connector.color", overrides);
 			const connectorWidth = resolveToken("connector.width", overrides);
+			// 039 布局方向：测量回调与 JSX（主轴、子列/子行）都要用，故提在组件体上。
+			const vertical = isVerticalLayout(theme);
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
@@ -2173,9 +2242,10 @@ window.__ModuleLoader__.load({
 			// 隐藏。getBoundingClientRect 返回 10×zoom → 实测缩放因子。
 			const probeRef = react.useRef(null);
 
-			// 测量父盒右缘与各子节点包裹块的几何位置，画连线
-			// （折线 = M x1 y1 H midX V y2 H x2；曲线 = 贝塞尔水平切出）；
-			// 序列化比对防 setState 循环。
+			// 测量父盒与各子节点的几何位置，画连线。
+			// 横向：父盒右缘 → 子盒左缘（折线 = M x1 y1 H midX V y2 H x2；曲线 = 水平切出贝塞尔）；
+			// 039 纵向：父盒下缘中点 → 子盒上缘中点（折线 = M x1 y1 V midY H x2 V y2；
+			// 曲线 = 垂直切出贝塞尔）。序列化比对防 setState 循环。
 			react.useLayoutEffect(() => {
 				const rowEl = rowRef.current;
 				const boxEl = boxWrapRef.current;
@@ -2194,6 +2264,17 @@ window.__ModuleLoader__.load({
 						if (!ref) continue;
 						const c = ref.getBoundingClientRect();
 						// 视觉像素 → 行本地坐标（SVG 用户空间 = 本地空间）。
+						if (vertical) {
+							const x1 = (boxRect.left - rowRect.left + boxRect.width / 2) / scale;
+							const y1 = (boxRect.bottom - rowRect.top) / scale;
+							const x2 = (c.left - rowRect.left + c.width / 2) / scale;
+							const y2 = (c.top - rowRect.top) / scale;
+							const midY = (y1 + y2) / 2;
+							next.push(curve
+								? `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`
+								: `M ${x1} ${y1} V ${midY} H ${x2} V ${y2}`);
+							continue;
+						}
 						const x1 = (boxRect.right - rowRect.left) / scale;
 						const y1 = (boxRect.top - rowRect.top + boxRect.height / 2) / scale;
 						const x2 = (c.left - rowRect.left) / scale;
@@ -2226,7 +2307,7 @@ window.__ModuleLoader__.load({
 
 			// 016 点击聚焦标记：row = 该节点的整棵子树边界（盒+子列），node = 节点盒本身；
 				// 画布层用事件委托 closest 定位（递归树不逐层传回调）。
-				return (0, react_jsx_runtime.jsxs)("div", { ref: rowRef, "data-mindmap-row": "", style: { ...S.row, position: "relative" }, children: [
+				return (0, react_jsx_runtime.jsxs)("div", { ref: rowRef, "data-mindmap-row": "", style: { ...(vertical ? S.rowVertical : S.row), position: "relative" }, children: [
 				// 缩放探针（本地 10×10，隐形，点击穿透）。
 				(0, react_jsx_runtime.jsx)("div", { ref: probeRef, style: { position: "absolute", top: 0, left: 0, width: 10, height: 10, visibility: "hidden", pointerEvents: "none" } }),
 				layout.edges.length > 0 && layout.w > 0 && layout.h > 0
@@ -2286,7 +2367,7 @@ window.__ModuleLoader__.load({
 					})
 					: null,
 				hasChildren && !isCollapsed
-					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, "data-mindmap-children": "", children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
+					? (0, react_jsx_runtime.jsx)("div", { style: vertical ? S.childrenRowVertical : S.childrenColumn, "data-mindmap-children": "", children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
 						key: child.id,
 						ref: (el) => {
 							childRefs.current[idx] = el;
@@ -3198,8 +3279,8 @@ window.__ModuleLoader__.load({
 					try {
 						if (mode === "chat") submitNodeChat(nodeFocusPrompt(node, target));
 						else if (mode === "text") await copyPlainText(nodeTreeText(target));
-						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
-						else await exportPng(target, target.topic, theme && theme.colorTheme);
+						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme, theme && theme.layoutDirection);
+						else await exportPng(target, target.topic, theme && theme.colorTheme, theme && theme.layoutDirection);
 						setNodeMenu(null);
 					} catch (error) {
 						setNodeMenuError(String(error?.message ?? error));
@@ -3501,7 +3582,7 @@ window.__ModuleLoader__.load({
 			// 015 节点主题：面板每次可见、或设置总线 bump（设置页保存）时重读
 			// settings——面板常驻不卸载，光靠 visible 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
-			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
+			const [theme, setTheme] = react.useState({ layoutDirection: "horizontal", lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
 			const [approvalState, setApprovalState] = react.useState(null);
 			react.useEffect(() => {
 				if (!visible) return;
@@ -3509,6 +3590,8 @@ window.__ModuleLoader__.load({
 				mindmapFace.readSettings().then((v) => {
 					if (!v) return;
 					setTheme({
+						// 039 布局方向：旧设置/未知值一律回落横向（历史行为）。
+						layoutDirection: normalizeLayoutDirection(v.layoutDirection),
 						lineStyle: v.lineStyle === "curve" ? "curve" : "elbow",
 						cardStyle: v.cardStyle === "square" ? "square" : "rounded",
 						colorTheme: COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
@@ -3679,7 +3762,7 @@ window.__ModuleLoader__.load({
 				setExporting(true);
 				setExportError("");
 				try {
-					await exportPng(tree, doc.rootTitle, theme && theme.colorTheme);
+					await exportPng(tree, doc.rootTitle, theme && theme.colorTheme, theme && theme.layoutDirection);
 				} catch (error) {
 					setExportError(String(error?.message ?? error));
 				} finally {
@@ -5140,6 +5223,9 @@ window.__ModuleLoader__.load({
 			errorEventKeys,
 			resultTextOfBlocks,
 			stemOf,
+			// 039 布局方向：归一化与判据纯函数（供测试与导出契约验证）。
+			normalizeLayoutDirection,
+			isVerticalLayout,
 			buildExportSvg,
 			measureExportBox,
 			exportCanvasSize,

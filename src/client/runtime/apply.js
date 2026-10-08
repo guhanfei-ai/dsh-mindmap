@@ -300,6 +300,9 @@
 			errorEventKeys,
 			resultTextOfBlocks,
 			stemOf,
+			// 039 布局方向：归一化与判据纯函数（供测试与导出契约验证）。
+			normalizeLayoutDirection,
+			isVerticalLayout,
 			buildExportSvg,
 			measureExportBox,
 			exportCanvasSize,

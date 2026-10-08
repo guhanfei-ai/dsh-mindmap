@@ -81,7 +81,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext, warnCalls: sandboxWarnCalls } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, normalizeLayoutDirection, isVerticalLayout, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -954,6 +954,166 @@ test('TreeRow collapse toggle reports the node id and never reaches the canvas c
   assert.deepEqual(toggled, [heading.id])
   assert.equal(stopped, 1, '必须阻断冒泡，否则会连带触发聚焦/取消选中')
   assert.equal(prevented, 1)
+})
+
+// —— 039 布局方向：横向（默认）/ 纵向（根在顶） ——
+
+test('039 normalizeLayoutDirection falls back to horizontal for anything unknown', () => {
+  assert.equal(normalizeLayoutDirection('vertical'), 'vertical')
+  assert.equal(normalizeLayoutDirection('horizontal'), 'horizontal')
+  // 旧设置读不到 / 未知值：行为必须与历史版本完全一致（横向）。
+  assert.equal(normalizeLayoutDirection(undefined), 'horizontal')
+  assert.equal(normalizeLayoutDirection(null), 'horizontal')
+  assert.equal(normalizeLayoutDirection(''), 'horizontal')
+  assert.equal(normalizeLayoutDirection('VERTICAL'), 'horizontal')
+  assert.equal(normalizeLayoutDirection('diagonal'), 'horizontal')
+  assert.equal(normalizeLayoutDirection(1), 'horizontal')
+})
+
+test('039 isVerticalLayout reads the theme flag and treats a missing theme as horizontal', () => {
+  assert.equal(isVerticalLayout({ layoutDirection: 'vertical' }), true)
+  assert.equal(isVerticalLayout({ layoutDirection: 'horizontal' }), false)
+  assert.equal(isVerticalLayout({}), false)
+  assert.equal(isVerticalLayout(null), false)
+  assert.equal(isVerticalLayout(undefined), false)
+})
+
+/** 抽取导出 SVG 里的节点盒（节点盒带 rx="7"，表格单元格与背景矩形都不带）。 */
+function exportBoxes(svg) {
+  return [...svg.matchAll(/<rect x="([\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="7"/g)]
+    .map((m) => {
+      const x = Number(m[1])
+      const y = Number(m[2])
+      const w = Number(m[3])
+      const h = Number(m[4])
+      return { x, y, w, h, cx: x + w / 2, cy: y + h / 2 }
+    })
+}
+
+/** 抽取导出 SVG 的三次贝塞尔连线，拆成起点/控制点/终点。 */
+function exportPaths(svg) {
+  return [...svg.matchAll(/<path d="M ([\d.-]+) ([\d.-]+) C ([\d.-]+) ([\d.-]+), ([\d.-]+) ([\d.-]+), ([\d.-]+) ([\d.-]+)"/g)]
+    .map((m) => ({
+      x1: Number(m[1]), y1: Number(m[2]),
+      c1x: Number(m[3]), c1y: Number(m[4]),
+      c2x: Number(m[5]), c2y: Number(m[6]),
+      x2: Number(m[7]), y2: Number(m[8]),
+    }))
+}
+
+test('039 TreeRow flips the flex axis with the layout direction', () => {
+  const tree = parseMarkdownToTree('# A\n- x', 'doc')
+  const heading = tree.children[0]
+  const render = (theme) => {
+    const row = TreeRow({ node: heading, theme, collapsed: new Set(), onToggleCollapse: () => {} })
+    const children = row.props.children.filter(Boolean)
+    return {
+      rowStyle: row.props.style,
+      childContainer: children.find((el) => el.props && el.props['data-mindmap-children'] !== undefined) ?? null,
+    }
+  }
+
+  const horizontal = render({ layoutDirection: 'horizontal', lineStyle: 'elbow' })
+  assert.equal(horizontal.rowStyle.flexDirection, undefined, '横向沿用 S.row 的默认主轴')
+  assert.equal(horizontal.childContainer.props.style.flexDirection, 'column')
+  assert.equal(horizontal.childContainer.props.style.marginLeft, '16px')
+  assert.equal(horizontal.childContainer.props.style.marginTop, undefined)
+
+  const vertical = render({ layoutDirection: 'vertical', lineStyle: 'elbow' })
+  assert.equal(vertical.rowStyle.flexDirection, 'column', '纵向：节点盒与其子行竖排')
+  assert.equal(vertical.childContainer.props.style.flexDirection, 'row', '纵向：子节点横向平铺')
+  assert.equal(vertical.childContainer.props.style.marginTop, '16px')
+  assert.equal(vertical.childContainer.props.style.marginLeft, undefined)
+
+  // 旧设置（theme 上没有该字段）必须仍然渲染成横向。
+  const legacy = render({ lineStyle: 'elbow' })
+  assert.equal(legacy.rowStyle.flexDirection, undefined)
+  assert.equal(legacy.childContainer.props.style.flexDirection, 'column')
+})
+
+test('039 horizontal export stays the default and is byte-identical to the explicit option', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n- y', 'doc')
+  assert.equal(buildExportSvg(tree).svg, buildExportSvg(tree, 'ocean', 'horizontal').svg)
+  assert.equal(buildExportSvg(tree, undefined, undefined).svg, buildExportSvg(tree, undefined, 'horizontal').svg)
+})
+
+test('039 horizontal export keeps growing left to right with connectors leaving the parent right edge', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n- y', 'doc')
+  const { svg } = buildExportSvg(tree, 'ocean', 'horizontal')
+  const boxes = exportBoxes(svg)
+  const root = boxes[0]
+  for (const box of boxes.slice(1)) {
+    assert.ok(box.cx > root.cx, '横向：后代必须排在根节点右侧')
+  }
+  const paths = exportPaths(svg)
+  assert.ok(paths.length > 0)
+  for (const p of paths) {
+    assert.equal(p.c1y, p.y1, '横向：曲线需水平切出（首控制点与起点同 y）')
+    assert.equal(p.c2y, p.y2, '横向：曲线需水平切入（末控制点与终点同 y）')
+  }
+})
+
+test('039 vertical export puts the root at the top and stacks every level downwards', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n- y\n- z', 'doc')
+  const { svg, width, height } = buildExportSvg(tree, 'ocean', 'vertical')
+  const boxes = exportBoxes(svg)
+  assert.equal(boxes.length, 5, '根 + 标题 A + 三个列表节点')
+
+  // 前序：根 → A → x/y/z。逐层下移就是「根节点在最顶」。
+  const [root, heading, ...leaves] = boxes
+  assert.ok(heading.cy > root.cy, '标题层必须位于根节点下方')
+  for (const leaf of leaves) assert.ok(leaf.cy > heading.cy, '叶子层必须位于标题层下方')
+
+  // 叶子改为横向占列：同一水平带、cx 递增。
+  assert.equal(new Set(leaves.map((b) => b.cy.toFixed(1))).size, 1, '纵向：同层叶子共享同一水平带')
+  const cxs = leaves.map((b) => b.cx)
+  assert.deepEqual(cxs, [...cxs].sort((a, b) => a - b))
+
+  // 父节点沿生长轴居中于其子块（A 居中于三片叶子；根只有 A 一个子节点，故与 A 同轴）。
+  assert.ok(Math.abs(heading.cx - (leaves[0].cx + leaves[2].cx) / 2) < 1)
+  assert.ok(Math.abs(root.cx - heading.cx) < 1)
+
+  // 纵向：宽度由叶子数量决定、高度由层数决定——此处明显更宽而非更高。
+  assert.ok(width > height, `纵向 3 叶应比 3 层更宽（w=${width}, h=${height}）`)
+})
+
+test('039 vertical export draws connectors from the parent bottom edge, not the right edge', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n- y', 'doc')
+  const { svg } = buildExportSvg(tree, 'ocean', 'vertical')
+  const boxes = exportBoxes(svg)
+  const paths = exportPaths(svg)
+  assert.equal(paths.length, 3, '根→A 与 A→x、A→y 共三条连线')
+  for (const p of paths) {
+    assert.equal(p.c1x, p.x1, '纵向：曲线需竖直切出（首控制点与起点同 x）')
+    assert.equal(p.c2x, p.x2, '纵向：曲线需竖直切入（末控制点与终点同 x）')
+    assert.ok(p.y2 > p.y1, '纵向：连线自上而下')
+  }
+  // 起点必须落在某个父盒的下缘中点上。
+  const starts = paths.map((p) => `${p.x1.toFixed(1)},${p.y1.toFixed(1)}`)
+  const bottoms = boxes.map((b) => `${b.cx.toFixed(1)},${(b.y + b.h).toFixed(1)}`)
+  for (const s of starts) assert.ok(bottoms.includes(s), `连线起点 ${s} 应位于父盒下缘`)
+})
+
+test('039 vertical export handles a childless root without inventing connectors', () => {
+  const tree = { id: 'r', kind: 'heading', topic: 'solo', children: [] }
+  const { svg, width, height } = buildExportSvg(tree, 'ocean', 'vertical')
+  const boxes = exportBoxes(svg)
+  assert.equal(boxes.length, 1)
+  assert.equal(boxes[0].x, 20, '起点仍是 EXPORT.pad')
+  assert.equal(boxes[0].y, 20, '纵向从页顶起排')
+  assert.ok(!svg.includes('<path'), '单节点不应产生连线')
+  assert.ok(width > 0 && height > 0)
+})
+
+test('039 vertical export still renders any subtree as its own rooted export', () => {
+  const tree = parseMarkdownToTree('# A\n- x\n  - deep\n# Z\n- y', 'doc')
+  const sub = buildExportSvg(tree.children[0], 'ocean', 'vertical')
+  assert.ok(sub.svg.includes('>A<'))
+  assert.ok(sub.svg.includes('>deep<'))
+  assert.ok(!sub.svg.includes('>y<'))
+  const leaf = buildExportSvg(tree.children[0].children[0].children[0], 'ocean', 'vertical')
+  assert.ok(leaf.svg.includes('>deep<'))
+  assert.ok(!leaf.svg.includes('<path'))
 })
 
 test('apply registers the header M slot and the settings section, and takes no other slot', () => {

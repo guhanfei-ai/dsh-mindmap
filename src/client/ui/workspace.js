@@ -36,7 +36,7 @@
 			// 015 节点主题：面板每次可见、或设置总线 bump（设置页保存）时重读
 			// settings——面板常驻不卸载，光靠 visible 变化会漏掉「开着面板改设置」。
 			const settingsStamp = react.useSyncExternalStore(settingsBus.subscribe, settingsBus.get);
-			const [theme, setTheme] = react.useState({ lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
+			const [theme, setTheme] = react.useState({ layoutDirection: "horizontal", lineStyle: "elbow", cardStyle: "rounded", colorTheme: "ocean", growthAnimation: true });
 			const [approvalState, setApprovalState] = react.useState(null);
 			react.useEffect(() => {
 				if (!visible) return;
@@ -44,6 +44,8 @@
 				mindmapFace.readSettings().then((v) => {
 					if (!v) return;
 					setTheme({
+						// 039 布局方向：旧设置/未知值一律回落横向（历史行为）。
+						layoutDirection: normalizeLayoutDirection(v.layoutDirection),
 						lineStyle: v.lineStyle === "curve" ? "curve" : "elbow",
 						cardStyle: v.cardStyle === "square" ? "square" : "rounded",
 						colorTheme: COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
@@ -214,7 +216,7 @@
 				setExporting(true);
 				setExportError("");
 				try {
-					await exportPng(tree, doc.rootTitle, theme && theme.colorTheme);
+					await exportPng(tree, doc.rootTitle, theme && theme.colorTheme, theme && theme.layoutDirection);
 				} catch (error) {
 					setExportError(String(error?.message ?? error));
 				} finally {

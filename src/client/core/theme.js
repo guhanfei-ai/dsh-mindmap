@@ -100,6 +100,20 @@
 		}
 
 		/**
+		 * 039 布局方向：树向哪个方向生长。horizontal = 根在左、子节点向右分层
+		 * （历史行为，默认）；vertical = 根在顶、子节点向下分层（组织结构图形态）。
+		 * 归一化刻意收得很紧——未知值一律回落 horizontal，旧设置读不到时行为不变。
+		 */
+		function normalizeLayoutDirection(value) {
+			return value === "vertical" ? "vertical" : "horizontal";
+		}
+
+		/** 039 该主题是否纵向布局（渲染与导出共用同一判据，避免两处各写一遍）。 */
+		function isVerticalLayout(theme) {
+			return normalizeLayoutDirection(theme && theme.layoutDirection) === "vertical";
+		}
+
+		/**
 		 * 节点样式解析（002 §5 语义配方 + §6 状态）：纯函数，同输入同输出。
 		 * 输入 = 节点语义身份（kind / 标题级别）+ 交互状态 + 主题覆写表；
 		 * 输出 = 可直接铺进节点盒 style 的外观属性（骨架属性不在其中）。

@@ -882,8 +882,8 @@
 					try {
 						if (mode === "chat") submitNodeChat(nodeFocusPrompt(node, target));
 						else if (mode === "text") await copyPlainText(nodeTreeText(target));
-						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
-						else await exportPng(target, target.topic, theme && theme.colorTheme);
+						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme, theme && theme.layoutDirection);
+						else await exportPng(target, target.topic, theme && theme.colorTheme, theme && theme.layoutDirection);
 						setNodeMenu(null);
 					} catch (error) {
 						setNodeMenuError(String(error?.message ?? error));

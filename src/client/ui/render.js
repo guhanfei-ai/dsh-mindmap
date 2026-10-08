@@ -212,7 +212,8 @@
 			});
 		}
 
-		/** 左→右递归树：节点盒 + 右侧子节点列 + 连线层（015 支持折线/曲线两种线型）。 */
+		/** 递归树：节点盒 + 子节点列/行 + 连线层（015 支持折线/曲线两种线型；
+		 * 039 支持横向左→右与纵向上→下两种生长方向）。 */
 		function TreeRow(props) {
 			const { node, theme, onNodeContextMenu, reveal, selectedId, onCodePanel, collapsed, onToggleCollapse, matchIds, activeMatchId } = props;
 			// 025 折叠：纯视图态——markdown 资产不变，导出仍取完整子树。
@@ -225,6 +226,8 @@
 			const overrides = COLOR_THEMES[theme && theme.colorTheme] || COLOR_THEMES.ocean;
 			const connectorColor = resolveToken("connector.color", overrides);
 			const connectorWidth = resolveToken("connector.width", overrides);
+			// 039 布局方向：测量回调与 JSX（主轴、子列/子行）都要用，故提在组件体上。
+			const vertical = isVerticalLayout(theme);
 			const rowRef = react.useRef(null);
 			const boxWrapRef = react.useRef(null);
 			const childRefs = react.useRef([]);
@@ -238,9 +241,10 @@
 			// 隐藏。getBoundingClientRect 返回 10×zoom → 实测缩放因子。
 			const probeRef = react.useRef(null);
 
-			// 测量父盒右缘与各子节点包裹块的几何位置，画连线
-			// （折线 = M x1 y1 H midX V y2 H x2；曲线 = 贝塞尔水平切出）；
-			// 序列化比对防 setState 循环。
+			// 测量父盒与各子节点的几何位置，画连线。
+			// 横向：父盒右缘 → 子盒左缘（折线 = M x1 y1 H midX V y2 H x2；曲线 = 水平切出贝塞尔）；
+			// 039 纵向：父盒下缘中点 → 子盒上缘中点（折线 = M x1 y1 V midY H x2 V y2；
+			// 曲线 = 垂直切出贝塞尔）。序列化比对防 setState 循环。
 			react.useLayoutEffect(() => {
 				const rowEl = rowRef.current;
 				const boxEl = boxWrapRef.current;
@@ -259,6 +263,17 @@
 						if (!ref) continue;
 						const c = ref.getBoundingClientRect();
 						// 视觉像素 → 行本地坐标（SVG 用户空间 = 本地空间）。
+						if (vertical) {
+							const x1 = (boxRect.left - rowRect.left + boxRect.width / 2) / scale;
+							const y1 = (boxRect.bottom - rowRect.top) / scale;
+							const x2 = (c.left - rowRect.left + c.width / 2) / scale;
+							const y2 = (c.top - rowRect.top) / scale;
+							const midY = (y1 + y2) / 2;
+							next.push(curve
+								? `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`
+								: `M ${x1} ${y1} V ${midY} H ${x2} V ${y2}`);
+							continue;
+						}
 						const x1 = (boxRect.right - rowRect.left) / scale;
 						const y1 = (boxRect.top - rowRect.top + boxRect.height / 2) / scale;
 						const x2 = (c.left - rowRect.left) / scale;
@@ -291,7 +306,7 @@
 
 			// 016 点击聚焦标记：row = 该节点的整棵子树边界（盒+子列），node = 节点盒本身；
 				// 画布层用事件委托 closest 定位（递归树不逐层传回调）。
-				return (0, react_jsx_runtime.jsxs)("div", { ref: rowRef, "data-mindmap-row": "", style: { ...S.row, position: "relative" }, children: [
+				return (0, react_jsx_runtime.jsxs)("div", { ref: rowRef, "data-mindmap-row": "", style: { ...(vertical ? S.rowVertical : S.row), position: "relative" }, children: [
 				// 缩放探针（本地 10×10，隐形，点击穿透）。
 				(0, react_jsx_runtime.jsx)("div", { ref: probeRef, style: { position: "absolute", top: 0, left: 0, width: 10, height: 10, visibility: "hidden", pointerEvents: "none" } }),
 				layout.edges.length > 0 && layout.w > 0 && layout.h > 0
@@ -351,7 +366,7 @@
 					})
 					: null,
 				hasChildren && !isCollapsed
-					? (0, react_jsx_runtime.jsx)("div", { style: S.childrenColumn, "data-mindmap-children": "", children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
+					? (0, react_jsx_runtime.jsx)("div", { style: vertical ? S.childrenRowVertical : S.childrenColumn, "data-mindmap-children": "", children: node.children.map((child, idx) => (0, react_jsx_runtime.jsx)("div", {
 						key: child.id,
 						ref: (el) => {
 							childRefs.current[idx] = el;

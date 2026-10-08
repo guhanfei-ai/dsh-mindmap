@@ -33,6 +33,8 @@
 						if (v === null) setError("设置服务不可用：settings namespace 未注册或 connection 缺失");
 						setValue({
 							approvalMode: v && v.requireApproval === false ? "off" : v && ["per-operation", "session", "off"].includes(v.approvalMode) ? v.approvalMode : "session",
+							// 039 布局方向：未知值/旧设置读不到都回落横向。
+							layoutDirection: normalizeLayoutDirection(v && v.layoutDirection),
 							lineStyle: v && v.lineStyle === "curve" ? "curve" : "elbow",
 							cardStyle: v && v.cardStyle === "square" ? "square" : "rounded",
 							colorTheme: v && COLOR_THEMES[v.colorTheme] ? v.colorTheme : "ocean",
@@ -86,6 +88,19 @@
 				save({ defaultPanelWidth: value.defaultPanelWidth });
 			};
 			return (0, react_jsx_runtime.jsxs)("div", { style: S.settingsWrap, children: [
+				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "布局" }),
+				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "方向" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: "horizontal", label: "横向" }, { value: "vertical", label: "纵向" }],
+							value: value.layoutDirection,
+							disabled: saving,
+							onChange: (v) => setField({ layoutDirection: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "横向：根节点在左，子节点逐层向右展开（默认）。纵向：根节点在最上方，子节点逐层向下展开，即组织结构图形态。面板画布与导出图片使用同一方向。" }),
+				] }),
 				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "节点主题" }),
 				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
 					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [

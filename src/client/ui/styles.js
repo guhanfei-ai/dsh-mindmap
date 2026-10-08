@@ -79,6 +79,11 @@
 			// 025：子列左距 16 + 折叠开关（16 宽 + 左右各 4 外距）= 折叠前的 40，
 			// 连线长度与既有版式保持一致。
 			childrenColumn: { display: "flex", flexDirection: "column", gap: "8px", marginLeft: "16px", minWidth: 0 },
+			// 039 纵向布局的镜像版式：节点盒与子行的主轴换成竖轴，子节点改为
+			// 横向平铺，间距 16 从 marginLeft 改挂 marginTop——两处数值刻意保持
+			// 与横向一致，切换方向时连线长度不变。
+			rowVertical: { display: "flex", flexDirection: "column", alignItems: "center", minWidth: 0 },
+			childrenRowVertical: { display: "flex", flexDirection: "row", gap: "8px", marginTop: "16px", alignItems: "flex-start", minWidth: 0 },
 			// 025 折叠开关：压在连线起点上的小圆钮，叶子节点不渲染。
 			collapseToggle: { flex: "none", width: "16px", height: "16px", margin: "0 4px", padding: 0, borderRadius: "50%", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-secondary)", font: "inherit", fontSize: "11px", lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 1 },
 			// 面板树连线层：正交折线（MarkGrove 的 orthogonalPath 风格），

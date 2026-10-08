@@ -130,6 +130,7 @@ export const Config = Schema.object({
   requireApproval: Schema.boolean().default(true).description('Legacy switch: false skips ordinary confirmations only, and is lifted when the settings panel picks an explicit approval mode. Rename, clearing content, and broad rewrites always require approval.').extra('volatile', true),
   approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. High-risk writes always require approval.').extra('volatile', true),
   defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).').extra('volatile', true),
+  layoutDirection: Schema.union(['horizontal', 'vertical']).default('horizontal').description('Tree growth direction: horizontal grows left to right with the root on the left; vertical grows top to bottom with the root at the top.').extra('volatile', true),
   lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).').extra('volatile', true),
   cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.').extra('volatile', true),
   colorTheme: Schema.union(['ocean', 'sunset', 'forest']).default('ocean').description('Node color theme.').extra('volatile', true),
