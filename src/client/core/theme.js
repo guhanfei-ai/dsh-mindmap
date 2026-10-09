@@ -132,7 +132,8 @@
 			} else if (kind === "code") {
 				style.background = resolveToken("color.surface.code", overrides);
 				style.fontFamily = "Menlo, monospace";
-				style.fontSize = "12px";
+				// 不再比正文小一号：整块画布共用一个 CSS zoom，任何小于基准字号的
+				// 节点文字都会把「有效字号 ≥12px」的适配下限承诺打破（12px 实际落在 ~11.1px）。
 			} else if (kind === "quote") {
 				style.background = resolveToken("color.surface.quote", overrides);
 				style.border = `1px solid ${resolveToken("color.border.subtle", overrides)}`;

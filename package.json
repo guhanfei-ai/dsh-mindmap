@@ -19,6 +19,7 @@
   "main": "index.js",
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
+    "bench:client": "node scripts/benchmark-client.mjs",
     "check": "npm run build:client && node --check index.js && node --check client.js && node --check scripts/build-client.mjs && node --check test/index.test.js && node --check test/client.test.js",
     "test": "node --test",
     "verify": "npm run check && npm test",

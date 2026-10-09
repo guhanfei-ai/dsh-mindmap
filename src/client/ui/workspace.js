@@ -13,16 +13,21 @@
 		 * headerHeight：独立壳传入的对齐高度（null = BS Tab 模式，头部自适应）。
 		 */
 		function MindmapWorkspace(props) {
-			const { mindmapFace, visible, sessionId, inputActions, nodes, nodesVersion, onAutoOpen, onClose, headerHeight, variant } = props;
+			const { mindmapFace, visible, sessionId, inputActions, readInputState, nodes, nodesVersion, documents, onAutoOpen, onClose, headerHeight, variant } = props;
 			// 只调整工作区界面；脑图节点与导出继续使用自己的字体层级。
 			const S = workspaceStyles(variant);
 			// 016：nodesVersion（结构指纹）作副依赖——nodes 引用不变但内容已变
 			// （新工具结果原地落地）时强制重算；docs 新引用带动 merged →
 			// auto-open effect 重跑（对已消费事件幂等 no-op），面板必达展开。
-			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
+			const documentReducer = react.useMemo(() => createDocumentReducer(), [sessionId]);
+			const docs = react.useMemo(() => documents ?? documentReducer(nodes), [documents, nodes, nodesVersion, documentReducer]);
 			// 013：本地加载占位文档（左键点 .md 秒建 tab、内容为空），与快照文档
-			// 合并显示；快照优先（AI 结果覆盖占位）。
+			// 合并显示；直读保留到新的工具结果到达，不让历史快照盖回磁盘内容。
 			const [localDocs, setLocalDocs] = react.useState({});
+			const documentReadRef = react.useRef(0);
+			const documentSessionRef = react.useRef(sessionId);
+			documentSessionRef.current = sessionId;
+			const [readingPath, setReadingPath] = react.useState(null);
 			const merged = react.useMemo(() => mergeDocuments(docs, localDocs), [docs, localDocs]);
 			// 016 加载态恢复（S2/S3 成因）：openMindmap 点击时刻记录错误事件键
 			// 基线——只有其后新出现的错误才归因到该次打开（matchDocError 的
@@ -168,6 +173,8 @@
 			// effect，否则清理会把刚自动选中的脑图又切回「目录」。
 			const seen = react.useRef(null);
 			react.useEffect(() => {
+				documentReadRef.current += 1;
+				setReadingPath(null);
 				setLocalDocs({});
 				setCurrentPath(null);
 				setHiddenPath(null);
@@ -180,6 +187,7 @@
 				focusSentRef.current = null;
 				seen.current = null;
 				prevIdsRef.current = { path: null, ids: null };
+				return () => { documentReadRef.current += 1; };
 			}, [sessionId]);
 
 			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
@@ -189,6 +197,10 @@
 				const targetPath = autoOpenTarget(merged, seen.current);
 				seen.current = openingEventKeys(merged);
 				if (targetPath) {
+					if (readingPath && readingPath !== targetPath) {
+						documentReadRef.current += 1;
+						setReadingPath(null);
+					}
 					onAutoOpen();
 					setHiddenPath(null);
 					setCurrentPath(targetPath);

@@ -17,6 +17,16 @@
 			return Array.isArray(list) ? list : [];
 		}
 
+		/** 页面基础地址保留反向代理前缀；API 请求始终留在当前页面的源。 */
+		function mindmapApiUrl(method) {
+			const location = window.location?.href;
+			const base = (typeof document !== "undefined" && document.baseURI) || location;
+			if (!base) return `/mindmap/api/${method}`;
+			const url = new URL(`mindmap/api/${method}`, base);
+			if (location && url.origin !== new URL(location).origin) throw new Error("脑图 API 的页面基础地址必须同源");
+			return url.href;
+		}
+
 		function apply(ctx) {
 			const face = {};
 
@@ -150,7 +160,7 @@
 			// 同款机制——官方 host.listDirectory 在 native picker 环境必挂，见 013）。
 			// 客户端只读目录，仍无任何写文件通道。
 			face.listTree = async (sessionId, path) => {
-				const response = await fetch("/mindmap/api/tree", {
+				const response = await fetch(mindmapApiUrl("tree"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify(typeof path === "string" && path ? { sessionId, path } : { sessionId }),
@@ -165,7 +175,7 @@
 			// wait for a model turn just to fetch bytes; the empty-draft path may still
 			// ask the AI to take over editing after the document is visible.
 			face.readDocument = async (sessionId, path) => {
-				const response = await fetch("/mindmap/api/document", {
+				const response = await fetch(mindmapApiUrl("document"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ sessionId, path }),
@@ -177,7 +187,7 @@
 				return parsed.value;
 			};
 			face.readApprovalStatus = async (sessionId) => {
-				const response = await fetch("/mindmap/api/approval", {
+				const response = await fetch(mindmapApiUrl("approval"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ sessionId, action: "status" }),
@@ -189,7 +199,7 @@
 				return parsed.value;
 			};
 			face.revokeApproval = async (sessionId) => {
-				const response = await fetch("/mindmap/api/approval", {
+				const response = await fetch(mindmapApiUrl("approval"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ sessionId, action: "revoke" }),
@@ -292,6 +302,7 @@
 			// 038 解析兜底：永不抛的结果对 { tree, error }（供测试验证失败态分支）。
 			parseTreeResult,
 			reduceDocuments,
+			createDocumentReducer,
 			mergeDocuments,
 			autoOpenTarget,
 			openingEventKeys,
@@ -358,6 +369,7 @@
 			focusZoom,
 			// 033 点击聚焦跳变钳制 + 保视野拉回位移（供测试）。
 			clampFocusJump,
+			fitAllZoom,
 			edgePullOffsets,
 			// 021 画布平移手势判定（供测试）。
 			PAN,
@@ -370,6 +382,7 @@
 			// 023 双代兼容纯函数（供测试）：会话内容节点 / settings 信封。
 			conversationNodesOf,
 			settingsNamespacesOf,
+			mindmapApiUrl,
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
 			// 026 better-sidebar 共存：服务总线 + 会话数据桥 + Tab 壳（供测试）。

@@ -21,12 +21,12 @@
 		})();
 
 		// sessionStore：按 sessionId 隔离的数据桥。MindmapSlot 始终在头部槽位里
-		// 调用 useChat/useSession 钩子获取 nodes/nodesVersion/inputActions，写入
+		// 调用 useChat/useSession/useInput 获取文档和最新输入快照读取器，写入
 		// 对应 sessionId 的快照；MindmapSidebarTab 组件用 useSyncExternalStore
 		// 订阅自己 sessionId 的快照，拿到数据后渲染 MindmapWorkspace。
 		// 028 生命周期清理：MindmapSlot 在会话切换（sessionId 变化）和组件卸载
 		// 时删除对应 sessionId 的快照——模块级 Map 不残留旧会话的
-		// nodes/inputActions。退出 sidebar 模式（Better Sidebar 卸载）时也清理。
+		// nodes/inputActions/文档缓存。退出 sidebar 模式（Better Sidebar 卸载）时也清理。
 		const sessionStore = (() => {
 			const sessions = new Map();
 			const listeners = new Map();

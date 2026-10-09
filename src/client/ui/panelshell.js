@@ -7,7 +7,7 @@
 		 * 但 hooks 照常跑——auto-open effect 能在面板关着时调 onAutoOpen 把它拉起。
 		 */
 		function MindmapDetailsPanel(props) {
-			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+			const { mindmapFace, open, sessionId, inputActions, readInputState, nodes, nodesVersion, documents, onOpen, onClose } = props;
 			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
 			// 窗口尺寸变化时持续钳制——只在挂载时压一次的话，窗口先放大→拖宽
 			// 面板→再缩小会让面板保持旧像素宽，聊天区被挤没。
@@ -155,7 +155,9 @@
 				sessionId,
 				nodes,
 				nodesVersion,
+				documents,
 				inputActions,
+				readInputState,
 				mindmapFace,
 				visible: open,
 				onAutoOpen: onOpen,

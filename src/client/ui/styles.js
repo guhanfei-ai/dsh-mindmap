@@ -1,5 +1,6 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 		//#region React 组件
+		const NODE_FONT_SIZE = 13;
 		const S = {
 			mButton: { display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 8px", height: "22px", background: "var(--dsw-alias-fill-tsp-secondary)", color: "var(--dsw-alias-label-secondary)", border: "none", borderRadius: "6px", cursor: "pointer", font: "inherit", fontSize: "12px", whiteSpace: "nowrap" },
 			// 014 overlay 外壳：右缘贴边全高悬浮面板，点击穿透层里自 opt-in pointer-events。
@@ -90,7 +91,7 @@
 			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
 			// 颜色/圆角/阴影由 resolveNodeStyle 生成。020 长度治理：320px 宽上限
 			// 强制盒内折行（废除横条）；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
-			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: "20px", fontSize: "13px", boxSizing: "border-box", maxWidth: 320 },
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: "20px", fontSize: `${NODE_FONT_SIZE}px`, boxSizing: "border-box", maxWidth: 320 },
 			// 020 长度治理：散文类块（text/md/list/quote）折行后仍超 6 行即截断+
 			// 省略号，全文走悬停浮层（复用代码浮层通道，缩减≠阉割）。仅散文类套用。
 			// 行高必须整数像素（20px）：小数行高会让 line-clamp 裁切边界与行盒
@@ -107,13 +108,13 @@
 			textPanelBody: { margin: "0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
 			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。020：表格不
 			// 参与截断，超宽时盒内横向滚动，网格与单元格完整保留。
-			tableWrap: { fontSize: "12px", lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
+			tableWrap: { fontSize: `${NODE_FONT_SIZE}px`, lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
 			tableGrid: { borderCollapse: "collapse" },
 			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", minWidth: "64px", maxWidth: "240px" },
 			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
 			// 019 大一统可点击链接：任何块里的任何 URL 完整呈现、永不缩减。
 			inlineLink: { color: "var(--dsw-alias-state-business-primary)", textDecoration: "underline", textUnderlineOffset: "2px", overflowWrap: "anywhere", cursor: "pointer" },
-			inlineCode: { fontFamily: "Menlo, monospace", fontSize: "12px", background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
+			inlineCode: { fontFamily: "Menlo, monospace", fontSize: `${NODE_FONT_SIZE}px`, background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
 			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
 			// 021 平移：空白处抓手光标（节点盒自带 pointer 覆盖）；overscroll

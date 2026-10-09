@@ -18,13 +18,17 @@ A DeepSeek Harness plugin that turns a plain Markdown file into a live mindmap. 
 - **Four tools** (`mindmap_create` / `mindmap_open` / `mindmap_get` / `mindmap_update`) — plain Markdown files in the session working directory; the root node title is the filename and stays in sync both ways (`renameRoot` renames the file, collisions are rejected).
 - **Live panel with zero extra channels** — the panel consumes the session snapshot (`mindmap_*` tool results), so every AI edit re-renders immediately.
 - **Reliable open, recoverable loading state** — AI create/open results always expand the panel (a structural-fingerprint selector drives snapshot recomputation even when the host reuses the nodes array reference); clicking a `.md` first reads it through the local read-only route, while AI fallback loading still recovers from case-only path mismatches, inline tool errors, and a ~30s watchdog timeout with one-click retry.
+- **Refresh from disk** — 刷新脑图 reloads the current file while preserving drafts and attachments, without submitting a model request. Fresh disk content stays visible until a later tool result arrives; overlapping reads, closing, and session changes cannot let an old request replace the new view. Failed refreshes retain the canvas and show a retryable error.
+- **Draft protection** — uses the host's published input snapshot for text, references, and attachments. Pending or unreadable input is preserved; files still open through the read-only route and editing commands remain available for manual submission.
 - **Graceful parse failure** — if a document's Markdown ever breaks the parser, the panel never crashes: the mindmap area shows an explicit parse-failed state with the error, the original file is left untouched, and you can switch back to the directory tab or let the AI fix the content and reopen. Normal documents never reach this path.
 - **Floating right panel or native sidebar tab** — when `dsh-better-sidebar` is installed, the mindmap registers as a native single-instance tab (`dsh-mindmap:mindmap`) inside Better Sidebar, with a compact one-row toolbar (mindmap list, current mindmap, and export on the same line); the header 思维脑图 button opens or focuses that tab. When Better Sidebar is absent, the panel falls back to a standalone floating right panel toggled by the 思维脑图 button — drag-resizable (280px ~ 80% viewport), persisted, and pushing the chat left (layout-push) so the two never overlap. AI create/open/view intents always open or focus the panel/tab and switch to the target document, including when it is currently closed or the same document is opened again. The mode switch is fully reversible: if Better Sidebar is unloaded mid-session, the standalone panel and layout-push CSS are restored automatically.
 - **Directory tree tab** — a persistent tree of the session working directory (served by plugin-owned read-only routes), lazy-loaded per directory; right-click to create a mindmap in the inbox or inside a directory; left-click a `.md` renders it through the read-only route first, then hands it to the AI for editing when the draft is empty. Labeled 目录 in standalone mode and 脑图列表 in sidebar mode.
 - **Single-mindmap mode** — two tabs only: the tree/list tab and 脑图 (the current mindmap); opening another `.md` replaces the previous one.
 - **"What you see is what the AI edits"** — when the visible mindmap differs from the AI's working document, the panel automatically asks the AI to open it, keeping the chat focus in sync.
 - **MarkGrove-style mapping** — heading hierarchy, nested lists (empty items become placeholder nodes), code blocks as leaf nodes, paragraphs promoted to their own nodes (019 block concept), stable structural IDs, and orthogonal connector lines between nodes.
-- **Centered canvas with zoom and pan** — the mindmap opens centered in the canvas (scrollable without edge clipping when larger); a floating zoom bar at the canvas top-right (zoom out / percent / zoom in / fit) applies auto fit-to-view on open (small maps stay at 100%), steps through 25%–300% with a stable view center, and keeps re-fitting as the AI edits — until you zoom manually. Click any node to zoom in on it and its whole subtree, with the node pinned at the left-center of the canvas. The focus transition glides the node from its clicked position to the left-quarter anchor with no first-frame jump, animates the zoom over ≤250 ms (capped at ×2/÷2 per click, so a huge map drills down progressively instead of jumping 4× in one step), and writes frames directly to the canvas DOM layer without re-rendering the tree per frame; any new interaction interrupts it instantly. When an AI edit pushes the selected node fully out of view, the canvas performs a minimal scroll to bring it back to the edge without touching your chosen zoom. Narrow panels (sidebar mode) fit by height instead of width — the overflowing part is reachable by panning — and the scrollbar gutter is reserved, so the fit ratio no longer oscillates as scrollbars appear. The canvas also pans by drag: the **middle button** anywhere (even over a node), the **left button on blank canvas** (the Mac trackpad「click and drag」path), or **Space + left button** when the drag must start on a card. Panning works in both directions even when content does not overflow; content follows the pointer 1:1, blank space shows a grab hand, and a 4px threshold separates drag from click — so clicking blank space still clears the selection and clicking a node still focuses it, while a real drag never wipes the selection ring.
+- **Centered canvas with zoom and pan** — the mindmap opens centered in the canvas; the top-right zoom bar (out / percent / in / 适配 / 全图) auto-fits on open without shrinking 13px node text below an effective 12px. Larger maps remain scrollable. 全图 instead tries to frame the entire tree, even below the readable floor, but stops at 25%: exceptionally large maps can still overflow. Manual zoom spans 25%–300%, and automatic re-fitting after AI edits pauses when you choose a zoom or 全图; 适配 restores it.
+  Clicking a node focuses it at a readable scale near the left-quarter anchor; large subtrees may extend beyond the viewport. The ≤250 ms transition has no first-frame jump, normally changes zoom by at most ×2/÷2 per click (except when restoring readability after manual zoom below 12px), and writes frames directly to the canvas DOM without re-rendering the tree. New interactions interrupt it; when an AI edit pushes a selected node completely out of view, the canvas minimally scrolls it back without changing your zoom.
+  Narrow panels fit by height instead of width and reserve a stable scrollbar gutter. Pan with the **middle button** anywhere, the **left button on blank canvas** (including Mac trackpad click-and-drag), or **Space + left button** on a card. Dragging follows the pointer even at scroll edges; a 4px threshold keeps clicks and the selection ring distinct from pans.
 - **Collapsible subtrees** — every node with children carries a small toggle on its connector: collapsing hides the whole subtree and reports how many nodes are hidden, so large maps stay navigable. It is view state only — the markdown file is untouched, image export still covers the full subtree, and switching documents expands everything again.
 - **PNG export** — one click on 导出图片 exports the current mindmap.
 - **Copy as markdown** — one click on 复制全文 (left of 导出图片) copies the current mindmap's raw markdown source to the system clipboard, so pasting into markdown-aware editors restores headings, nested lists, and tables, while plain-text targets keep the literal `#`/`-` source. The button shows 已复制 ✓ for about two seconds on success; failures reuse the export error slot.
@@ -57,6 +61,8 @@ When you ask for a mindmap without naming a location — "创建一个脑图", "
 | Node.js | 20.11 or newer |
 | DeepSeek Harness | tested against `0.1.1-rc.2`, `0.1.2-rc.1`, and `0.1.5-rc.1` |
 
+Input, settings, and conversation contracts from `0.2.0-rc.2` / `0.2.1-alpha.1` have offline regression coverage; this does not certify every host workflow. API requests retain the page's base path for reverse-proxy deployments and enforce the page's origin.
+
 ## Installation
 
 Development (link install, live source):
@@ -70,6 +76,14 @@ Released tag:
 ```bash
 dsh plugin --profile <profile> add <pkg>#v<version>
 ```
+
+Exact npm version:
+
+```bash
+dsh plugin --profile <profile> add dsh-mindmap@<version>
+```
+
+New-version cooldown policies can affect package selection shortly after publication. Check the actual installed version in plugin management; use an exact version when needed.
 
 ## Tools
 
@@ -85,10 +99,13 @@ dsh plugin --profile <profile> add <pkg>#v<version>
 ```bash
 npm run build:client  # assemble the runtime client.js from src/client fragments
 npm run verify        # rebuild + syntax check + node --test
+npm run bench:client  # pure-computation long-conversation replay benchmark
 npm pack --dry-run    # inspect the files that will enter the npm package
 ```
 
 The browser implementation is maintained under `src/client/` and assembled into the single `client.js` entry required by DeepSeek Harness. Edit the source fragments, then run `npm run build:client`; do not hand-edit the generated entry.
+
+Document replay shares a session-local parse cache, invalidates changed text, and starts fresh after session changes. The benchmark uses 3000 fictional conversation nodes and 200 mindmap results, verifies cached and full replay equivalence, then measures their time. It measures replay cost, not browser frame rates or overall UI performance.
 
 ## License
 

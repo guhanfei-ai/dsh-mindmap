@@ -169,7 +169,8 @@ window.__ModuleLoader__.load({
 			} else if (kind === "code") {
 				style.background = resolveToken("color.surface.code", overrides);
 				style.fontFamily = "Menlo, monospace";
-				style.fontSize = "12px";
+				// 不再比正文小一号：整块画布共用一个 CSS zoom，任何小于基准字号的
+				// 节点文字都会把「有效字号 ≥12px」的适配下限承诺打破（12px 实际落在 ~11.1px）。
 			} else if (kind === "quote") {
 				style.background = resolveToken("color.surface.quote", overrides);
 				style.border = `1px solid ${resolveToken("color.border.subtle", overrides)}`;
@@ -835,6 +836,24 @@ window.__ModuleLoader__.load({
 			return raw || "mindmap tool failed";
 		}
 
+		/** 缓存已完成工具结果的 JSON；仍逐事件重放，保留改名、错误和嵌套语义。 */
+		function parsedToolResult(node, cache) {
+			const texts = (node.content ?? []).filter((block) => block?.type === "text").map((block) => block.text);
+			const previous = cache?.get(node);
+			if (previous && previous.texts.length === texts.length && texts.every((text, i) => text === previous.texts[i])) return previous;
+			const text = texts.join("\n");
+			let parsed = null;
+			try { parsed = JSON.parse(text); } catch { /* 错误结果允许纯文本。 */ }
+			const result = { texts, text, parsed };
+			cache?.set(node, result);
+			return result;
+		}
+
+		function createDocumentReducer() {
+			const cache = new WeakMap();
+			return (nodes) => reduceDocuments(nodes, cache);
+		}
+
 		/**
 		 * 重放会话快照里的 mindmap_* 工具结果，得到每个脑图文档的最新状态。
 		 * nodes: ConversationSnapshot.nodes（ToolResultNode 含 call.name 与渲染后的
@@ -843,7 +862,7 @@ window.__ModuleLoader__.load({
 		 * 顺序递归重放整棵调用树。
 		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标。
 		 */
-		function reduceDocuments(nodes) {
+		function reduceDocuments(nodes, cache) {
 			const byPath = Object.create(null);
 			let order = [];
 			let latestOpeningPath = null;
@@ -862,13 +881,7 @@ window.__ModuleLoader__.load({
 				if (node.kind === "tool-result") {
 					const name = node.call?.name;
 					if (typeof name === "string" && TOOL_NAMES.has(name)) {
-						const text = resultTextOfBlocks(node.content);
-						let parsed;
-						try {
-							parsed = JSON.parse(text);
-						} catch {
-							parsed = null;
-						}
+						const { text, parsed } = parsedToolResult(node, cache);
 						// callId 是实际调用的事件身份；eventPath 是无 callId 时按会话
 						// 遍历顺序生成的稳定兜底，避免重复 open 被合并成一个事件。
 						const callId = node.callId != null && String(node.callId)
@@ -911,6 +924,7 @@ window.__ModuleLoader__.load({
 								path: parsed.path,
 								rootTitle: typeof parsed.rootTitle === "string" && parsed.rootTitle ? parsed.rootTitle : stemOf(parsed.path),
 								content: typeof parsed.content === "string" ? parsed.content : "",
+								revision: typeof parsed.revision === "string" ? parsed.revision : null,
 								op,
 								callId,
 								eventKey,
@@ -957,7 +971,7 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * 快照文档集（AI 工具结果）与本地直读文档集（read 路由即时打开）合并：
-		 * - 快照优先（同 path 覆盖本地占位）；
+		 * - 快照覆盖占位；直读成功后保留磁盘内容，直到读取开始后的新工具结果到达；
 		 * - 本地文档追加在快照 order 之后；
 		 * - 快照里有 renamedFrom 指向某本地路径时，丢弃该本地条目（文件已改名）；
 		 * - 016 大小写 fallback（S5 成因）：本地占位（op:"local"）与快照文档仅
@@ -969,6 +983,11 @@ window.__ModuleLoader__.load({
 		function mergeDocuments(snapshot, localDocs) {
 			const snapByPath = (snapshot && snapshot.byPath) || {};
 			const byPath = { ...localDocs, ...snapByPath };
+			for (const [path, local] of Object.entries(localDocs)) {
+				if (local?.op !== "local-read") continue;
+				const snapshotDoc = snapByPath[path];
+				if (!snapshotDoc || snapshotDoc.eventKey === local.snapshotEventKey) byPath[path] = local;
+			}
 			const dropped = new Set();
 			for (const doc of Object.values(snapByPath)) {
 				if (typeof doc.renamedFrom === "string" && doc.renamedFrom && localDocs[doc.renamedFrom]) {
@@ -1127,20 +1146,27 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
-		//#region 025 草稿保护：能力探测（宿主是否让插件读到聊天草稿）
-		/**
-		 * 读取当前聊天草稿。宿主契约只保证 setDraft/submit，读取面属可选能力：
-		 * 逐个探测已知形态，读不到返回 null（= 不可知，不等于空草稿）。
-		 */
-		function readDraftText(inputActions) {
-			if (!inputActions) return null;
+		//#region 025 草稿保护：正式输入快照优先，旧宿主动作面兜底
+		function draftStateOf(inputActions, readInputState) {
 			try {
-				if (typeof inputActions.getDraft === "function") return String(inputActions.getDraft() ?? "");
-				if (typeof inputActions.draft === "string") return inputActions.draft;
-				if (typeof inputActions.getState === "function") {
-					const state = inputActions.getState();
-					if (state && typeof state.draft === "string") return state.draft;
-				}
+				if (typeof readInputState === "function") return readInputState() ?? null;
+				if (typeof inputActions?.getState === "function") return inputActions.getState() ?? null;
+			} catch { return null; }
+			return null;
+		}
+
+		/**
+		 * 新宿主的 useInput 提供 draft/attachmentIds；动作对象不提供读取方法。
+		 * readInputState 在发送时读取最新快照，避免异步打开期间覆盖后来输入的内容。
+		 */
+		function readDraftText(inputActions, readInputState) {
+			const state = draftStateOf(inputActions, readInputState);
+			if (typeof state?.draft === "string") return state.draft;
+			// 正式快照存在但不可读时，不能把旧动作对象误当作空草稿。
+			if (typeof readInputState === "function") return null;
+			try {
+				if (typeof inputActions?.getDraft === "function") return String(inputActions.getDraft() ?? "");
+				if (typeof inputActions?.draft === "string") return inputActions.draft;
 			} catch {
 				return null;
 			}
@@ -1148,21 +1174,23 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 是否因「已有未发送草稿」而放弃自动发送。只有确实读到非空草稿才拦截；
-		 * 读不到时不拦——否则在不暴露草稿的宿主上，点目录文件会完全打不开。
+		 * 文字、引用和附件都属于未发送内容。未知状态同样保留输入；目录直读
+		 * 不依赖自动发送，旧宿主仍可打开文件，指令走剪贴板/手动发送。
 		 */
-		function draftBlocksAutoSend(inputActions) {
-			const draft = readDraftText(inputActions);
-			return typeof draft === "string" && draft.trim() !== "";
+		function draftBlocksAutoSend(inputActions, readInputState) {
+			const state = draftStateOf(inputActions, readInputState);
+			const draft = readDraftText(inputActions, readInputState);
+			const attachmentsUnknown = typeof readInputState === "function" && !Array.isArray(state?.attachmentIds);
+			return draft === null || attachmentsUnknown || draft.trim() !== "" || (Array.isArray(state?.attachmentIds) && state.attachmentIds.length > 0);
 		}
 
 		/** 037 节点焦点消息：保护现有草稿后，原子地写入并提交到当前 DSH 对话。 */
-		function submitNodeFocusMessage(inputActions, text) {
-			if (draftBlocksAutoSend(inputActions)) {
-				throw new Error("当前聊天框已有未发送内容，请先处理后再围绕节点聊天");
-			}
+		function submitNodeFocusMessage(inputActions, text, readInputState) {
 			if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") {
 				throw new Error("当前对话不支持自动发送节点焦点消息");
+			}
+			if (draftBlocksAutoSend(inputActions, readInputState)) {
+				throw new Error("当前聊天框有未发送内容，或暂时无法读取草稿；请保留并处理后再围绕节点聊天");
 			}
 			inputActions.setDraft(String(text ?? ""));
 			inputActions.submit();
@@ -1285,6 +1313,8 @@ window.__ModuleLoader__.load({
 		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
 		// 019 可变盒高布局：盒高按内容估行数（全量换行的导出形态），表格节点加宽；
 		// 布局契约不变——叶子自上而下占行、父节点垂直居中于其子块。
+		// 导出拥有独立的 SVG 度量：13px 正文、12px 表格、18px 行高；不随画布
+		// 的 NODE_FONT_SIZE 或 CSS zoom 改动，否则预估盒高与导出绘制会失配。
 		const EXPORT = {
 			nodeW: 220, padX: 12, padY: 8, hGap: 48, vGap: 12, pad: 20,
 			fontSize: 13, lineHeight: 18,
@@ -1565,6 +1595,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 		//#region React 组件
+		const NODE_FONT_SIZE = 13;
 		const S = {
 			mButton: { display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 8px", height: "22px", background: "var(--dsw-alias-fill-tsp-secondary)", color: "var(--dsw-alias-label-secondary)", border: "none", borderRadius: "6px", cursor: "pointer", font: "inherit", fontSize: "12px", whiteSpace: "nowrap" },
 			// 014 overlay 外壳：右缘贴边全高悬浮面板，点击穿透层里自 opt-in pointer-events。
@@ -1655,7 +1686,7 @@ window.__ModuleLoader__.load({
 			// 019 节点盒骨架（002 三层模型：骨架/血肉/皮肤）：只留内距与换行契约，
 			// 颜色/圆角/阴影由 resolveNodeStyle 生成。020 长度治理：320px 宽上限
 			// 强制盒内折行（废除横条）；长 URL 用 overflowWrap:anywhere 保证可折行不截断。
-			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: "20px", fontSize: "13px", boxSizing: "border-box", maxWidth: 320 },
+			box: { padding: "6px 12px", flex: "0 0 auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: "20px", fontSize: `${NODE_FONT_SIZE}px`, boxSizing: "border-box", maxWidth: 320 },
 			// 020 长度治理：散文类块（text/md/list/quote）折行后仍超 6 行即截断+
 			// 省略号，全文走悬停浮层（复用代码浮层通道，缩减≠阉割）。仅散文类套用。
 			// 行高必须整数像素（20px）：小数行高会让 line-clamp 裁切边界与行盒
@@ -1672,13 +1703,13 @@ window.__ModuleLoader__.load({
 			textPanelBody: { margin: "0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
 			// 019 表格块：完整网格（全量行列、单元格内换行、弱边框）。020：表格不
 			// 参与截断，超宽时盒内横向滚动，网格与单元格完整保留。
-			tableWrap: { fontSize: "12px", lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
+			tableWrap: { fontSize: `${NODE_FONT_SIZE}px`, lineHeight: 1.5, overflowX: "auto", maxWidth: "100%" },
 			tableGrid: { borderCollapse: "collapse" },
 			tableCell: { border: "1px solid var(--dsw-alias-border-l2)", padding: "3px 8px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", verticalAlign: "top", textAlign: "left", minWidth: "64px", maxWidth: "240px" },
 			tableHeaderCell: { fontWeight: 600, background: "var(--dsw-alias-fill-tsp-secondary)" },
 			// 019 大一统可点击链接：任何块里的任何 URL 完整呈现、永不缩减。
 			inlineLink: { color: "var(--dsw-alias-state-business-primary)", textDecoration: "underline", textUnderlineOffset: "2px", overflowWrap: "anywhere", cursor: "pointer" },
-			inlineCode: { fontFamily: "Menlo, monospace", fontSize: "12px", background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
+			inlineCode: { fontFamily: "Menlo, monospace", fontSize: `${NODE_FONT_SIZE}px`, background: "var(--dsw-alias-fill-tsp-secondary)", borderRadius: "4px", padding: "0 3px" },
 			// 016 脑图画布：滚动区 + 居中层 + 右上角浮动缩放控制条。
 			canvasWrap: { flex: "1 1 auto", minHeight: 0, minWidth: 0, position: "relative", display: "flex", flexDirection: "column" },
 			// 021 平移：空白处抓手光标（节点盒自带 pointer 覆盖）；overscroll
@@ -2316,15 +2347,19 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 				//#region 016 脑图画布：居中呈现 + 缩放控制（右上角）
-				// 缩放契约：范围 [0.25, 3]，每级 ×1.2；适配计算四周留 48px 余量
+				// 缩放契约：手动范围 [0.25, 3]，每级 ×1.2；自动适配/聚焦时
+				// 节点正文的有效字号至少 12px（「全图」是显式例外：用户可主动要求一屏看全）。
+				// 适配计算四周留 48px 余量
 				//（16px 视觉内距 + 经典滚动条占位，避免「适配→滚动条出现→视口变
 				// 窄→再适配」的抖动循环）。
-				// 033 focusJump：点击聚焦单次跳变上限（相对当前比例最多 ×2 / ÷2），
+				// 033 focusJump：点击聚焦通常最多 ×2 / ÷2；手动缩至不可读后
+				// 点击聚焦会直接回到可读范围。
 				// 巨图点叶子不再一步怼到 100%，连点渐进 drill。narrowView：视口宽
 				// 低于该值（sidebar 最窄 280px）时改按高度适配——横向适配在窄面板
 				// 永远占主导会把子树压得过小，宽度溢出交给平移（横向本就一等公民）。
 				// animMs：033 平滑过渡时长上限（限长、可中断、熔断后退化瞬时）。
-				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250 };
+				const MIN_READABLE_FONT_SIZE = 12;
+				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250, readableFloor: MIN_READABLE_FONT_SIZE / NODE_FONT_SIZE };
 				// 034 聚焦锚位（视口比例）：树向右生长，节点压在左侧 1/4 处、
 				// 垂直居中，右侧 3/4 视野铺开子级。动画从点击位置插值到此锚位。
 				const FOCUS_ANCHOR = { x: 0.25, y: 0.5 };
@@ -2341,24 +2376,38 @@ window.__ModuleLoader__.load({
 				return clampZoom(direction > 0 ? base * ZOOM.step : base / ZOOM.step);
 				}
 
-				/** 适配比例：min((view-padding)/tree, 1) 再夹取——小图不放大、巨图夹下限；零/非法尺寸返回 1。 */
+				/** 自动适配不会把 13px 节点文字缩到 12px 以下；手动缩放仍可低于此值。 */
+				function readableZoom(value) {
+					return Math.max(ZOOM.readableFloor, clampZoom(value));
+				}
+
+				/** 适配比例：小图不放大；大图不低于可读下限，溢出部分交给滚动/平移。 */
 				function fitZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
 					// 033 窄视口（sidebar）：按高度适配，宽度溢出靠平移。
-					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, 1));
+					if (viewW < ZOOM.narrowView) return readableZoom(Math.min((viewH - ZOOM.padding) / treeH, 1));
+					return readableZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, 1));
+				}
+
+				/**
+				 * 全图比例：与 fitZoom 同一公式，但不受可读下限约束；窄视口也按
+				 * 宽高同时计算。仍夹在 [min, max]，极大图触到 25% 后可能继续溢出。
+				 */
+				function fitAllZoom(treeW, treeH, viewW, viewH) {
+					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, 1));
 				}
 
 				/**
 				 * 子树聚焦比例：适配整棵子树（区别于全局适配，允许放大到 focusMax），
-				 * 叶子/小子树不会怼脸、巨子树夹下限；零/非法尺寸返回 1。
+				 * 叶子/小子树不会怼脸、巨子树夹可读下限；零/非法尺寸返回 1。
 				 * 033 窄视口同 fitZoom：按高度适配（子树行通常宽而扁，窄面板里
 				 * 横向适配会把整行压到不可读）。
 				 */
 				function focusZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
-					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
-					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
+					if (viewW < ZOOM.narrowView) return readableZoom(Math.min((viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
+					return readableZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
 				}
 
 				/**
@@ -2472,7 +2521,7 @@ window.__ModuleLoader__.load({
 				* 修正 scroll，视图不跳变（内容回到视口内时浏览器会自动钳制回 0）。
 				*/
 				function MindmapCanvas(props) {
-							const { node, theme, fitKey, reveal, inputActions } = props;
+							const { node, theme, fitKey, reveal, inputActions, readInputState } = props;
 							const scrollRef = react.useRef(null);
 							const contentRef = react.useRef(null);
 							const zoomRef = react.useRef(1);
@@ -2649,7 +2698,8 @@ window.__ModuleLoader__.load({
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
 							// 值变化才重置滚动到原点让树回到居中；同步记录自然尺寸供防抖。
-							function applyFit() {
+							// wholeMap=true：「全图」——不受可读下限约束（见 fitAllZoom）。
+							function applyFit(wholeMap) {
 								const scroller = scrollRef.current;
 								const content = contentRef.current;
 								if (!scroller || !content) return;
@@ -2663,7 +2713,9 @@ window.__ModuleLoader__.load({
 								const naturalW = rect.width / committed;
 								const naturalH = rect.height / committed;
 								lastNaturalRef.current = { w: naturalW, h: naturalH };
-								const fit = fitZoom(naturalW, naturalH, scroller.clientWidth, scroller.clientHeight);
+								const fit = wholeMap === true
+									? fitAllZoom(naturalW, naturalH, scroller.clientWidth, scroller.clientHeight)
+									: fitZoom(naturalW, naturalH, scroller.clientWidth, scroller.clientHeight);
 								zoomRef.current = fit;
 								if (fit !== committed) {
 									scroller.scrollLeft = 0;
@@ -2691,7 +2743,11 @@ window.__ModuleLoader__.load({
 								setSearchIndex(-1);
 								setSearchReveal(null);
 								searchActiveIdRef.current = null;
-								const id = requestAnimationFrame(applyFit);
+								// rAF 会传时间戳，不能直接传 applyFit；若首帧前用户已经选择
+								// 「全图」或手动缩放，也不能再用默认可读适配覆盖其选择。
+								const id = requestAnimationFrame(() => {
+									if (!userZoomedRef.current) applyFit();
+								});
 								return () => {
 									cancelAnimationFrame(id);
 									cancelZoomAnim();
@@ -2916,6 +2972,14 @@ window.__ModuleLoader__.load({
 					applyFit();
 				}
 
+				// 「全图」：尽量把整棵树放入视口，允许低于可读下限；最低仍是 25%。
+				// 视为手动缩放（停自动再适配），否则观察器会把视图拉回可读下限。
+				function fitWholeMap() {
+					userZoomedRef.current = true;
+					fitStampRef.current = [];
+					applyFit(true);
+				}
+
 				// 016 点击节点聚焦：节点滚到「垂直居中、水平约 25%」（树向右生长，
 				// 左侧锚点让子级铺满右侧视野），缩放比例取 focusZoom（整棵子树适配、
 				// 上限 focusMax）。事件委托：closest 找节点盒与所在子树 row，无需给
@@ -2931,10 +2995,12 @@ window.__ModuleLoader__.load({
 					if (!scroller) return false;
 					const current = zoomRef.current;
 					const rowRect = rowEl.getBoundingClientRect();
-					const focus = clampFocusJump(
+					// 用户若先手动缩到可读下限以下，点击节点时一次回到可读范围；
+					// 仅这种情况会突破通常的 ×2 聚焦跳变上限。
+					const focus = readableZoom(clampFocusJump(
 						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
 						current,
-					);
+					));
 					const boxRect = boxEl.getBoundingClientRect();
 					const scrollerRect = scroller.getBoundingClientRect();
 					const startAnchor = {
@@ -3172,7 +3238,7 @@ window.__ModuleLoader__.load({
 
 				// 037 节点焦点聊天：沿用目录树的自动发送能力，但不覆盖用户已有草稿。
 				function submitNodeChat(text) {
-					return submitNodeFocusMessage(inputActions, text);
+					return submitNodeFocusMessage(inputActions, text, readInputState);
 				}
 
 				// 037 右键节点：先完成与左键相同的注意力聚焦，再记录菜单锚点。
@@ -3312,12 +3378,21 @@ window.__ModuleLoader__.load({
 						}),
 						(0, react_jsx_runtime.jsx)("button", {
 							type: "button",
-							title: "适配画布（重新计算合适比例）",
+							title: "适配画布（保持可读字号 ≥12px，放不下的部分滚动浏览）",
 							style: hover === "fit" ? { ...S.zoomFitBtn, ...S.zoomBtnHover } : S.zoomFitBtn,
 							onClick: refit,
 							onMouseEnter: () => setHover("fit"),
 							onMouseLeave: () => setHover((h) => (h === "fit" ? null : h)),
 							children: "适配",
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "尽量适应全图（可低于 12px；最低 25%，极大图仍需滚动）",
+							style: hover === "fitAll" ? { ...S.zoomFitBtn, ...S.zoomBtnHover } : S.zoomFitBtn,
+							onClick: fitWholeMap,
+							onMouseEnter: () => setHover("fitAll"),
+							onMouseLeave: () => setHover((h) => (h === "fitAll" ? null : h)),
+							children: "全图",
 						}),
 					] }),
 					// 035 节点搜索条：缩放条正下方的紧凑浮层（同款容器/主题变量）。
@@ -3478,16 +3553,21 @@ window.__ModuleLoader__.load({
 		 * headerHeight：独立壳传入的对齐高度（null = BS Tab 模式，头部自适应）。
 		 */
 		function MindmapWorkspace(props) {
-			const { mindmapFace, visible, sessionId, inputActions, nodes, nodesVersion, onAutoOpen, onClose, headerHeight, variant } = props;
+			const { mindmapFace, visible, sessionId, inputActions, readInputState, nodes, nodesVersion, documents, onAutoOpen, onClose, headerHeight, variant } = props;
 			// 只调整工作区界面；脑图节点与导出继续使用自己的字体层级。
 			const S = workspaceStyles(variant);
 			// 016：nodesVersion（结构指纹）作副依赖——nodes 引用不变但内容已变
 			// （新工具结果原地落地）时强制重算；docs 新引用带动 merged →
 			// auto-open effect 重跑（对已消费事件幂等 no-op），面板必达展开。
-			const docs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
+			const documentReducer = react.useMemo(() => createDocumentReducer(), [sessionId]);
+			const docs = react.useMemo(() => documents ?? documentReducer(nodes), [documents, nodes, nodesVersion, documentReducer]);
 			// 013：本地加载占位文档（左键点 .md 秒建 tab、内容为空），与快照文档
-			// 合并显示；快照优先（AI 结果覆盖占位）。
+			// 合并显示；直读保留到新的工具结果到达，不让历史快照盖回磁盘内容。
 			const [localDocs, setLocalDocs] = react.useState({});
+			const documentReadRef = react.useRef(0);
+			const documentSessionRef = react.useRef(sessionId);
+			documentSessionRef.current = sessionId;
+			const [readingPath, setReadingPath] = react.useState(null);
 			const merged = react.useMemo(() => mergeDocuments(docs, localDocs), [docs, localDocs]);
 			// 016 加载态恢复（S2/S3 成因）：openMindmap 点击时刻记录错误事件键
 			// 基线——只有其后新出现的错误才归因到该次打开（matchDocError 的
@@ -3633,6 +3713,8 @@ window.__ModuleLoader__.load({
 			// effect，否则清理会把刚自动选中的脑图又切回「目录」。
 			const seen = react.useRef(null);
 			react.useEffect(() => {
+				documentReadRef.current += 1;
+				setReadingPath(null);
 				setLocalDocs({});
 				setCurrentPath(null);
 				setHiddenPath(null);
@@ -3645,6 +3727,7 @@ window.__ModuleLoader__.load({
 				focusSentRef.current = null;
 				seen.current = null;
 				prevIdsRef.current = { path: null, ids: null };
+				return () => { documentReadRef.current += 1; };
 			}, [sessionId]);
 
 			// AI 自动打开：create/open 代表用户明确的「创建 / 打开 / 查看」意图。
@@ -3654,6 +3737,10 @@ window.__ModuleLoader__.load({
 				const targetPath = autoOpenTarget(merged, seen.current);
 				seen.current = openingEventKeys(merged);
 				if (targetPath) {
+					if (readingPath && readingPath !== targetPath) {
+						documentReadRef.current += 1;
+						setReadingPath(null);
+					}
 					onAutoOpen();
 					setHiddenPath(null);
 					setCurrentPath(targetPath);
@@ -3705,10 +3792,9 @@ window.__ModuleLoader__.load({
 				}
 			}
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
-			// 草稿保护：确实读到非空草稿才让路（改走剪贴板），读不到就按既有
-			// 行为直填直发——宿主不暴露草稿时不能把功能整个卡死。
+			// 草稿状态未知时也保留输入；目录直读照常，编辑指令交给手动发送。
 			function draftBlocked() {
-				return draftBlocksAutoSend(inputActions);
+				return draftBlocksAutoSend(inputActions, readInputState);
 			}
 
 			function submitChatCommand(text) {
@@ -3744,6 +3830,8 @@ window.__ModuleLoader__.load({
 
 			/** 关闭脑图视图：✕ 后回到只有「目录」的状态；快照结果不自动弹回。 */
 			function closeMindmap(path) {
+				documentReadRef.current += 1;
+				setReadingPath(null);
 				setHiddenPath(path);
 				setCurrentPath(null);
 				setView("tree");
@@ -3756,7 +3844,13 @@ window.__ModuleLoader__.load({
 
 			// 左键点 .md：先通过只读 document 路由显示文件，再在草稿为空时提交
 			// mindmap_open 让 AI 接管编辑；已有草稿永不被覆盖。
-			async function openMindmap(entry) {
+			async function openMindmap(entry, { submit = true, refresh = false } = {}) {
+				const request = ++documentReadRef.current;
+				const isCurrent = () => request === documentReadRef.current && documentSessionRef.current === sessionId;
+				const snapshotEventKey = docs.byPath[entry.path]?.eventKey;
+				setReadingPath(entry.path);
+				setExportError("");
+				if (!submit) focusSentRef.current = entry.path;
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
 				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
@@ -3766,7 +3860,7 @@ window.__ModuleLoader__.load({
 				setHiddenPath(null);
 				setCurrentPath(entry.path);
 				setView("mindmap");
-				setLocalDocs((prev) => ({
+				if (!refresh) setLocalDocs((prev) => ({
 					...prev,
 					[entry.path]: {
 						path: entry.path,
@@ -3780,20 +3874,26 @@ window.__ModuleLoader__.load({
 				try {
 					if (!mindmapFace || typeof mindmapFace.readDocument !== "function") throw new Error("只读文档能力不可用");
 					const loaded = await mindmapFace.readDocument(sessionId, relPathWithin(fsTree.cwd, entry.path, entry.name));
+					if (!isCurrent()) return;
 					setLocalDocs((prev) => {
-						const current = prev[entry.path];
-						if (!current || current.op !== "local") return prev;
-						return { ...prev, [entry.path]: { ...current, op: "local-read", content: String(loaded.content ?? ""), revision: loaded.revision ?? null } };
+						const current = prev[entry.path] ?? merged.byPath[entry.path];
+						if (!current) return prev;
+						return { ...prev, [entry.path]: { ...current, op: "local-read", error: null, content: String(loaded.content ?? ""), revision: loaded.revision ?? null, snapshotEventKey } };
 					});
-					setFilledHint(`已直接打开「${entry.name}」；需要 AI 编辑时可继续发送打开指令`);
+					setFilledHint(refresh ? `已刷新「${entry.name}」` : `已直接打开「${entry.name}」；需要 AI 编辑时可继续发送打开指令`);
 				} catch (error) {
+					if (!isCurrent()) return;
 					setLocalDocs((prev) => {
 						const current = prev[entry.path];
 						if (!current || current.op !== "local") return prev;
 						return { ...prev, [entry.path]: { ...current, error: String(error?.message ?? error) } };
 					});
+					setExportError(`读取脑图失败：${String(error?.message ?? error)}`);
 					setFilledHint("直接读取失败，可重试或让 AI 打开该文件");
+				} finally {
+					if (isCurrent()) setReadingPath(null);
 				}
+				if (!isCurrent() || !submit) return;
 				// ② 草稿为空时再让 AI 接管焦点；已有草稿绝不覆盖。
 				if (!draftBlocked() && submitChatCommand(text)) {
 					focusSentRef.current = entry.path;
@@ -3802,9 +3902,14 @@ window.__ModuleLoader__.load({
 				if (draftBlocked()) {
 					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
 						navigator.clipboard.writeText(text).catch(() => {});
-						setFilledHint("检测到未发送的草稿，文件已打开；打开指令已复制到剪贴板");
+						setFilledHint("已保留聊天草稿并打开文件；打开指令已复制到剪贴板");
 					} else setFilledHint(`文件已打开，请手动发送：${text}`);
 				}
+			}
+
+			function refreshDocument() {
+				if (!doc) return;
+				return openMindmap({ path: doc.path, name: `${stemOf(doc.path)}.md` }, { submit: false, refresh: true });
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */
@@ -4187,6 +4292,13 @@ window.__ModuleLoader__.load({
 	const exportErrorSpan = exportError
 		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
 		: null;
+	const refreshBtn = (0, react_jsx_runtime.jsx)("button", {
+		type: "button", style: S.action,
+		disabled: !doc || readingPath !== null,
+		onClick: refreshDocument,
+		title: "从磁盘重新读取当前脑图，保留聊天草稿",
+		children: readingPath === doc?.path ? "刷新中…" : "刷新脑图",
+	});
 	const approvalControls = approvalState && approvalState.mode === "session"
 		? (0, react_jsx_runtime.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px", color: "var(--dsw-alias-label-tertiary)", fontSize: "12px" }, children: [
 			(0, react_jsx_runtime.jsx)("span", { title: "授权按当前会话与脑图文件隔离", children: approvalState.grantedDocuments > 0 ? "本会话已允许写入" : "本会话尚未授权" }),
@@ -4258,13 +4370,14 @@ window.__ModuleLoader__.load({
 				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 				approvalControls,
 				exportErrorSpan,
+				refreshBtn,
 				copyBtn,
 				exportBtn,
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
 			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
 			bodyMode === BODY_MODE.canvas
-				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions })
+				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions, readInputState })
 				: (0, react_jsx_runtime.jsx)("div", { style: S.body, children: bodyMode === BODY_MODE.tree
 					? renderTree()
 					: bodyMode === BODY_MODE.loading
@@ -4294,6 +4407,7 @@ window.__ModuleLoader__.load({
 		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 			approvalControls,
+			refreshBtn,
 			copyBtn,
 			exportBtn,
 			exportErrorSpan,
@@ -4360,7 +4474,7 @@ window.__ModuleLoader__.load({
 				: (doc && doc.op === "local")
 					? renderLoading()
 					: renderTree() })
-			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions }),
+			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions, readInputState }),
 		tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 			style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 			onContextMenu: (e) => e.preventDefault(),
@@ -4389,7 +4503,7 @@ window.__ModuleLoader__.load({
 		 * 但 hooks 照常跑——auto-open effect 能在面板关着时调 onAutoOpen 把它拉起。
 		 */
 		function MindmapDetailsPanel(props) {
-			const { mindmapFace, open, sessionId, inputActions, nodes, nodesVersion, onOpen, onClose } = props;
+			const { mindmapFace, open, sessionId, inputActions, readInputState, nodes, nodesVersion, documents, onOpen, onClose } = props;
 			// 014 overlay 宽度：localStorage 持久化，拖拽钳制 [280, 视口 80%]。
 			// 窗口尺寸变化时持续钳制——只在挂载时压一次的话，窗口先放大→拖宽
 			// 面板→再缩小会让面板保持旧像素宽，聊天区被挤没。
@@ -4537,7 +4651,9 @@ window.__ModuleLoader__.load({
 				sessionId,
 				nodes,
 				nodesVersion,
+				documents,
 				inputActions,
+				readInputState,
 				mindmapFace,
 				visible: open,
 				onAutoOpen: onOpen,
@@ -4599,7 +4715,9 @@ window.__ModuleLoader__.load({
 				sessionId,
 				nodes: data.nodes,
 				nodesVersion: data.nodesVersion,
+				documents: data.documents,
 				inputActions: data.inputActions,
+				readInputState: data.readInputState,
 				mindmapFace: data.mindmapFace,
 				visible,
 				onAutoOpen,
@@ -4648,7 +4766,13 @@ window.__ModuleLoader__.load({
 		 * useChat（0.1.2-rc.1+）优先、useSession（≤0.1.1）兜底。
 		 */
 		function MindmapSlot(props) {
-			const { useSession, useChat, sessionId, inputActions, mindmapFace } = props;
+			const { useSession, useChat, useInput, sessionId, inputActions, mindmapFace } = props;
+			const inputState = useInput ? useInput((state) => state) : null;
+			const inputRef = react.useRef({ sessionId, state: inputState });
+			inputRef.current = { sessionId, state: inputState };
+			const readInputState = react.useCallback(() => inputRef.current.sessionId === sessionId ? inputRef.current.state : null, [sessionId]);
+			// 旧宿主没有 useInput 时仍探测原动作面；新宿主只读正式快照。
+			const readDraftState = useInput ? readInputState : undefined;
 			const nodesHook = useChat ?? useSession;
 			const nodes = nodesHook ? nodesHook(conversationNodesOf) : EMPTY_NODES;
 			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
@@ -4656,6 +4780,8 @@ window.__ModuleLoader__.load({
 			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
 			// 值比较天然绕过引用相等短路；内容钩子不可用时回退空串。
 			const nodesVersion = nodesHook ? nodesHook((s) => nodesFingerprint(conversationNodesOf(s))) : "";
+			const documentReducer = react.useMemo(() => createDocumentReducer(), [sessionId]);
+			const documents = react.useMemo(() => documentReducer(nodes), [nodes, nodesVersion, documentReducer]);
 
 			// 026 sidebar 模式检测：betterSidebar 服务可用时走原生 Tab，否则走独立面板。
 			const sidebar = react.useSyncExternalStore(sidebarBus.subscribe, sidebarBus.get);
@@ -4668,8 +4794,8 @@ window.__ModuleLoader__.load({
 		// 当前 sessionId 的快照——模块级 Map 不残留旧会话的 nodes/inputActions。
 		react.useEffect(() => {
 			if (!sidebarMode || !sessionId) return;
-			sessionStore.set(sessionId, { nodes, nodesVersion, inputActions, mindmapFace });
-		}, [sidebarMode, sessionId, nodes, nodesVersion, inputActions, mindmapFace]);
+			sessionStore.set(sessionId, { nodes, nodesVersion, documents, inputActions, readInputState: readDraftState, mindmapFace });
+		}, [sidebarMode, sessionId, nodes, nodesVersion, documents, inputActions, readDraftState, mindmapFace]);
 		// 028 会话切换 / 退出 sidebar 模式时清理旧快照。
 		const lastSessionRef = react.useRef(null);
 		react.useEffect(() => {
@@ -4701,7 +4827,7 @@ window.__ModuleLoader__.load({
 			// MindmapWorkspace 的 auto-open effect 不跑。MindmapSlot 始终在头部
 			// 挂载，在这里检测新的 create/open 结果并调 openTab 把 Tab 拉起。
 			// 首次进入 sidebar 模式时只记基线（不弹历史文档），之后只响应新事件。
-			const sidebarDocs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
+			const sidebarDocs = documents;
 			const sidebarSeen = react.useRef(null);
 			const sidebarInitedRef = react.useRef(false);
 			react.useEffect(() => {
@@ -4770,8 +4896,10 @@ window.__ModuleLoader__.load({
 					open,
 					sessionId,
 					inputActions,
+					readInputState: readDraftState,
 					nodes,
 					nodesVersion,
+					documents,
 					mindmapFace,
 					onOpen: () => setOpen(true),
 					onClose: () => setOpen(false),
@@ -4801,12 +4929,12 @@ window.__ModuleLoader__.load({
 		})();
 
 		// sessionStore：按 sessionId 隔离的数据桥。MindmapSlot 始终在头部槽位里
-		// 调用 useChat/useSession 钩子获取 nodes/nodesVersion/inputActions，写入
+		// 调用 useChat/useSession/useInput 获取文档和最新输入快照读取器，写入
 		// 对应 sessionId 的快照；MindmapSidebarTab 组件用 useSyncExternalStore
 		// 订阅自己 sessionId 的快照，拿到数据后渲染 MindmapWorkspace。
 		// 028 生命周期清理：MindmapSlot 在会话切换（sessionId 变化）和组件卸载
 		// 时删除对应 sessionId 的快照——模块级 Map 不残留旧会话的
-		// nodes/inputActions。退出 sidebar 模式（Better Sidebar 卸载）时也清理。
+		// nodes/inputActions/文档缓存。退出 sidebar 模式（Better Sidebar 卸载）时也清理。
 		const sessionStore = (() => {
 			const sessions = new Map();
 			const listeners = new Map();
@@ -4855,6 +4983,16 @@ window.__ModuleLoader__.load({
 			if (Array.isArray(value)) return value;
 			const list = value?.namespaces;
 			return Array.isArray(list) ? list : [];
+		}
+
+		/** 页面基础地址保留反向代理前缀；API 请求始终留在当前页面的源。 */
+		function mindmapApiUrl(method) {
+			const location = window.location?.href;
+			const base = (typeof document !== "undefined" && document.baseURI) || location;
+			if (!base) return `/mindmap/api/${method}`;
+			const url = new URL(`mindmap/api/${method}`, base);
+			if (location && url.origin !== new URL(location).origin) throw new Error("脑图 API 的页面基础地址必须同源");
+			return url.href;
 		}
 
 		function apply(ctx) {
@@ -4990,7 +5128,7 @@ window.__ModuleLoader__.load({
 			// 同款机制——官方 host.listDirectory 在 native picker 环境必挂，见 013）。
 			// 客户端只读目录，仍无任何写文件通道。
 			face.listTree = async (sessionId, path) => {
-				const response = await fetch("/mindmap/api/tree", {
+				const response = await fetch(mindmapApiUrl("tree"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify(typeof path === "string" && path ? { sessionId, path } : { sessionId }),
@@ -5005,7 +5143,7 @@ window.__ModuleLoader__.load({
 			// wait for a model turn just to fetch bytes; the empty-draft path may still
 			// ask the AI to take over editing after the document is visible.
 			face.readDocument = async (sessionId, path) => {
-				const response = await fetch("/mindmap/api/document", {
+				const response = await fetch(mindmapApiUrl("document"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ sessionId, path }),
@@ -5017,7 +5155,7 @@ window.__ModuleLoader__.load({
 				return parsed.value;
 			};
 			face.readApprovalStatus = async (sessionId) => {
-				const response = await fetch("/mindmap/api/approval", {
+				const response = await fetch(mindmapApiUrl("approval"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ sessionId, action: "status" }),
@@ -5029,7 +5167,7 @@ window.__ModuleLoader__.load({
 				return parsed.value;
 			};
 			face.revokeApproval = async (sessionId) => {
-				const response = await fetch("/mindmap/api/approval", {
+				const response = await fetch(mindmapApiUrl("approval"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({ sessionId, action: "revoke" }),
@@ -5132,6 +5270,7 @@ window.__ModuleLoader__.load({
 			// 038 解析兜底：永不抛的结果对 { tree, error }（供测试验证失败态分支）。
 			parseTreeResult,
 			reduceDocuments,
+			createDocumentReducer,
 			mergeDocuments,
 			autoOpenTarget,
 			openingEventKeys,
@@ -5198,6 +5337,7 @@ window.__ModuleLoader__.load({
 			focusZoom,
 			// 033 点击聚焦跳变钳制 + 保视野拉回位移（供测试）。
 			clampFocusJump,
+			fitAllZoom,
 			edgePullOffsets,
 			// 021 画布平移手势判定（供测试）。
 			PAN,
@@ -5210,6 +5350,7 @@ window.__ModuleLoader__.load({
 			// 023 双代兼容纯函数（供测试）：会话内容节点 / settings 信封。
 			conversationNodesOf,
 			settingsNamespacesOf,
+			mindmapApiUrl,
 			// 021 画布组件：仅供测试驱动平移手势（不参与运行时契约）。
 			MindmapCanvas,
 			// 026 better-sidebar 共存：服务总线 + 会话数据桥 + Tab 壳（供测试）。

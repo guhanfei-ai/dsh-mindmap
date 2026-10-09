@@ -63,20 +63,27 @@
 		}
 		//#endregion
 
-		//#region 025 草稿保护：能力探测（宿主是否让插件读到聊天草稿）
-		/**
-		 * 读取当前聊天草稿。宿主契约只保证 setDraft/submit，读取面属可选能力：
-		 * 逐个探测已知形态，读不到返回 null（= 不可知，不等于空草稿）。
-		 */
-		function readDraftText(inputActions) {
-			if (!inputActions) return null;
+		//#region 025 草稿保护：正式输入快照优先，旧宿主动作面兜底
+		function draftStateOf(inputActions, readInputState) {
 			try {
-				if (typeof inputActions.getDraft === "function") return String(inputActions.getDraft() ?? "");
-				if (typeof inputActions.draft === "string") return inputActions.draft;
-				if (typeof inputActions.getState === "function") {
-					const state = inputActions.getState();
-					if (state && typeof state.draft === "string") return state.draft;
-				}
+				if (typeof readInputState === "function") return readInputState() ?? null;
+				if (typeof inputActions?.getState === "function") return inputActions.getState() ?? null;
+			} catch { return null; }
+			return null;
+		}
+
+		/**
+		 * 新宿主的 useInput 提供 draft/attachmentIds；动作对象不提供读取方法。
+		 * readInputState 在发送时读取最新快照，避免异步打开期间覆盖后来输入的内容。
+		 */
+		function readDraftText(inputActions, readInputState) {
+			const state = draftStateOf(inputActions, readInputState);
+			if (typeof state?.draft === "string") return state.draft;
+			// 正式快照存在但不可读时，不能把旧动作对象误当作空草稿。
+			if (typeof readInputState === "function") return null;
+			try {
+				if (typeof inputActions?.getDraft === "function") return String(inputActions.getDraft() ?? "");
+				if (typeof inputActions?.draft === "string") return inputActions.draft;
 			} catch {
 				return null;
 			}
@@ -84,21 +91,23 @@
 		}
 
 		/**
-		 * 是否因「已有未发送草稿」而放弃自动发送。只有确实读到非空草稿才拦截；
-		 * 读不到时不拦——否则在不暴露草稿的宿主上，点目录文件会完全打不开。
+		 * 文字、引用和附件都属于未发送内容。未知状态同样保留输入；目录直读
+		 * 不依赖自动发送，旧宿主仍可打开文件，指令走剪贴板/手动发送。
 		 */
-		function draftBlocksAutoSend(inputActions) {
-			const draft = readDraftText(inputActions);
-			return typeof draft === "string" && draft.trim() !== "";
+		function draftBlocksAutoSend(inputActions, readInputState) {
+			const state = draftStateOf(inputActions, readInputState);
+			const draft = readDraftText(inputActions, readInputState);
+			const attachmentsUnknown = typeof readInputState === "function" && !Array.isArray(state?.attachmentIds);
+			return draft === null || attachmentsUnknown || draft.trim() !== "" || (Array.isArray(state?.attachmentIds) && state.attachmentIds.length > 0);
 		}
 
 		/** 037 节点焦点消息：保护现有草稿后，原子地写入并提交到当前 DSH 对话。 */
-		function submitNodeFocusMessage(inputActions, text) {
-			if (draftBlocksAutoSend(inputActions)) {
-				throw new Error("当前聊天框已有未发送内容，请先处理后再围绕节点聊天");
-			}
+		function submitNodeFocusMessage(inputActions, text, readInputState) {
 			if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") {
 				throw new Error("当前对话不支持自动发送节点焦点消息");
+			}
+			if (draftBlocksAutoSend(inputActions, readInputState)) {
+				throw new Error("当前聊天框有未发送内容，或暂时无法读取草稿；请保留并处理后再围绕节点聊天");
 			}
 			inputActions.setDraft(String(text ?? ""));
 			inputActions.submit();
@@ -217,4 +226,3 @@
 			return next;
 		}
 		//#endregion
-

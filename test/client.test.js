@@ -6,7 +6,7 @@ import { Context as CordisContext } from '@deepseek-ai/cordis'
 
 // 照 dsh-grafana test/client.test.js 的套路：vm 里伪造 window.__ModuleLoader__
 // 捕获浏览器模块定义，再用 require 桩喂 react，拿到 exports 测纯函数。
-function loadBrowserModule() {
+function loadBrowserModule(source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')) {
   let definition
   const window = {
     __ModuleLoader__: {
@@ -24,7 +24,7 @@ function loadBrowserModule() {
   const warnCalls = []
   const sandboxConsole = { warn: (...args) => warnCalls.push(args), log() {}, error() {} }
   const context = vm.createContext({ URL, window, console: sandboxConsole })
-  vm.runInContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), context)
+  vm.runInContext(source, context)
   assert.equal(definition.id, 'dsh-mindmap')
   const runtime = definition.factory((id) => {
     if (id === 'react/jsx-runtime') return {
@@ -81,7 +81,8 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext, warnCalls: sandboxWarnCalls } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, fitAllZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const READABLE_ZOOM = 12 / Number.parseFloat(S.box.fontSize)
 
 test('browser module declares the expected service inject list', () => {
   // 014：layout 随 details 形态退役；shell.overlay 注册不需要额外服务。
@@ -852,10 +853,9 @@ test('readDraftText probes the known draft shapes and reports unknown as null', 
   assert.equal(readDraftText({ getDraft() { throw new Error('nope') } }), null)
 })
 
-test('draftBlocksAutoSend only blocks on a draft it can actually read', () => {
-  // 关键回归：宿主不暴露草稿时不得拦截，否则点目录文件永远打不开
-  assert.equal(draftBlocksAutoSend({ setDraft() {}, submit() {} }), false)
-  assert.equal(draftBlocksAutoSend(undefined), false)
+test('draftBlocksAutoSend preserves unreadable drafts while local file opening stays independent', () => {
+  assert.equal(draftBlocksAutoSend({ setDraft() {}, submit() {} }), true)
+  assert.equal(draftBlocksAutoSend(undefined), true)
   // 可读且为空 → 放行；可读且非空 → 拦截
   assert.equal(draftBlocksAutoSend({ getDraft: () => '   ' }), false)
   assert.equal(draftBlocksAutoSend({ getDraft: () => '写到一半' }), true)
@@ -873,9 +873,63 @@ test('037 submitNodeFocusMessage writes the prompt before submitting and protect
 
   assert.throws(
     () => submitNodeFocusMessage({ getDraft: () => '用户正在输入', setDraft() {}, submit() {} }, '不能覆盖'),
-    /已有未发送内容/,
+    /未发送内容/,
   )
   assert.throws(() => submitNodeFocusMessage(null, '无法发送'), /不支持自动发送/)
+})
+
+test('host input snapshots protect text, inline references, attachments, and unknown state', () => {
+  const calls = []
+  const actions = { setDraft: text => calls.push(text), submit: () => calls.push('submit') }
+  for (const state of [null, {}, { draft: '' }, { draft: '写到一半', attachmentIds: [] }, { draft: '文件引用', attachmentIds: [] }, { draft: '', attachmentIds: ['attachment-1'] }]) {
+    assert.equal(draftBlocksAutoSend(actions, () => state), true)
+    assert.throws(() => submitNodeFocusMessage(actions, '不能覆盖', () => state), /未发送内容|无法读取/)
+  }
+  assert.deepEqual(calls, [])
+  assert.equal(readDraftText(actions, () => ({ draft: '正式快照', attachmentIds: [] })), '正式快照')
+  assert.equal(draftBlocksAutoSend(actions, () => ({ draft: '', attachmentIds: [] })), false)
+  assert.equal(submitNodeFocusMessage(actions, '节点讨论', () => ({ draft: '', attachmentIds: [] })), true)
+  assert.deepEqual(calls, ['节点讨论', 'submit'])
+  assert.equal(draftBlocksAutoSend({ getDraft: () => '' }, () => { throw new Error('disconnected') }), true)
+})
+
+test('disk reads replace their baseline snapshot until a newer tool event arrives', () => {
+  const path = '/w/plan.md'
+  const old = toolResultNode('mindmap_open', { ok: true, op: 'open', path, content: '# Old', revision: 'old' }, { callId: 'read-baseline' })
+  const snapshot = reduceDocuments([old])
+  const local = { path, rootTitle: 'plan', op: 'local-read', content: '# Disk', revision: 'disk', snapshotEventKey: snapshot.byPath[path].eventKey }
+  assert.equal(mergeDocuments(snapshot, { [path]: local }).byPath[path], local)
+  assert.equal(snapshot.byPath[path].revision, 'old')
+  const next = reduceDocuments([old, toolResultNode('mindmap_update', { ok: true, op: 'update', path, content: '# New tool', revision: 'next' }, { callId: 'after-disk' })])
+  assert.equal(mergeDocuments(next, { [path]: local }).byPath[path].content, '# New tool')
+  const renamed = reduceDocuments([old, toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/new.md', renamedFrom: path, content: '# Renamed' })])
+  assert.equal(mergeDocuments(renamed, { [path]: local }).byPath[path], undefined)
+})
+
+test('session replay caches finished JSON results and invalidates changed or newly appended results', () => {
+  const originalJson = vm.runInContext('JSON', sandboxContext)
+  let parses = 0
+  sandboxContext.JSON = { parse(value) { parses += 1; return originalJson.parse(value) }, stringify: originalJson.stringify }
+  try {
+    const reducer = runtime.internals.createDocumentReducer()
+    const nodes = [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/plan.md', content: '# A' }, { callId: 'cache-a' })]
+    reducer(nodes)
+    assert.equal(parses, 1)
+    reducer(nodes)
+    assert.equal(parses, 1, 'unchanged history is not parsed again')
+    nodes[0].content[0].text = JSON.stringify({ ok: true, op: 'open', path: '/w/plan.md', content: '# Changed' })
+    assert.equal(reducer(nodes).byPath['/w/plan.md'].content, '# Changed')
+    assert.equal(parses, 2)
+    nodes.push(toolResultNode('code', {}, { callId: 'outer' }))
+    nodes[1].subCalls = [toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/plan.md', content: '# Nested' }, { callId: 'cache-b' })]
+    const cached = reducer(nodes)
+    assert.equal(parses, 3, 'only the new nested mindmap result is parsed')
+    assert.equal(cached.byPath['/w/plan.md'].content, '# Nested')
+    sandboxContext.JSON = originalJson
+    assert.deepEqual(JSON.parse(JSON.stringify(cached)), JSON.parse(JSON.stringify(reduceDocuments(nodes))))
+  } finally {
+    sandboxContext.JSON = originalJson
+  }
 })
 
 // —— 025 子树折叠 ——
@@ -1538,15 +1592,17 @@ test('stepZoom steps by 1.2 per level and saturates at the bounds', () => {
   assert.ok(Math.abs(stepZoom(NaN, 1) - 1.2) < 1e-9)
 })
 
-test('fitZoom fits without enlarging, clamps giant trees, and guards zero sizes', () => {
-  // 48px 画布余量：水平约束 (800-48)/1000 < (600-48)/500
-  assert.ok(Math.abs(fitZoom(1000, 500, 800, 600) - 0.752) < 1e-9)
-  // 垂直约束
-  assert.ok(Math.abs(fitZoom(500, 1000, 800, 600) - 0.552) < 1e-9)
+test('fitZoom keeps node text readable while fitting small maps and guarding zero sizes', () => {
+  // 48px 画布余量：在可读范围内仍分别按宽、高适配。
+  assert.ok(Math.abs(fitZoom(800, 500, 800, 600) - 0.94) < 1e-9)
+  assert.ok(Math.abs(fitZoom(500, 580, 800, 600) - 552 / 580) < 1e-9)
+  // 适配结果低于 12/13 时不再继续缩小，横向或纵向交给滚动/平移。
+  assert.equal(fitZoom(1000, 500, 800, 600), READABLE_ZOOM)
+  assert.equal(fitZoom(500, 1000, 800, 600), READABLE_ZOOM)
   // 小图不放大：上限 1
   assert.equal(fitZoom(200, 150, 800, 600), 1)
-  // 巨图夹到下限 0.25（保持可读，超出部分滚动浏览）
-  assert.equal(fitZoom(100000, 100000, 800, 600), 0.25)
+  assert.equal(fitZoom(100000, 100000, 800, 600), READABLE_ZOOM)
+  assert.ok(Number.parseFloat(S.box.fontSize) * fitZoom(100000, 100000, 800, 600) >= 12)
   // 零/非法尺寸守卫：返回 1
   assert.equal(fitZoom(0, 500, 800, 600), 1)
   assert.equal(fitZoom(500, 0, 800, 600), 1)
@@ -1555,14 +1611,41 @@ test('fitZoom fits without enlarging, clamps giant trees, and guards zero sizes'
   assert.equal(fitZoom(NaN, 500, 800, 600), 1)
 })
 
+test('fitAllZoom uses both viewport dimensions and respects the 25% lower bound', () => {
+  // 「全图」与 fitZoom 同公式，但不夹可读下限。
+  assert.ok(Math.abs(fitAllZoom(1000, 500, 800, 600) - 0.752) < 1e-9)
+  // 巨图仍夹手动下限 25%，所以极大图不会真的全部进入视口。
+  assert.equal(fitAllZoom(100000, 100000, 800, 600), 0.25)
+  assert.ok(100000 * fitAllZoom(100000, 100000, 800, 600) > 800)
+  // 小图不放大。
+  assert.equal(fitAllZoom(200, 150, 800, 600), 1)
+  // 窄视口不再改按高度适配：宽度也算进来。
+  assert.equal(fitAllZoom(2000, 2000, 280, 800), 0.25)
+  // 零/非法尺寸守卫与 fitZoom 一致。
+  assert.equal(fitAllZoom(0, 500, 800, 600), 1)
+  assert.equal(fitAllZoom(NaN, NaN, 800, 600), 1)
+})
+
+test('a malformed node font style at module initialization cannot poison automatic zoom', () => {
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+  // 在缩放常量初始化前破坏 CSS 字符串；旧实现 parseFloat(invalid) 会让适配返回 NaN。
+  const altered = source.replace('const ZOOM = {', 'S.box.fontSize = "invalid";\nconst ZOOM = {')
+  assert.notEqual(altered, source, 'test must inject the malformed style before zoom initialization')
+  const { runtime: alteredRuntime } = loadBrowserModule(altered)
+  const fitted = alteredRuntime.internals.fitZoom(100000, 100000, 800, 600)
+  const focused = alteredRuntime.internals.focusZoom(100000, 100000, 800, 600)
+  assert.equal(fitted, READABLE_ZOOM)
+  assert.equal(focused, READABLE_ZOOM)
+})
+
 test('focusZoom fits the subtree and caps zoom-in at focusMax', () => {
-  // 与 fitZoom 同基底，但小子树允许放大到 focusMax（1 = 100%）而非停在更小值
-  assert.ok(Math.abs(focusZoom(1000, 500, 800, 600) - 0.752) < 1e-9)
-  assert.ok(Math.abs(focusZoom(500, 1000, 800, 600) - 0.552) < 1e-9)
+  // 聚焦小子树不放大到 100% 以上；大子树维持可读字号。
+  assert.ok(Math.abs(focusZoom(800, 500, 800, 600) - 0.94) < 1e-9)
+  assert.equal(focusZoom(1000, 500, 800, 600), READABLE_ZOOM)
+  assert.equal(focusZoom(500, 1000, 800, 600), READABLE_ZOOM)
   // 小子树放大上限 100%（与全局适配一致，节点保持设计基准字号）
   assert.equal(focusZoom(200, 150, 800, 600), 1)
-  // 巨子树夹下限 0.25
-  assert.equal(focusZoom(100000, 100000, 800, 600), 0.25)
+  assert.equal(focusZoom(100000, 100000, 800, 600), READABLE_ZOOM)
   // 零/非法尺寸守卫：返回 1
   assert.equal(focusZoom(0, 500, 800, 600), 1)
   assert.equal(focusZoom(500, 500, 800, 0), 1)
@@ -1573,18 +1656,17 @@ test('focusZoom fits the subtree and caps zoom-in at focusMax', () => {
 
 test('033 narrow view (<400px) fits by height instead of width', () => {
   // sidebar 最窄 280px：宽树若按横向适配会被压得过小（(280-48)/2000=0.116
-  // → 夹下限 0.25 也不可读）；改按高度适配，宽度溢出交给平移。
+  // 不可读）；优先按高度适配，缩小到 12px 时宽高溢出都交给滚动/平移。
   // 高度充足：不放大、上限仍 1（fitZoom）。
   assert.equal(fitZoom(2000, 300, 280, 800), 1)
-  // 高度也紧张：按 (800-48)/300 走 → 夹到 0.25 的路径改为高度主导：
-  assert.ok(Math.abs(fitZoom(2000, 2000, 280, 800) - 0.376) < 1e-9) // (800-48)/2000
+  // 高度约束低于 12/13 时，钳到可读下限。
+  assert.equal(fitZoom(2000, 2000, 280, 800), READABLE_ZOOM)
   // focusZoom 同分支，仅放大上限换成 focusMax（同为 1）。
   assert.equal(focusZoom(2000, 300, 280, 800), 1)
-  assert.ok(Math.abs(focusZoom(2000, 2000, 280, 800) - 0.376) < 1e-9)
-  // 阈值边界：399 走窄分支（高度主导 0.376），400 走宽分支（宽主导 0.176
-  // → 夹下限 0.25，巨树窄面板保持可读、余量靠平移）。
-  assert.ok(Math.abs(fitZoom(2000, 2000, 399, 800) - 0.376) < 1e-9)
-  assert.equal(fitZoom(2000, 2000, 400, 800), 0.25)
+  assert.equal(focusZoom(2000, 2000, 280, 800), READABLE_ZOOM)
+  // 阈值边界：未触发字号下限时，窄视口按高度、宽视口按宽高较小者。
+  assert.equal(fitZoom(2000, 500, 399, 800), 1)
+  assert.equal(fitZoom(2000, 500, 400, 800), READABLE_ZOOM)
   // 零/非法尺寸守卫在窄视口下同样生效。
   assert.equal(fitZoom(0, 500, 280, 800), 1)
   assert.equal(focusZoom(NaN, 500, 280, 800), 1)
@@ -2679,6 +2761,8 @@ function createEffectDriver() {
   let stateIdx = 0
   const refValues = []
   let refIdx = 0
+  const memoValues = []
+  let memoIdx = 0
   let prevSlots = [] // 上一轮的 effect 条目（含 cleanup + deps）
   let currSlots = [] // 本轮新收集的 effect 条目
   const hooks = {
@@ -2689,7 +2773,14 @@ function createEffectDriver() {
     },
     useEffect(callback, deps) { currSlots.push({ callback, deps, cleanup: null }) },
     useLayoutEffect(callback, deps) { currSlots.push({ callback, deps, cleanup: null }) },
-    useMemo(factory) { return factory() },
+    useMemo(factory, deps) {
+      const idx = memoIdx++
+      const prev = memoValues[idx]
+      if (!prev || !deps || !prev.deps || deps.length !== prev.deps.length || deps.some((dep, i) => !Object.is(dep, prev.deps[i]))) {
+        memoValues[idx] = { deps, value: factory() }
+      }
+      return memoValues[idx].value
+    },
     useRef(v) {
       const idx = refIdx++
       if (refValues[idx] === undefined) refValues[idx] = { current: v }
@@ -2699,10 +2790,10 @@ function createEffectDriver() {
       if (typeof subscribe === 'function') subscribe(() => {})
       return typeof getSnapshot === 'function' ? getSnapshot() : undefined
     },
-    useCallback(fn) { return fn },
+    useCallback(fn, deps) { return hooks.useMemo(() => fn, deps) },
   }
   // 渲染前重置 hook 索引（不清 state/refs——它们跨渲染保持）。
-  function beginRender() { stateIdx = 0; refIdx = 0; currSlots = [] }
+  function beginRender() { stateIdx = 0; refIdx = 0; memoIdx = 0; currSlots = [] }
   // mount：执行所有 effect，保存为本轮的 prev。
   function flushMount() {
     for (const s of currSlots) {
@@ -2798,6 +2889,169 @@ function workspaceCanvas(rendered) {
   return findInTree(rendered, el => el.type?.name === 'MindmapCanvas')
 }
 
+test('header input bridge reads current useInput state and refuses stale session readers', () => {
+  const harness = loadClientWithEffectDriver()
+  let state = { draft: '', attachmentIds: [] }
+  const props = { sessionId: 'input-a', useInput: selector => selector(state), inputActions: { setDraft() {}, submit() {} } }
+  try {
+    harness.driver.beginRender()
+    const rendered = harness.MindmapSlot(props)
+    harness.driver.flushMount()
+    const panel = findInTree(rendered, el => el.type?.name === 'MindmapDetailsPanel')
+    const read = panel.props.readInputState
+    assert.equal(read().draft, '')
+    state = { draft: '读取文件时刚输入的草稿', attachmentIds: [] }
+    harness.driver.beginRender()
+    harness.MindmapSlot(props)
+    harness.driver.flushUpdate()
+    assert.equal(read().draft, state.draft, 'the existing child callback reads the latest snapshot')
+    harness.driver.beginRender()
+    harness.MindmapSlot({ ...props, sessionId: 'input-b' })
+    harness.driver.flushUpdate()
+    assert.equal(read(), null, 'an A reader cannot authorize sending through old A actions after switching to B')
+  } finally { harness.driver.unmount() }
+})
+
+for (const variant of ['sidebar', 'standalone']) {
+  test(`${variant}: refresh shows newer disk content, preserves drafts, and yields to later tool updates`, async () => {
+    const harness = loadClientWithEffectDriver()
+    const sent = []
+    const path = '/w/plan.md'
+    const baseline = toolResultNode('mindmap_open', { ok: true, op: 'open', path, content: '# Old' }, { callId: 'refresh-old' })
+    const props = {
+      variant, visible: true, sessionId: 'refresh-session', nodes: [baseline], onAutoOpen() {},
+      inputActions: { setDraft: text => sent.push(text), submit: () => sent.push('submit') },
+      readInputState: () => ({ draft: '保留草稿', attachmentIds: ['attachment-1'] }),
+      mindmapFace: { readDocument: async () => ({ path, content: '# Disk', revision: 'disk' }) },
+    }
+    try {
+      const rendered = renderWorkspaceAfterEffects(harness, props, true)
+      const refresh = findInTree(rendered, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿')
+      assert.ok(refresh)
+      await refresh.props.onClick()
+      const refreshed = renderWorkspaceAfterEffects(harness, props)
+      assert.equal(workspaceCanvas(refreshed).props.node.children[0].topic, 'Disk')
+      assert.deepEqual(sent, [])
+      const next = { ...props, nodes: [...props.nodes, toolResultNode('mindmap_update', { ok: true, op: 'update', path, content: '# Next' }, { callId: 'refresh-next' })] }
+      assert.equal(workspaceCanvas(renderWorkspaceAfterEffects(harness, next)).props.node.children[0].topic, 'Next')
+    } finally { harness.driver.unmount() }
+  })
+}
+
+test('refresh errors keep the previous document visible and expose a retryable error', async () => {
+  const harness = loadClientWithEffectDriver()
+  const props = {
+    variant: 'sidebar', visible: true, sessionId: 'refresh-error', onAutoOpen() {},
+    nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/plan.md', content: '# Keep' })],
+    mindmapFace: { readDocument: async () => { throw new Error('read denied') } },
+  }
+  try {
+    const rendered = renderWorkspaceAfterEffects(harness, props, true)
+    await findInTree(rendered, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿').props.onClick()
+    const next = renderWorkspaceAfterEffects(harness, props)
+    assert.equal(workspaceCanvas(next).props.node.children[0].topic, 'Keep')
+    assert.ok(collectTexts(next).some(text => String(text).includes('read denied')))
+    assert.equal(findInTree(next, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿').props.disabled, false)
+  } finally { harness.driver.unmount() }
+})
+
+test('pending disk reads cannot send or replace content after a session switch', async () => {
+  const harness = loadClientWithEffectDriver()
+  let resolveRead
+  const sent = []
+  const props = {
+    variant: 'sidebar', visible: true, sessionId: 'read-a', onAutoOpen() {},
+    nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: '# A' })],
+    inputActions: { getDraft: () => '', setDraft: text => sent.push(text), submit: () => sent.push('submit') },
+    mindmapFace: { readDocument: () => new Promise(resolve => { resolveRead = resolve }) },
+  }
+  try {
+    const rendered = renderWorkspaceAfterEffects(harness, props, true)
+    const pending = findInTree(rendered, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿').props.onClick()
+    const next = { ...props, sessionId: 'read-b', nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/b.md', content: '# B' })] }
+    renderWorkspaceAfterEffects(harness, next)
+    resolveRead({ content: '# Late A', revision: 'late' })
+    await pending
+    assert.equal(workspaceCanvas(renderWorkspaceAfterEffects(harness, next)).props.fitKey, '/w/b.md')
+    assert.deepEqual(sent, [])
+  } finally { harness.driver.unmount() }
+})
+
+test('directory reads use the latest draft state and ignore older overlapping requests', async () => {
+  const harness = loadClientWithEffectDriver()
+  const pending = []
+  const sent = []
+  let state = { draft: '', attachmentIds: [] }
+  const entries = ['a.md', 'b.md'].map(name => ({ name, path: `/w/${name}`, isDir: false }))
+  const props = {
+    variant: 'sidebar', visible: true, sessionId: 'directory-read', nodes: [], onAutoOpen() {},
+    inputActions: { setDraft: text => sent.push(text), submit: () => sent.push('submit') },
+    readInputState: () => state,
+    mindmapFace: {
+      listTree: async () => ({ path: '/w', cwd: '/w', entries }),
+      readDocument: (_session, path) => new Promise(resolve => pending.push({ path, resolve })),
+    },
+  }
+  try {
+    renderWorkspaceAfterEffects(harness, props, true)
+    await new Promise(resolve => setImmediate(resolve))
+    const list = renderWorkspaceAfterEffects(harness, props)
+    const a = findInTree(list, el => (el.key ?? el.props?.key) === '/w/a.md' && typeof el.props?.onClick === 'function')
+    const b = findInTree(list, el => (el.key ?? el.props?.key) === '/w/b.md' && typeof el.props?.onClick === 'function')
+    assert.ok(a && b, collectTexts(list).join(' '))
+    const first = a.props.onClick()
+    const second = b.props.onClick()
+    state = { draft: '等待文件读取时输入的新草稿', attachmentIds: ['draft-file'] }
+    pending[1].resolve({ content: '# Latest B', revision: 'b' })
+    await second
+    pending[0].resolve({ content: '# Late A', revision: 'a' })
+    await first
+    const canvas = workspaceCanvas(renderWorkspaceAfterEffects(harness, props))
+    assert.equal(canvas.props.fitKey, '/w/b.md')
+    assert.equal(canvas.props.node.children[0].topic, 'Latest B')
+    assert.deepEqual(sent, [], 'the old empty state cannot authorize overwriting the newly typed draft')
+  } finally { harness.driver.unmount() }
+})
+
+test('closing a mindmap invalidates its pending refresh', async () => {
+  const harness = loadClientWithEffectDriver()
+  let resolveRead
+  const props = {
+    variant: 'sidebar', visible: true, sessionId: 'close-read', onAutoOpen() {},
+    nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/plan.md', content: '# A' })],
+    mindmapFace: { readDocument: () => new Promise(resolve => { resolveRead = resolve }) },
+  }
+  try {
+    const rendered = renderWorkspaceAfterEffects(harness, props, true)
+    const pending = findInTree(rendered, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿').props.onClick()
+    findInTree(rendered, el => el.props?.title === '关闭脑图').props.onClick()
+    resolveRead({ content: '# Late refresh' })
+    await pending
+    assert.equal(workspaceCanvas(renderWorkspaceAfterEffects(harness, props)), null)
+  } finally { harness.driver.unmount() }
+})
+
+test('a newer tool open cancels the pending disk read for a different document', async () => {
+  const harness = loadClientWithEffectDriver()
+  let resolveRead
+  const props = {
+    variant: 'sidebar', visible: true, sessionId: 'new-intent', onAutoOpen() {},
+    nodes: [toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: '# A' }, { callId: 'intent-a' })],
+    mindmapFace: { readDocument: () => new Promise(resolve => { resolveRead = resolve }) },
+  }
+  try {
+    const rendered = renderWorkspaceAfterEffects(harness, props, true)
+    const pending = findInTree(rendered, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿').props.onClick()
+    const next = { ...props, nodes: [...props.nodes, toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/b.md', content: '# B' }, { callId: 'intent-b' })] }
+    renderWorkspaceAfterEffects(harness, next)
+    resolveRead({ content: '# Late A' })
+    await pending
+    const settled = renderWorkspaceAfterEffects(harness, next)
+    assert.equal(workspaceCanvas(settled).props.fitKey, '/w/b.md')
+    assert.equal(findInTree(settled, el => el.props?.title === '从磁盘重新读取当前脑图，保留聊天草稿').props.disabled, false)
+  } finally { harness.driver.unmount() }
+})
+
 for (const variant of ['sidebar', 'standalone']) {
   test(`${variant}: mounting after AI create selects the new mindmap canvas`, () => {
     const harness = loadClientWithEffectDriver()
@@ -2866,11 +3120,11 @@ test('033 canvas scroll style reserves a stable scrollbar gutter', () => {
   assert.equal(S.canvasScroll.scrollbarGutter, 'stable')
 })
 
-test('033 MindmapCanvas focus click applies zoom instantly without rAF and caps the jump', () => {
+test('MindmapCanvas focus click without rAF never leaves the text below the readable floor', () => {
   // 主沙箱无 requestAnimationFrame（老宿主 webview 兜底路径）：点击聚焦的
   // animateZoomTo 走瞬时分支——zoomRef 直写目标值。验证方式：两次点击同一
   // 巨子树行，第二次点击的输入换算（rowRect.width / current）会用到第一次
-  // 落下的 zoomRef 值；同时验证 ÷2 跳变钳制与二次点击的渐进逼近。
+  // 落下的 zoomRef 值；大子树不再缩小到不可读。
   const scroller = renderCanvasScroller()
   assert.ok(scroller, 'canvas scroller present')
   const fake = fakeScroller(0, 0)
@@ -2878,9 +3132,7 @@ test('033 MindmapCanvas focus click applies zoom instantly without rAF and caps 
   fake.clientHeight = 600
   fake.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 })
   capturedRefs[0].current = fake
-  // 行自然尺寸 100000×750（巨子树）。第一次点击：当前 zoom=1，focusZoom 目标
-  // 夹下限 0.25；钳制后单次 ÷2 → 0.5。第二次点击：current=0.5，目标仍 0.25，
-  // 钳制 0.5÷2=0.25 → 落 0.25（渐进 drill，而非一步到底）。
+  // 行自然尺寸 100000×750（巨子树）。两次点击都不能把节点文字压到 12px 以下。
   const rowRect = { width: 100000, height: 750, left: 0, top: 0, right: 100000, bottom: 750 }
   // onCanvasClick 的链条：target.closest(node) 返回的盒子还要再被 .closest(row)
   // 找 rowEl——盒对象必须自带 closest（指向同一行）。
@@ -2899,9 +3151,105 @@ test('033 MindmapCanvas focus click applies zoom instantly without rAF and caps 
   }
   scroller.props.onClick({ target: CLICK_TARGET, stopPropagation() {} })
   scroller.props.onClick({ target: CLICK_TARGET, stopPropagation() {} })
-  // zoomRef 在 capturedRefs 里（其他 ref 初始值均非 0.25，无撞车）。
-  const zoomRefFound = capturedRefs.find((r) => r.current === 0.25)
-  assert.ok(zoomRefFound, 'zoomRef lands at 0.25 after two clicks (1 → 0.5 → 0.25, ÷2 per click)')
+  const zoomRefFound = capturedRefs.find((r) => r.current === READABLE_ZOOM)
+  assert.ok(zoomRefFound, 'zoomRef stays at the 12px readable floor after both clicks')
+  // 手动缩到 25% 后点击节点，聚焦应一次恢复可读字号（此时可突破 ×2 上限）。
+  zoomRefFound.current = 0.25
+  scroller.props.onClick({ target: CLICK_TARGET, stopPropagation() {} })
+  assert.equal(zoomRefFound.current, READABLE_ZOOM)
+})
+
+test('全图 button fits a larger map below the readable floor and 适配 restores it', () => {
+  capturedRefs.length = 0
+  const canvas = MindmapCanvas({
+    node: parseMarkdownToTree('# A\n## B', 'doc'),
+    theme: null,
+    fitKey: 'all.md',
+    reveal: null,
+  })
+  let scrollerEl = null
+  let fitBtn = null
+  let fitAllBtn = null
+  const walk = (el) => {
+    if (!el || typeof el !== 'object') return
+    const props = el.props
+    if (props && typeof props.onPointerDown === 'function' && typeof props.onPointerMove === 'function') scrollerEl = el
+    if (props && props.type === 'button' && props.children === '全图') fitAllBtn = el
+    if (props && props.type === 'button' && props.children === '适配') fitBtn = el
+    const children = props && props.children
+    if (Array.isArray(children)) children.forEach(walk)
+    else walk(children)
+  }
+  walk(canvas)
+  assert.ok(scrollerEl, 'canvas scroller present')
+  assert.ok(fitAllBtn, '全图 button rides next to 适配')
+  assert.ok(fitBtn, '适配 button rendered')
+  assert.match(fitAllBtn.props.title, /最低 25%.*仍需滚动/)
+  // 视口 800×600，1000×500 的图可在 75.2% 全部放入，适配则停在可读下限。
+  const fake = fakeScroller(0, 0)
+  fake.clientWidth = 800
+  fake.clientHeight = 600
+  const content = { style: {}, getBoundingClientRect: () => ({ width: 1000, height: 500 }) }
+  capturedRefs[0].current = fake
+  capturedRefs[1].current = content
+  fitAllBtn.props.onClick()
+  assert.ok(capturedRefs.some((r) => r.current === fitAllZoom(1000, 500, 800, 600)), '全图 fits when the minimum allows it')
+  // 再点「适配」回到自动模式，重新受可读下限约束。
+  fitBtn.props.onClick()
+  assert.ok(capturedRefs.some((r) => r.current === READABLE_ZOOM), '适配 restores the readable floor')
+})
+
+test('mount auto-fit honors an early 全图 click without treating the rAF timestamp as a mode', () => {
+  for (const clickWholeFirst of [false, true]) {
+    const { driver, rafQueue, MindmapCanvas: Canvas } = loadClientWithEffectDriver()
+    const props = { node: parseMarkdownToTree('# A', 'doc'), theme: null, fitKey: 'early.md', reveal: null }
+    try {
+      driver.beginRender()
+      const canvas = Canvas(props)
+      driver.flushMount()
+      let scrollerEl, contentEl, wholeBtn
+      const visit = (el) => {
+        if (!el || typeof el !== 'object') return
+        const p = el.props
+        if (p?.ref && typeof p.onPointerDown === 'function') scrollerEl = el
+        if (p?.ref && p.style?.margin === 'auto') contentEl = el
+        if (p?.type === 'button' && p.children === '全图') wholeBtn = el
+        const children = p?.children
+        if (Array.isArray(children)) children.forEach(visit)
+        else visit(children)
+      }
+      visit(canvas)
+      assert.ok(scrollerEl && contentEl && wholeBtn)
+      let domZoom = 1
+      scrollerEl.props.ref.current = { clientWidth: 800, clientHeight: 600, scrollLeft: 0, scrollTop: 0, style: {} }
+      contentEl.props.ref.current = {
+        style: {},
+        getBoundingClientRect: () => ({ width: 1200 * domZoom, height: 700 * domZoom }),
+      }
+      assert.equal(rafQueue.length, 1)
+      if (clickWholeFirst) {
+        wholeBtn.props.onClick()
+        driver.beginRender()
+        const afterClick = Canvas(props)
+        driver.flushUpdate()
+        contentEl = undefined
+        visit(afterClick)
+        domZoom = contentEl.props.style.zoom
+        assert.ok(Math.abs(domZoom - fitAllZoom(1200, 700, 800, 600)) < 1e-9)
+      }
+      const frame = rafQueue[0]
+      frame(12345) // 浏览器 rAF 回调会收到时间戳。
+      driver.beginRender()
+      const afterFrame = Canvas(props)
+      driver.flushUpdate()
+      contentEl = undefined
+      visit(afterFrame)
+      const expected = clickWholeFirst ? fitAllZoom(1200, 700, 800, 600) : fitZoom(1200, 700, 800, 600)
+      assert.ok(Math.abs(contentEl.props.style.zoom - expected) < 1e-9, `early click=${clickWholeFirst}`)
+    } finally {
+      driver.unmount()
+    }
+  }
 })
 
 // —— 034 聚焦动画跳闪修复：首帧零跳变 + 锚位插值 + DOM 直写 + 结束同步 ——
@@ -2911,7 +3259,7 @@ test('034 focus animation: no first-frame jump, interpolated anchor, DOM-direct 
   const { driver, ctx, rafQueue, MindmapCanvas } = harness
   const props = { node: parseMarkdownToTree('# A\n## B', 'doc'), theme: null, fitKey: '034.md', reveal: null }
   // 视口 800×600；点击时节点中心在 (300, 400) → startAnchor = (0.375, 2/3)。
-  // rowRect 100000×750 → focusZoom 夹下限 0.25 → clampFocusJump(0.25, 1) = 0.5。
+  // rowRect 100000×750 → focusZoom 限为 12/13，确保节点字号不小于 12px。
   try {
     driver.beginRender()
     const canvas = MindmapCanvas(props)
@@ -2964,25 +3312,25 @@ test('034 focus animation: no first-frame jump, interpolated anchor, DOM-direct 
       assert.equal(rafQueue.length, 1, 'next frame scheduled')
       assert.ok(Math.abs(fake.scrollLeft) < 1e-6, `first frame: no horizontal jump (got ${fake.scrollLeft})`)
       assert.ok(Math.abs(fake.scrollTop) < 1e-6, `first frame: no vertical jump (got ${fake.scrollTop})`)
-      // 中间帧（t=0.5，eased=0.75）：zoom 1→0.625（DOM 直写，非 React state）；
+      // 中间帧（t=0.5，eased=0.75）：zoom 1→49/52（DOM 直写，非 React state）；
       // 锚位 x = 0.375−0.125×0.75 = 0.28125 → scrollLeft 75（渐进，非全量跳变）。
       clock = 1125
       step()
-      assert.ok(Math.abs(fakeContent.style.zoom - 0.625) < 1e-9, `mid frame DOM zoom = 0.625 (got ${fakeContent.style.zoom})`)
+      assert.ok(Math.abs(fakeContent.style.zoom - 49 / 52) < 1e-9, `mid frame DOM zoom = 49/52 (got ${fakeContent.style.zoom})`)
       assert.ok(Math.abs(fake.scrollLeft - 75) < 1e-6, `mid frame scrollLeft = 75 (got ${fake.scrollLeft})`)
       assert.ok(Math.abs(fake.scrollTop - 75) < 1e-6, `mid frame scrollTop = 75 (got ${fake.scrollTop})`)
-      // 结束帧（t=1）：DOM 落 target 0.5，锚位到 25%/50% → scroll (100, 100)，
-      // 不再排帧；setZoomState 触发重渲染后百分比同步 50%，最后全量锚位终校 ≈ no-op。
+      // 结束帧（t=1）：DOM 落 target 12/13，锚位到 25%/50% → scroll (100, 100)，
+      // 不再排帧；setZoomState 触发重渲染后百分比同步 92%，最后全量锚位终校 ≈ no-op。
       clock = 1250
       step()
       assert.equal(rafQueue.length, 0, 'animation finished, no more frames')
-      assert.ok(Math.abs(fakeContent.style.zoom - 0.5) < 1e-9, `final DOM zoom = 0.5 (got ${fakeContent.style.zoom})`)
+      assert.ok(Math.abs(fakeContent.style.zoom - READABLE_ZOOM) < 1e-9, `final DOM zoom = readable floor (got ${fakeContent.style.zoom})`)
       assert.ok(Math.abs(fake.scrollLeft - 100) < 1e-6, `final scrollLeft = 100 = node at 25% (got ${fake.scrollLeft})`)
       driver.beginRender()
       const rendered = MindmapCanvas(props)
       driver.flushUpdate()
       const texts = collectTexts(rendered)
-      assert.ok(texts.some((s) => String(s).includes('50%')), `zoom label synced to 50% (got ${JSON.stringify(texts.filter((t) => String(t).includes('%')))})`)
+      assert.ok(texts.some((s) => String(s).includes('92%')), `zoom label synced to 92% (got ${JSON.stringify(texts.filter((t) => String(t).includes('%')))})`)
       assert.ok(Math.abs(fake.scrollLeft - 100) < 1e-6, `final anchor correction is a no-op (got ${fake.scrollLeft})`)
       assert.ok(Math.abs(fake.scrollTop - 100) < 1e-6, `final anchor correction is a no-op (got ${fake.scrollTop})`)
     } finally {
@@ -3043,6 +3391,38 @@ function getMindmapFace() {
   sidebarBus.set(null) // 清理原沙箱 bus
   return face
 }
+
+test('all HTTP faces preserve the page prefix and refuse a cross-origin base', async () => {
+  const previousDoc = sandboxContext.document
+  const previousLocation = fakeWindow.location
+  const previousFetch = sandboxContext.fetch
+  const requests = []
+  try {
+    const face = getMindmapFace()
+    fakeWindow.location = { href: 'https://example.com/dsh/?token=example#session' }
+    sandboxContext.document = { baseURI: 'https://example.com/dsh/' }
+    sandboxContext.fetch = async (url, options) => {
+      requests.push({ url, payload: JSON.parse(options.body), method: options.method })
+      return { ok: true, json: async () => ({ ok: true, value: {} }) }
+    }
+    await face.listTree('session-1', '/w')
+    await face.readDocument('session-1', 'plan.md')
+    await face.readApprovalStatus('session-1')
+    await face.revokeApproval('session-1')
+    assert.deepEqual(requests.map(r => r.url), ['tree', 'document', 'approval', 'approval'].map(method => `https://example.com/dsh/mindmap/api/${method}`))
+    assert.deepEqual(requests.map(r => r.method), ['POST', 'POST', 'POST', 'POST'])
+    assert.equal(requests[3].payload.action, 'revoke')
+    sandboxContext.document.baseURI = 'https://example.com/'
+    assert.equal(runtime.internals.mindmapApiUrl('tree'), 'https://example.com/mindmap/api/tree')
+    sandboxContext.document.baseURI = 'https://other.invalid/dsh/'
+    await assert.rejects(() => face.listTree('session-1'), /必须同源/)
+    assert.equal(requests.length, 4, 'rejected bases never send a request')
+  } finally {
+    sandboxContext.document = previousDoc
+    fakeWindow.location = previousLocation
+    sandboxContext.fetch = previousFetch
+  }
+})
 
 test('030 component effects: A→B session switch deletes A, keeps B', () => {
   const face = getMindmapFace()

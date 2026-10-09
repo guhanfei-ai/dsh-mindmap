@@ -1,14 +1,18 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 				//#region 016 脑图画布：居中呈现 + 缩放控制（右上角）
-				// 缩放契约：范围 [0.25, 3]，每级 ×1.2；适配计算四周留 48px 余量
+				// 缩放契约：手动范围 [0.25, 3]，每级 ×1.2；自动适配/聚焦时
+				// 节点正文的有效字号至少 12px（「全图」是显式例外：用户可主动要求一屏看全）。
+				// 适配计算四周留 48px 余量
 				//（16px 视觉内距 + 经典滚动条占位，避免「适配→滚动条出现→视口变
 				// 窄→再适配」的抖动循环）。
-				// 033 focusJump：点击聚焦单次跳变上限（相对当前比例最多 ×2 / ÷2），
+				// 033 focusJump：点击聚焦通常最多 ×2 / ÷2；手动缩至不可读后
+				// 点击聚焦会直接回到可读范围。
 				// 巨图点叶子不再一步怼到 100%，连点渐进 drill。narrowView：视口宽
 				// 低于该值（sidebar 最窄 280px）时改按高度适配——横向适配在窄面板
 				// 永远占主导会把子树压得过小，宽度溢出交给平移（横向本就一等公民）。
 				// animMs：033 平滑过渡时长上限（限长、可中断、熔断后退化瞬时）。
-				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250 };
+				const MIN_READABLE_FONT_SIZE = 12;
+				const ZOOM = { min: 0.25, max: 3, step: 1.2, padding: 48, focusMax: 1, focusJump: 2, narrowView: 400, animMs: 250, readableFloor: MIN_READABLE_FONT_SIZE / NODE_FONT_SIZE };
 				// 034 聚焦锚位（视口比例）：树向右生长，节点压在左侧 1/4 处、
 				// 垂直居中，右侧 3/4 视野铺开子级。动画从点击位置插值到此锚位。
 				const FOCUS_ANCHOR = { x: 0.25, y: 0.5 };
@@ -25,24 +29,38 @@
 				return clampZoom(direction > 0 ? base * ZOOM.step : base / ZOOM.step);
 				}
 
-				/** 适配比例：min((view-padding)/tree, 1) 再夹取——小图不放大、巨图夹下限；零/非法尺寸返回 1。 */
+				/** 自动适配不会把 13px 节点文字缩到 12px 以下；手动缩放仍可低于此值。 */
+				function readableZoom(value) {
+					return Math.max(ZOOM.readableFloor, clampZoom(value));
+				}
+
+				/** 适配比例：小图不放大；大图不低于可读下限，溢出部分交给滚动/平移。 */
 				function fitZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
 					// 033 窄视口（sidebar）：按高度适配，宽度溢出靠平移。
-					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, 1));
+					if (viewW < ZOOM.narrowView) return readableZoom(Math.min((viewH - ZOOM.padding) / treeH, 1));
+					return readableZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, 1));
+				}
+
+				/**
+				 * 全图比例：与 fitZoom 同一公式，但不受可读下限约束；窄视口也按
+				 * 宽高同时计算。仍夹在 [min, max]，极大图触到 25% 后可能继续溢出。
+				 */
+				function fitAllZoom(treeW, treeH, viewW, viewH) {
+					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
 					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, 1));
 				}
 
 				/**
 				 * 子树聚焦比例：适配整棵子树（区别于全局适配，允许放大到 focusMax），
-				 * 叶子/小子树不会怼脸、巨子树夹下限；零/非法尺寸返回 1。
+				 * 叶子/小子树不会怼脸、巨子树夹可读下限；零/非法尺寸返回 1。
 				 * 033 窄视口同 fitZoom：按高度适配（子树行通常宽而扁，窄面板里
 				 * 横向适配会把整行压到不可读）。
 				 */
 				function focusZoom(treeW, treeH, viewW, viewH) {
 					if (!(treeW > 0) || !(treeH > 0) || !(viewW > 0) || !(viewH > 0)) return 1;
-					if (viewW < ZOOM.narrowView) return clampZoom(Math.min((viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
-					return clampZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
+					if (viewW < ZOOM.narrowView) return readableZoom(Math.min((viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
+					return readableZoom(Math.min((viewW - ZOOM.padding) / treeW, (viewH - ZOOM.padding) / treeH, ZOOM.focusMax));
 				}
 
 				/**
@@ -156,7 +174,7 @@
 				* 修正 scroll，视图不跳变（内容回到视口内时浏览器会自动钳制回 0）。
 				*/
 				function MindmapCanvas(props) {
-							const { node, theme, fitKey, reveal, inputActions } = props;
+							const { node, theme, fitKey, reveal, inputActions, readInputState } = props;
 							const scrollRef = react.useRef(null);
 							const contentRef = react.useRef(null);
 							const zoomRef = react.useRef(1);
@@ -333,7 +351,8 @@
 							// 测量并适配：自然尺寸 = getBoundingClientRect ÷ 已提交 zoom（与
 							// DOM 实际状态严格同步，无竞态）。值不变不动 state（bail-out），
 							// 值变化才重置滚动到原点让树回到居中；同步记录自然尺寸供防抖。
-							function applyFit() {
+							// wholeMap=true：「全图」——不受可读下限约束（见 fitAllZoom）。
+							function applyFit(wholeMap) {
 								const scroller = scrollRef.current;
 								const content = contentRef.current;
 								if (!scroller || !content) return;
@@ -347,7 +366,9 @@
 								const naturalW = rect.width / committed;
 								const naturalH = rect.height / committed;
 								lastNaturalRef.current = { w: naturalW, h: naturalH };
-								const fit = fitZoom(naturalW, naturalH, scroller.clientWidth, scroller.clientHeight);
+								const fit = wholeMap === true
+									? fitAllZoom(naturalW, naturalH, scroller.clientWidth, scroller.clientHeight)
+									: fitZoom(naturalW, naturalH, scroller.clientWidth, scroller.clientHeight);
 								zoomRef.current = fit;
 								if (fit !== committed) {
 									scroller.scrollLeft = 0;
@@ -375,7 +396,11 @@
 								setSearchIndex(-1);
 								setSearchReveal(null);
 								searchActiveIdRef.current = null;
-								const id = requestAnimationFrame(applyFit);
+								// rAF 会传时间戳，不能直接传 applyFit；若首帧前用户已经选择
+								// 「全图」或手动缩放，也不能再用默认可读适配覆盖其选择。
+								const id = requestAnimationFrame(() => {
+									if (!userZoomedRef.current) applyFit();
+								});
 								return () => {
 									cancelAnimationFrame(id);
 									cancelZoomAnim();
@@ -600,6 +625,14 @@
 					applyFit();
 				}
 
+				// 「全图」：尽量把整棵树放入视口，允许低于可读下限；最低仍是 25%。
+				// 视为手动缩放（停自动再适配），否则观察器会把视图拉回可读下限。
+				function fitWholeMap() {
+					userZoomedRef.current = true;
+					fitStampRef.current = [];
+					applyFit(true);
+				}
+
 				// 016 点击节点聚焦：节点滚到「垂直居中、水平约 25%」（树向右生长，
 				// 左侧锚点让子级铺满右侧视野），缩放比例取 focusZoom（整棵子树适配、
 				// 上限 focusMax）。事件委托：closest 找节点盒与所在子树 row，无需给
@@ -615,10 +648,12 @@
 					if (!scroller) return false;
 					const current = zoomRef.current;
 					const rowRect = rowEl.getBoundingClientRect();
-					const focus = clampFocusJump(
+					// 用户若先手动缩到可读下限以下，点击节点时一次回到可读范围；
+					// 仅这种情况会突破通常的 ×2 聚焦跳变上限。
+					const focus = readableZoom(clampFocusJump(
 						focusZoom(rowRect.width / current, rowRect.height / current, scroller.clientWidth, scroller.clientHeight),
 						current,
-					);
+					));
 					const boxRect = boxEl.getBoundingClientRect();
 					const scrollerRect = scroller.getBoundingClientRect();
 					const startAnchor = {
@@ -856,7 +891,7 @@
 
 				// 037 节点焦点聊天：沿用目录树的自动发送能力，但不覆盖用户已有草稿。
 				function submitNodeChat(text) {
-					return submitNodeFocusMessage(inputActions, text);
+					return submitNodeFocusMessage(inputActions, text, readInputState);
 				}
 
 				// 037 右键节点：先完成与左键相同的注意力聚焦，再记录菜单锚点。
@@ -996,12 +1031,21 @@
 						}),
 						(0, react_jsx_runtime.jsx)("button", {
 							type: "button",
-							title: "适配画布（重新计算合适比例）",
+							title: "适配画布（保持可读字号 ≥12px，放不下的部分滚动浏览）",
 							style: hover === "fit" ? { ...S.zoomFitBtn, ...S.zoomBtnHover } : S.zoomFitBtn,
 							onClick: refit,
 							onMouseEnter: () => setHover("fit"),
 							onMouseLeave: () => setHover((h) => (h === "fit" ? null : h)),
 							children: "适配",
+						}),
+						(0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							title: "尽量适应全图（可低于 12px；最低 25%，极大图仍需滚动）",
+							style: hover === "fitAll" ? { ...S.zoomFitBtn, ...S.zoomBtnHover } : S.zoomFitBtn,
+							onClick: fitWholeMap,
+							onMouseEnter: () => setHover("fitAll"),
+							onMouseLeave: () => setHover((h) => (h === "fitAll" ? null : h)),
+							children: "全图",
 						}),
 					] }),
 					// 035 节点搜索条：缩放条正下方的紧凑浮层（同款容器/主题变量）。

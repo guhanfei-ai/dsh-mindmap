@@ -57,6 +57,24 @@
 			return raw || "mindmap tool failed";
 		}
 
+		/** 缓存已完成工具结果的 JSON；仍逐事件重放，保留改名、错误和嵌套语义。 */
+		function parsedToolResult(node, cache) {
+			const texts = (node.content ?? []).filter((block) => block?.type === "text").map((block) => block.text);
+			const previous = cache?.get(node);
+			if (previous && previous.texts.length === texts.length && texts.every((text, i) => text === previous.texts[i])) return previous;
+			const text = texts.join("\n");
+			let parsed = null;
+			try { parsed = JSON.parse(text); } catch { /* 错误结果允许纯文本。 */ }
+			const result = { texts, text, parsed };
+			cache?.set(node, result);
+			return result;
+		}
+
+		function createDocumentReducer() {
+			const cache = new WeakMap();
+			return (nodes) => reduceDocuments(nodes, cache);
+		}
+
 		/**
 		 * 重放会话快照里的 mindmap_* 工具结果，得到每个脑图文档的最新状态。
 		 * nodes: ConversationSnapshot.nodes（ToolResultNode 含 call.name 与渲染后的
@@ -65,7 +83,7 @@
 		 * 顺序递归重放整棵调用树。
 		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标。
 		 */
-		function reduceDocuments(nodes) {
+		function reduceDocuments(nodes, cache) {
 			const byPath = Object.create(null);
 			let order = [];
 			let latestOpeningPath = null;
@@ -84,13 +102,7 @@
 				if (node.kind === "tool-result") {
 					const name = node.call?.name;
 					if (typeof name === "string" && TOOL_NAMES.has(name)) {
-						const text = resultTextOfBlocks(node.content);
-						let parsed;
-						try {
-							parsed = JSON.parse(text);
-						} catch {
-							parsed = null;
-						}
+						const { text, parsed } = parsedToolResult(node, cache);
 						// callId 是实际调用的事件身份；eventPath 是无 callId 时按会话
 						// 遍历顺序生成的稳定兜底，避免重复 open 被合并成一个事件。
 						const callId = node.callId != null && String(node.callId)
@@ -133,6 +145,7 @@
 								path: parsed.path,
 								rootTitle: typeof parsed.rootTitle === "string" && parsed.rootTitle ? parsed.rootTitle : stemOf(parsed.path),
 								content: typeof parsed.content === "string" ? parsed.content : "",
+								revision: typeof parsed.revision === "string" ? parsed.revision : null,
 								op,
 								callId,
 								eventKey,
@@ -179,7 +192,7 @@
 
 		/**
 		 * 快照文档集（AI 工具结果）与本地直读文档集（read 路由即时打开）合并：
-		 * - 快照优先（同 path 覆盖本地占位）；
+		 * - 快照覆盖占位；直读成功后保留磁盘内容，直到读取开始后的新工具结果到达；
 		 * - 本地文档追加在快照 order 之后；
 		 * - 快照里有 renamedFrom 指向某本地路径时，丢弃该本地条目（文件已改名）；
 		 * - 016 大小写 fallback（S5 成因）：本地占位（op:"local"）与快照文档仅
@@ -191,6 +204,11 @@
 		function mergeDocuments(snapshot, localDocs) {
 			const snapByPath = (snapshot && snapshot.byPath) || {};
 			const byPath = { ...localDocs, ...snapByPath };
+			for (const [path, local] of Object.entries(localDocs)) {
+				if (local?.op !== "local-read") continue;
+				const snapshotDoc = snapByPath[path];
+				if (!snapshotDoc || snapshotDoc.eventKey === local.snapshotEventKey) byPath[path] = local;
+			}
 			const dropped = new Set();
 			for (const doc of Object.values(snapByPath)) {
 				if (typeof doc.renamedFrom === "string" && doc.renamedFrom && localDocs[doc.renamedFrom]) {

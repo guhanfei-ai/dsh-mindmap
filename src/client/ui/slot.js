@@ -38,7 +38,13 @@
 		 * useChat（0.1.2-rc.1+）优先、useSession（≤0.1.1）兜底。
 		 */
 		function MindmapSlot(props) {
-			const { useSession, useChat, sessionId, inputActions, mindmapFace } = props;
+			const { useSession, useChat, useInput, sessionId, inputActions, mindmapFace } = props;
+			const inputState = useInput ? useInput((state) => state) : null;
+			const inputRef = react.useRef({ sessionId, state: inputState });
+			inputRef.current = { sessionId, state: inputState };
+			const readInputState = react.useCallback(() => inputRef.current.sessionId === sessionId ? inputRef.current.state : null, [sessionId]);
+			// 旧宿主没有 useInput 时仍探测原动作面；新宿主只读正式快照。
+			const readDraftState = useInput ? readInputState : undefined;
 			const nodesHook = useChat ?? useSession;
 			const nodes = nodesHook ? nodesHook(conversationNodesOf) : EMPTY_NODES;
 			// 016 可靠性加固：结构指纹作第二 selector。store 原地改数组（引用
@@ -46,6 +52,8 @@
 			// 重跑——「AI 打开了脑图但面板不展开」的根因。指纹是原始值字符串，
 			// 值比较天然绕过引用相等短路；内容钩子不可用时回退空串。
 			const nodesVersion = nodesHook ? nodesHook((s) => nodesFingerprint(conversationNodesOf(s))) : "";
+			const documentReducer = react.useMemo(() => createDocumentReducer(), [sessionId]);
+			const documents = react.useMemo(() => documentReducer(nodes), [nodes, nodesVersion, documentReducer]);
 
 			// 026 sidebar 模式检测：betterSidebar 服务可用时走原生 Tab，否则走独立面板。
 			const sidebar = react.useSyncExternalStore(sidebarBus.subscribe, sidebarBus.get);
@@ -58,8 +66,8 @@
 		// 当前 sessionId 的快照——模块级 Map 不残留旧会话的 nodes/inputActions。
 		react.useEffect(() => {
 			if (!sidebarMode || !sessionId) return;
-			sessionStore.set(sessionId, { nodes, nodesVersion, inputActions, mindmapFace });
-		}, [sidebarMode, sessionId, nodes, nodesVersion, inputActions, mindmapFace]);
+			sessionStore.set(sessionId, { nodes, nodesVersion, documents, inputActions, readInputState: readDraftState, mindmapFace });
+		}, [sidebarMode, sessionId, nodes, nodesVersion, documents, inputActions, readDraftState, mindmapFace]);
 		// 028 会话切换 / 退出 sidebar 模式时清理旧快照。
 		const lastSessionRef = react.useRef(null);
 		react.useEffect(() => {
@@ -91,7 +99,7 @@
 			// MindmapWorkspace 的 auto-open effect 不跑。MindmapSlot 始终在头部
 			// 挂载，在这里检测新的 create/open 结果并调 openTab 把 Tab 拉起。
 			// 首次进入 sidebar 模式时只记基线（不弹历史文档），之后只响应新事件。
-			const sidebarDocs = react.useMemo(() => reduceDocuments(nodes), [nodes, nodesVersion]);
+			const sidebarDocs = documents;
 			const sidebarSeen = react.useRef(null);
 			const sidebarInitedRef = react.useRef(false);
 			react.useEffect(() => {
@@ -160,8 +168,10 @@
 					open,
 					sessionId,
 					inputActions,
+					readInputState: readDraftState,
 					nodes,
 					nodesVersion,
+					documents,
 					mindmapFace,
 					onOpen: () => setOpen(true),
 					onClose: () => setOpen(false),

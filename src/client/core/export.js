@@ -2,6 +2,8 @@
 		//#region PNG 导出（SVG 序列化 → canvas → 下载 / 剪贴板）
 		// 019 可变盒高布局：盒高按内容估行数（全量换行的导出形态），表格节点加宽；
 		// 布局契约不变——叶子自上而下占行、父节点垂直居中于其子块。
+		// 导出拥有独立的 SVG 度量：13px 正文、12px 表格、18px 行高；不随画布
+		// 的 NODE_FONT_SIZE 或 CSS zoom 改动，否则预估盒高与导出绘制会失配。
 		const EXPORT = {
 			nodeW: 220, padX: 12, padY: 8, hGap: 48, vGap: 12, pad: 20,
 			fontSize: 13, lineHeight: 18,

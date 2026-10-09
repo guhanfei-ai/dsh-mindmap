@@ -1,9 +1,8 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 			//#region 013 目录树 tab：懒加载树 + 把指令填进聊天输入框
-			// 草稿保护：确实读到非空草稿才让路（改走剪贴板），读不到就按既有
-			// 行为直填直发——宿主不暴露草稿时不能把功能整个卡死。
+			// 草稿状态未知时也保留输入；目录直读照常，编辑指令交给手动发送。
 			function draftBlocked() {
-				return draftBlocksAutoSend(inputActions);
+				return draftBlocksAutoSend(inputActions, readInputState);
 			}
 
 			function submitChatCommand(text) {
@@ -39,6 +38,8 @@
 
 			/** 关闭脑图视图：✕ 后回到只有「目录」的状态；快照结果不自动弹回。 */
 			function closeMindmap(path) {
+				documentReadRef.current += 1;
+				setReadingPath(null);
 				setHiddenPath(path);
 				setCurrentPath(null);
 				setView("tree");
@@ -51,7 +52,13 @@
 
 			// 左键点 .md：先通过只读 document 路由显示文件，再在草稿为空时提交
 			// mindmap_open 让 AI 接管编辑；已有草稿永不被覆盖。
-			async function openMindmap(entry) {
+			async function openMindmap(entry, { submit = true, refresh = false } = {}) {
+				const request = ++documentReadRef.current;
+				const isCurrent = () => request === documentReadRef.current && documentSessionRef.current === sessionId;
+				const snapshotEventKey = docs.byPath[entry.path]?.eventKey;
+				setReadingPath(entry.path);
+				setExportError("");
+				if (!submit) focusSentRef.current = entry.path;
 				const text = `用 mindmap_open 打开 ${relPathWithin(fsTree.cwd, entry.path, entry.name)}`;
 				// 016：记录点击时刻的错误基线（errorByPath 与 latestError 的全部
 				// 事件键）——只有其后新出现的错误才归因本次打开，旧错误不打扰。
@@ -61,7 +68,7 @@
 				setHiddenPath(null);
 				setCurrentPath(entry.path);
 				setView("mindmap");
-				setLocalDocs((prev) => ({
+				if (!refresh) setLocalDocs((prev) => ({
 					...prev,
 					[entry.path]: {
 						path: entry.path,
@@ -75,20 +82,26 @@
 				try {
 					if (!mindmapFace || typeof mindmapFace.readDocument !== "function") throw new Error("只读文档能力不可用");
 					const loaded = await mindmapFace.readDocument(sessionId, relPathWithin(fsTree.cwd, entry.path, entry.name));
+					if (!isCurrent()) return;
 					setLocalDocs((prev) => {
-						const current = prev[entry.path];
-						if (!current || current.op !== "local") return prev;
-						return { ...prev, [entry.path]: { ...current, op: "local-read", content: String(loaded.content ?? ""), revision: loaded.revision ?? null } };
+						const current = prev[entry.path] ?? merged.byPath[entry.path];
+						if (!current) return prev;
+						return { ...prev, [entry.path]: { ...current, op: "local-read", error: null, content: String(loaded.content ?? ""), revision: loaded.revision ?? null, snapshotEventKey } };
 					});
-					setFilledHint(`已直接打开「${entry.name}」；需要 AI 编辑时可继续发送打开指令`);
+					setFilledHint(refresh ? `已刷新「${entry.name}」` : `已直接打开「${entry.name}」；需要 AI 编辑时可继续发送打开指令`);
 				} catch (error) {
+					if (!isCurrent()) return;
 					setLocalDocs((prev) => {
 						const current = prev[entry.path];
 						if (!current || current.op !== "local") return prev;
 						return { ...prev, [entry.path]: { ...current, error: String(error?.message ?? error) } };
 					});
+					setExportError(`读取脑图失败：${String(error?.message ?? error)}`);
 					setFilledHint("直接读取失败，可重试或让 AI 打开该文件");
+				} finally {
+					if (isCurrent()) setReadingPath(null);
 				}
+				if (!isCurrent() || !submit) return;
 				// ② 草稿为空时再让 AI 接管焦点；已有草稿绝不覆盖。
 				if (!draftBlocked() && submitChatCommand(text)) {
 					focusSentRef.current = entry.path;
@@ -97,9 +110,14 @@
 				if (draftBlocked()) {
 					if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
 						navigator.clipboard.writeText(text).catch(() => {});
-						setFilledHint("检测到未发送的草稿，文件已打开；打开指令已复制到剪贴板");
+						setFilledHint("已保留聊天草稿并打开文件；打开指令已复制到剪贴板");
 					} else setFilledHint(`文件已打开，请手动发送：${text}`);
 				}
+			}
+
+			function refreshDocument() {
+				if (!doc) return;
+				return openMindmap({ path: doc.path, name: `${stemOf(doc.path)}.md` }, { submit: false, refresh: true });
 			}
 
 			/** 016 加载态恢复：错误/超时后重试——重发打开指令并重启看门狗。 */

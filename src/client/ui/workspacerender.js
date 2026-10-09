@@ -32,6 +32,13 @@
 	const exportErrorSpan = exportError
 		? (0, react_jsx_runtime.jsx)("span", { style: { color: "var(--dsw-alias-label-error)", fontSize: "12px" }, children: exportError })
 		: null;
+	const refreshBtn = (0, react_jsx_runtime.jsx)("button", {
+		type: "button", style: S.action,
+		disabled: !doc || readingPath !== null,
+		onClick: refreshDocument,
+		title: "从磁盘重新读取当前脑图，保留聊天草稿",
+		children: readingPath === doc?.path ? "刷新中…" : "刷新脑图",
+	});
 	const approvalControls = approvalState && approvalState.mode === "session"
 		? (0, react_jsx_runtime.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px", color: "var(--dsw-alias-label-tertiary)", fontSize: "12px" }, children: [
 			(0, react_jsx_runtime.jsx)("span", { title: "授权按当前会话与脑图文件隔离", children: approvalState.grantedDocuments > 0 ? "本会话已允许写入" : "本会话尚未授权" }),
@@ -103,13 +110,14 @@
 				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 				approvalControls,
 				exportErrorSpan,
+				refreshBtn,
 				copyBtn,
 				exportBtn,
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
 			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
 			bodyMode === BODY_MODE.canvas
-				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions })
+				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions, readInputState })
 				: (0, react_jsx_runtime.jsx)("div", { style: S.body, children: bodyMode === BODY_MODE.tree
 					? renderTree()
 					: bodyMode === BODY_MODE.loading
@@ -139,6 +147,7 @@
 		(0, react_jsx_runtime.jsxs)("div", { style: S.headerTop, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
 			approvalControls,
+			refreshBtn,
 			copyBtn,
 			exportBtn,
 			exportErrorSpan,
@@ -205,7 +214,7 @@
 				: (doc && doc.op === "local")
 					? renderLoading()
 					: renderTree() })
-			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions }),
+			: (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions, readInputState }),
 		tabMenu ? (0, react_jsx_runtime.jsxs)("div", {
 			style: { ...S.treeMenu, left: tabMenu.x, top: tabMenu.y },
 			onContextMenu: (e) => e.preventDefault(),
