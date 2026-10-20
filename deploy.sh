@@ -71,7 +71,7 @@ guard_tag() {
 guard_credentials() {
   need_cmd gh npm
   gh auth status >/dev/null 2>&1 || die "未登录 GitHub CLI，请先执行 gh auth login"
-  npm whoami --registry "$NPM_REGISTRY" >/dev/null 2>&1 || die "未登录 npm（registry=$NPM_REGISTRY），请先执行 npm login"
+  npm whoami --registry "$NPM_REGISTRY" >/dev/null 2>&1 || die "未登录 npm（registry=${NPM_REGISTRY}），请先执行 npm login"
 }
 
 verify_and_install() {
