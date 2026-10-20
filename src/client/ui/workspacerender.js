@@ -8,8 +8,8 @@
 	// 在 visible=false 时仍能调 onAutoOpen 把壳拉起。
 	if (!visible) return null;
 	// headerHeight 由独立 fixed 壳传入（对齐聊天头部底部分隔线）；
-	// BS Tab 模式传 null → 头部高度自适应（Better Sidebar 管自己的外壳）。
-	const wsHeaderStyle = headerHeight != null ? { ...S.header, height: `${headerHeight - 1}px` } : S.header;
+	// BS Tab 模式使用自己的 38px 标签栏；独立壳传入的高度已包含底边框。
+	const wsHeaderStyle = headerHeight != null ? { ...S.header, height: `${headerHeight}px` } : S.header;
 
 	// 027 导出按钮（两种模式共用）：disabled 语义 = 无树 / 导出中 / 本地占位。
 	const exportBtn = (0, react_jsx_runtime.jsx)("button", {
@@ -64,7 +64,8 @@
 		// 027 sidebar 模式：单行紧凑工具栏。BS 外层已有 Tab 头部与关闭按钮，
 		// 内嵌不再加重复外壳标题或关闭按钮。
 		return (0, react_jsx_runtime.jsxs)("div", { style: S.sbRoot, children: [
-			(0, react_jsx_runtime.jsxs)("div", { style: S.sbToolbar, children: [
+			(0, react_jsx_runtime.jsxs)("div", { style: S.sbToolbar, "data-mindmap-toolbar": "", children: [
+				(0, react_jsx_runtime.jsxs)("div", { style: S.sbTabs, "data-mindmap-tabs": "", children: [
 				(0, react_jsx_runtime.jsx)("button", {
 					type: "button",
 					style: active === TREE_TAB ? { ...S.sbTab, ...S.sbTabActive } : (hoverKey === TREE_TAB ? { ...S.sbTab, ...S.tabHover } : S.sbTab),
@@ -106,13 +107,15 @@
 						}),
 					],
 				}, shown) : null,
-				// 复制/导出按钮 + 错误推到行尾。
-				(0, react_jsx_runtime.jsx)("span", { style: S.spacer }),
-				approvalControls,
-				exportErrorSpan,
-				refreshBtn,
-				copyBtn,
-				exportBtn,
+				] }),
+				// 操作与页签各自横滚；保留所有功能，不让内容撑高工具栏。
+				(0, react_jsx_runtime.jsxs)("div", { style: S.sbActions, "data-mindmap-actions": "", children: [
+					approvalControls,
+					exportErrorSpan,
+					refreshBtn,
+					copyBtn,
+					exportBtn,
+				] }),
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
 			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。

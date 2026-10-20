@@ -7,17 +7,17 @@
 			panelHost: { position: "fixed", top: 0, right: 0, bottom: 0, left: 0, pointerEvents: "none", zIndex: 40 },
 			overlayRoot: { position: "absolute", top: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", fontSize: "13px", minWidth: 0, borderLeft: "1px solid var(--dsw-alias-border-l2)", boxShadow: "-8px 0 24px rgba(16,24,40,0.10)", pointerEvents: "auto" },
 			overlayHandle: { position: "absolute", left: -4, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 1 },
-			header: { display: "flex", flexDirection: "column", gap: "6px", padding: "12px 14px 0", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)" },
-			headerTop: { display: "flex", alignItems: "center", gap: "10px", flex: "none" },
-			tabRow: { display: "flex", alignItems: "flex-end", gap: "10px", marginTop: "auto", overflowX: "auto", overflowY: "hidden", minWidth: 0, flex: "none" },
-			tab: { border: "none", background: "none", cursor: "pointer", padding: "3px 12px", lineHeight: "18px", borderRadius: "8px 8px 0 0", font: "inherit", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
+			header: { display: "flex", flexDirection: "column", flex: "none", minWidth: 0, gap: "6px", padding: "10px 0 0", boxSizing: "border-box", borderBottom: "0.5px solid var(--dsw-alias-border-l3)" },
+			headerTop: { display: "flex", alignItems: "center", gap: "10px", flex: "none", minWidth: 0, padding: "0 7px", overflowX: "auto" },
+			tabRow: { display: "flex", alignItems: "stretch", gap: "2px", height: "38px", paddingTop: "3px", boxSizing: "border-box", marginTop: "auto", overflowX: "auto", overflowY: "hidden", minWidth: 0, flex: "none" },
+			tab: { display: "inline-flex", alignItems: "center", flex: "none", boxSizing: "border-box", border: "none", borderTop: "2px solid transparent", borderRight: "1px solid var(--dsw-alias-border-l2)", background: "none", cursor: "pointer", padding: "0 12px", lineHeight: "18px", borderRadius: 0, font: "inherit", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
 			tabHover: { background: "var(--dsw-alias-interactive-bg-hover)" },
-			// 激活 tab 用内阴影画 2px 指示条，贴着头部分隔线，不挤高度。
-			tabActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", boxShadow: "inset 0 -2px 0 0 var(--dsw-alias-state-business-primary)" },
+			// 与终端标签一致：顶部蓝线、直角页签，上方留缝，底部分隔线独立。
+			tabActive: { background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", borderTopColor: "var(--dsw-alias-state-business-primary)" },
 			// 文档 tab = 包裹（承载视觉）+ 标题按钮 + 关闭 ✕（013：可关闭标签页）。
-			tabWrap: { display: "inline-flex", alignItems: "flex-end", borderRadius: "8px 8px 0 0", overflow: "hidden", maxWidth: "160px", transition: "background 0.08s ease" },
-			tabTitle: { background: "none", border: "none", cursor: "pointer", font: "inherit", color: "inherit", padding: "3px 4px 3px 12px", lineHeight: "18px", whiteSpace: "nowrap", maxWidth: "110px", overflow: "hidden", textOverflow: "ellipsis" },
-			tabClose: { background: "none", border: "none", cursor: "pointer", padding: "3px 8px 3px 2px", lineHeight: "18px", color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", flex: "none" },
+			tabWrap: { display: "inline-flex", alignItems: "center", flex: "none", boxSizing: "border-box", borderTop: "2px solid transparent", borderRight: "1px solid var(--dsw-alias-border-l2)", borderRadius: 0, overflow: "hidden", maxWidth: "210px", transition: "background 0.08s ease" },
+			tabTitle: { background: "none", border: "none", cursor: "pointer", font: "inherit", color: "inherit", padding: "0 4px 0 10px", height: "100%", lineHeight: "18px", whiteSpace: "nowrap", minWidth: 0, maxWidth: "170px", overflow: "hidden", textOverflow: "ellipsis" },
+			tabClose: { background: "none", border: "none", cursor: "pointer", padding: "0 6px", height: "100%", lineHeight: "18px", color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", flex: "none" },
 			spacer: { flex: "1 1 auto" },
 			action: { border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)", borderRadius: "8px", height: "20px", padding: "0 12px", cursor: "pointer", font: "inherit", fontSize: "12px", whiteSpace: "nowrap" },
 			body: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "16px" },
@@ -142,15 +142,11 @@
 			searchCount: { flex: "none", minWidth: "38px", textAlign: "center", fontSize: "11px", lineHeight: "20px", color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums", userSelect: "none", whiteSpace: "nowrap" },
 			// 027 内嵌头部（sidebar 模式）：BS 外层已有 Tab 头部，内嵌只保留一行
 			// 紧凑工具栏——脑图列表标签 + 当前脑图标签 + 导出按钮（行尾）。
-			// 上下内距比 standalone 的 header（12px 14px 0）更紧凑，行间距更小。
-			sbToolbar: { display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px 7px", boxSizing: "border-box", borderBottom: "1px solid var(--dsw-alias-border-l2)", flex: "none", minWidth: 0 },
-			// 紧凑标签：比 standalone 的 tab（3px 12px）更小，贴合单行工具栏。
-			sbTab: { border: "none", background: "none", cursor: "pointer", padding: "2px 8px", lineHeight: "20px", borderRadius: "6px", font: "inherit", fontSize: "12px", color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", transition: "background 0.08s ease, color 0.08s ease" },
-			sbTabActive: { background: "var(--dsw-alias-bg-layer-3)", color: "var(--dsw-alias-label-primary)" },
-			// 当前脑图标签包裹：与 standalone 的 tabWrap 同构，但圆角与内距更紧凑。
-			sbTabWrap: { display: "inline-flex", alignItems: "center", borderRadius: "6px", overflow: "hidden", maxWidth: "160px", transition: "background 0.08s ease" },
-			sbTabTitle: { background: "none", border: "none", cursor: "pointer", font: "inherit", color: "inherit", padding: "2px 4px 2px 8px", lineHeight: "20px", whiteSpace: "nowrap", maxWidth: "110px", overflow: "hidden", textOverflow: "ellipsis" },
-			sbTabClose: { background: "none", border: "none", cursor: "pointer", padding: "2px 6px 2px 2px", lineHeight: "20px", color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", flex: "none" },
+			// 原生侧栏标签条 38px + 此工具栏 38px = 官方会话头部最低 76px。
+			// 固定 border-box 高度；操作区独立横滚，避免窄栏/授权文案撑高分隔线。
+			sbToolbar: { display: "flex", alignItems: "stretch", gap: 0, height: "38px", padding: 0, boxSizing: "border-box", background: "color-mix(in srgb,var(--dsw-alias-bg-base) 88%,var(--dsw-alias-bg-layer-2))", borderBottom: "0.5px solid var(--dsw-alias-border-l3)", flex: "none", minWidth: 0 },
+			sbTabs: { display: "flex", alignItems: "stretch", flex: "1 1 auto", minWidth: 0, gap: "2px", paddingTop: "3px", boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none" },
+			sbActions: { display: "flex", alignItems: "center", flex: "0 1 auto", minWidth: 0, maxWidth: "65%", gap: "6px", padding: "3px 7px", boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", whiteSpace: "nowrap" },
 		};
 
 		// 内嵌界面与 Better Sidebar 共用宿主字体角色；变量缺失时仍有完整回退。
@@ -165,8 +161,11 @@
 			...S,
 			sbRoot: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, minWidth: 0, font: SIDEBAR_BODY_FONT },
 			sbToolbar: sidebarFontStyle(S.sbToolbar),
-			sbTab: sidebarFontStyle(S.sbTab),
-			sbTabTitle: sidebarFontStyle(S.sbTabTitle),
+			sbTab: sidebarFontStyle(S.tab),
+			sbTabActive: S.tabActive,
+			sbTabWrap: S.tabWrap,
+			sbTabTitle: sidebarFontStyle(S.tabTitle),
+			sbTabClose: sidebarFontStyle(S.tabClose),
 			action: sidebarFontStyle(S.action),
 			emptyHint: sidebarFontStyle(S.emptyHint),
 			treeRefresh: sidebarFontStyle(S.treeRefresh),

@@ -2343,7 +2343,7 @@ function renderWorkspace(variant) {
     nodesVersion: '',
     onAutoOpen: () => {},
     onClose: variant === 'standalone' ? () => {} : undefined,
-    headerHeight: variant === 'standalone' ? 74 : null,
+    headerHeight: variant === 'standalone' ? 76 : null,
     variant,
   })
   return ws
@@ -2394,6 +2394,59 @@ test('sidebar variant: toolbar is a single row with "脑图列表" label and exp
   assert.ok(texts.indexOf('复制全文') < texts.indexOf('导出图片'), 'copy button sits left of export')
   // 不得出现 standalone 的 "目录" 文案
   assert.ok(!texts.includes('目录'), 'sidebar must NOT show "目录" label')
+})
+
+test('sidebar header matches the 38px terminal row and keeps the 3px tab gap inside its height', () => {
+  const ws = renderWorkspace('sidebar')
+  const toolbar = findInTree(ws, (el) => el.props?.['data-mindmap-toolbar'] !== undefined)
+  const tabs = findInTree(ws, (el) => el.props?.['data-mindmap-tabs'] !== undefined)
+  assert.equal(toolbar.props.style.height, '38px')
+  assert.equal(toolbar.props.style.boxSizing, 'border-box')
+  assert.equal(toolbar.props.style.flex, 'none')
+  assert.equal(toolbar.props.style.borderBottom, '0.5px solid var(--dsw-alias-border-l3)')
+  assert.equal(tabs.props.style.paddingTop, '3px')
+  assert.equal(tabs.props.style.boxSizing, 'border-box')
+  assert.equal(tabs.props.style.overflowX, 'auto')
+  assert.equal(tabs.props.style.minWidth, 0)
+})
+
+test('sidebar tabs use square terminal-style tabs with a top accent and preserve document close', () => {
+  const ws = renderWorkspace('sidebar')
+  const tabs = findInTree(ws, (el) => el.props?.['data-mindmap-tabs'] !== undefined)
+  const list = findInTree(tabs, (el) => el.type === 'button' && el.props.children === '脑图列表')
+  assert.equal(list.props.style.borderRadius, 0)
+  assert.equal(list.props.style.borderTop, '2px solid transparent')
+  assert.equal(list.props.style.borderTopColor, 'var(--dsw-alias-state-business-primary)')
+  assert.equal(list.props.style.boxShadow, undefined)
+  const close = findInTree(tabs, (el) => el.props?.title === '关闭脑图')
+  assert.ok(close)
+  assert.equal(typeof close.props.onClick, 'function')
+  assert.equal(close.props.style.height, '100%')
+  const docTab = tabs.props.children[1]
+  assert.equal(docTab.props.style.borderRadius, 0)
+  assert.equal(docTab.props.style.borderTop, '2px solid transparent')
+  assert.equal(typeof docTab.props.onContextMenu, 'function')
+})
+
+test('sidebar actions remain in a separate bounded scroll area without growing the tab row', () => {
+  const ws = renderWorkspace('sidebar')
+  const actions = findInTree(ws, (el) => el.props?.['data-mindmap-actions'] !== undefined)
+  assert.equal(actions.props.style.maxWidth, '65%')
+  assert.equal(actions.props.style.minWidth, 0)
+  assert.equal(actions.props.style.overflowX, 'auto')
+  assert.equal(actions.props.style.whiteSpace, 'nowrap')
+  const texts = collectTexts(actions)
+  for (const label of ['刷新脑图', '复制全文', '导出图片']) assert.ok(texts.includes(label))
+})
+
+test('standalone header includes the border without subtracting another pixel', () => {
+  const ws = renderWorkspace('standalone')
+  const header = ws.props.children[0]
+  assert.equal(header.props.style.height, '76px')
+  assert.equal(header.props.style.boxSizing, 'border-box')
+  assert.equal(header.props.style.borderBottom, '0.5px solid var(--dsw-alias-border-l3)')
+  assert.equal(S.tabRow.paddingTop, '3px')
+  assert.equal(S.tabActive.borderTopColor, 'var(--dsw-alias-state-business-primary)')
 })
 
 test('sidebar variant: no standalone headerTop row (no spacer + export + close split across two rows)', () => {

@@ -83,17 +83,16 @@
 				window.addEventListener("mouseup", onUp);
 			}
 
-			// 007~010 头线对齐（overlay 版回归）：面板头部高度动态跟随聊天区头部，
-			// 让两者的底部分隔线像素对齐。面板贴视口顶（fixed 宿主层），故
-			// 头部高度 = 聊天头部 rect.bottom - 1 - 面板顶（面板顶 ≈ 视口顶）。
-			// 主选 wSkVaW_header；结构链回退；合法性钳制 [40,200]；失败回退 74（75-1）。
+			// 独立壳按实际底边对齐：border-box 高度 = 官方头部 bottom - 面板 top。
+			// 不再额外减边框；优先使用稳定的页签标记，旧宿主选择器作回退。
 			const panelRootRef = react.useRef(null);
-			const FALLBACK_HEADER_HEIGHT = 74;
+			const FALLBACK_HEADER_HEIGHT = 76;
 			const [headerHeight, setHeaderHeight] = react.useState(FALLBACK_HEADER_HEIGHT);
 			react.useLayoutEffect(() => {
 				const HEADER_MIN = 40;
 				const HEADER_MAX = 200;
 				const tryPaths = [
+					() => document.querySelector('[data-conversation-tabs]')?.closest('header'),
 					() => document.querySelector('[class*="wSkVaW_header"]'),
 					() => {
 						const frame = document.querySelector("[data-dsh-frame]");
@@ -110,7 +109,7 @@
 						const panelTop = panelRootRef.current
 							? panelRootRef.current.getBoundingClientRect().top
 							: rect.top;
-						const h = rect.bottom - 1 - panelTop;
+						const h = rect.bottom - panelTop;
 						if (h >= HEADER_MIN && h <= HEADER_MAX) {
 							setHeaderHeight(Math.round(h * 10) / 10);
 							return;
@@ -119,7 +118,7 @@
 					setHeaderHeight(FALLBACK_HEADER_HEIGHT);
 				};
 				measure();
-				const target = tryPaths[0]() || tryPaths[1]();
+				const target = tryPaths.map((path) => path()).find(Boolean);
 				let observer = null;
 				if (target && typeof ResizeObserver !== "undefined") {
 					observer = new ResizeObserver(measure);
@@ -130,7 +129,7 @@
 					if (observer) observer.disconnect();
 					window.removeEventListener("resize", measure);
 				};
-			}, []);
+			}, [open]);
 
 			// 014 布局让位：面板打开/拖宽时把宽度写进 CSS 变量，挤窄 #root 推走
 			// 聊天区（better-sidebar 同款）；关闭/卸载时移除变量恢复全宽。
