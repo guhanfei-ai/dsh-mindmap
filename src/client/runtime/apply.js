@@ -353,6 +353,7 @@
 			escapePathSegment,
 			nodePathTo,
 			nodePathLabel,
+			nodePathText,
 			renderInline,
 			// 038 行内链接 token 拆解 + 脑图区主体模式判定（纯函数，供测试）。
 			parseInlineLinkToken,

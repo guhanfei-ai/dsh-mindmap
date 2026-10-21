@@ -8,12 +8,13 @@
 //   文件被外部改名时根标题由 client 从路径推导，天然跟随。
 // - 四工具都带 path/name 参数（决策 3：多脑图并存，作用于指定那颗）。
 // - 036 默认落点：用户没指定目录的随手创建进 `.mindmaps/` 脑图收件箱，
-//   名字 `YYYYMMDD-HHmmss-中文描述.md`——时间戳由 host 读表（模型不猜时间），
-//   描述由 AI 给。收件箱按需创建、不进 .gitignore，同秒撞名加 -2/-3 不覆盖。
+//   名字 `YYYYMMDD-HHmmss-DSH-中文描述.md`——时间戳由 host 读表（模型不猜时间），
+//   DSH 是宿主工具标记（设置可关闭），描述由 AI 给。同秒撞名加 -2/-3 不覆盖。
 // - 结果 JSON {ok, op, path, rootTitle, content, renamedFrom?}：content 全文
 //   供模型续编辑，client 用同一份重放面板（工具结果即实时通道，002 第二节）。
 // - requireApproval 配置（决策 6）：默认 true；approvalMode 默认按「当前会话 + 当前文件」
 //   首次确认，后续普通更新复用授权；per-operation 可恢复每次确认，off 关闭普通确认。
+//   宿主明确授予 danger-full-access 时普通写入不额外确认，不缓存成文档授权。
 //   重命名、清空和大范围重写始终重新确认，关闭普通确认也不能跳过。
 //   015 起经 settings namespace 可运行时切换。
 // - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
@@ -58,12 +59,14 @@ const MIGRATABLE_KEYS = {
   cardStyle: (v) => v === 'rounded' || v === 'square',
   colorTheme: (v) => v === 'ocean' || v === 'sunset' || v === 'forest',
   growthAnimation: (v) => v === 'true' || v === 'false',
+  includeAIToolMarker: (v) => v === 'true' || v === 'false',
 }
 
 const MIGRATABLE_PARSERS = {
   requireApproval: (v) => v === 'true',
   defaultPanelWidth: (v) => Number(v),
   growthAnimation: (v) => v === 'true',
+  includeAIToolMarker: (v) => v === 'true',
 }
 
 function parseLegacyMindmapSection(raw) {
@@ -99,6 +102,7 @@ const CONFIG_DEFAULTS = {
   cardStyle: 'rounded',
   colorTheme: 'ocean',
   growthAnimation: true,
+  includeAIToolMarker: true,
 }
 
 function isAllDefaults(value) {
@@ -128,12 +132,13 @@ function configValue(value) {
 
 export const Config = Schema.object({
   requireApproval: Schema.boolean().default(true).description('Legacy switch: false skips ordinary confirmations only, and is lifted when the settings panel picks an explicit approval mode. Rename, clearing content, and broad rewrites always require approval.').extra('volatile', true),
-  approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. High-risk writes always require approval.').extra('volatile', true),
+  approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. Explicit host danger-full-access skips ordinary confirmations. High-risk writes always require approval.').extra('volatile', true),
   defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).').extra('volatile', true),
   lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).').extra('volatile', true),
   cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.').extra('volatile', true),
   colorTheme: Schema.union(['ocean', 'sunset', 'forest']).default('ocean').description('Node color theme.').extra('volatile', true),
   growthAnimation: Schema.boolean().default(true).description('Progressive growth animation: newly added/changed nodes fade in one by one after each update (total capped at ~2s). Turn off for instant full render.').extra('volatile', true),
+  includeAIToolMarker: Schema.boolean().default(true).description('默认脑图命名是否添加AI工具标记：默认开启，在时间戳和描述之间添加宿主工具名 DSH，不记录模型或引擎；关闭后恢复无标记格式。仅影响默认命名，不修改显式文件名或已有文件。').extra('volatile', true),
 })
 
 const MAX_CONTENT_BYTES = 2 * 1024 * 1024
@@ -149,7 +154,9 @@ const BROAD_REWRITE_RATIO_MIN_BYTES = 4 * 1024
 // 036 默认脑图收件箱：用户没指定目录时的落点。目录只在第一次需要时按需创建，
 // 也不自动进 .gitignore——脑图仍是普通 Markdown，用户可以审阅、diff、提交。
 export const DEFAULT_MINDMAP_DIR = '.mindmaps'
-// 描述只占默认名的一段，上限留足时间戳（15）与连接符的余量后仍远低于 MAX_NAME_CHARS。
+// 用户可见的宿主工具名，不是会话内嵌的模型、引擎或 provider。
+const HOST_TOOL_MARKER = 'DSH'
+// 描述只占默认名的一段，留足时间戳、宿主标记、连接符与撞名后缀后仍低于 MAX_NAME_CHARS。
 const MAX_DESCRIPTION_CHARS = 24
 // 同一秒同名（默认命名）时的后缀尝试次数上限。
 const MAX_CREATE_ATTEMPTS = 50
@@ -158,8 +165,10 @@ const GUIDANCE = `## Mindmap editing (dsh-mindmap)
 
 A mindmap is a plain markdown file in the session working directory. The right-side panel renders it live; the filename (without .md) is the root node title. These files are ordinary documents: the user reviews and commits them with git themselves.
 
+For mindmap tasks, use only the native \`mindmap_*\` tools listed below. They are already available: do not search for, load, or install skills (including \`find-skills\` and \`workbuddy-mindmap\`), even when a skill catalog suggests a matching skill. Do not use shell commands, external scripts, HTML generators, or generic file-write tools as a substitute. This DSH panel does not depend on a WorkBuddy skill. If a native tool fails, report that failure; do not switch to another tool to bypass its permissions.
+
 Tools:
-- mindmap_create(name? | description, directory?): create a mindmap and show it in the panel (fails if the file already exists). Give \`name\` when the user named the mindmap; otherwise give a short \`description\` and the host names the file \`YYYYMMDD-HHmmss-<description>.md\`. Give \`directory\` only when the user picked a location.
+- mindmap_create(name? | description, directory?): create a mindmap and show it in the panel (fails if the file already exists). Give \`name\` when the user named the mindmap; otherwise give a short \`description\` and the host names the file \`YYYYMMDD-HHmmss-DSH-<description>.md\` by default (the tool marker is configurable). Give \`directory\` only when the user picked a location.
 - mindmap_open(path): open an existing .md as a mindmap in the panel.
 - mindmap_get(path): read the current markdown content.
 - mindmap_update(path, content, renameRoot?, expectedRevision?): write the FULL updated markdown. Pass the revision returned by mindmap_get/open when editing; a mismatch stops the write instead of overwriting newer changes. renameRoot renames the file to match a new root title (fails on name collision); use it only when the user asks to rename the root node.
@@ -169,13 +178,14 @@ Markdown mapping (the panel's parser): headings nest by level (H1 are root child
 Behavior rules:
 - Where new files go: for casual requests ("创建一个脑图", "把刚才的讨论整理成脑图", "盘点一下这个问题") omit \`directory\` — the host files them in \`${DEFAULT_MINDMAP_DIR}/\`, the mindmap inbox, created on first use. That is the only location the plugin ever chooses on its own: when the user names a directory (or right-clicks one in the tree), pass that \`directory\` and leave their placement alone.
 - Never write a date or time into a mindmap filename yourself. Pass a bare \`description\` (e.g. 项目盘点) and the host stamps the real current time, then takes the first free name (\`-2\`, \`-3\`, …) so an existing file is never overwritten. The path the user confirms is the path it writes; if another create claims that name while the confirmation is pending, the host steps to the next free suffix and reports the final path in the tool result — relay that path to the user rather than assuming the one they confirmed.
-- Because the root node title is the filename, a default-created mindmap shows its timestamp as the root title (e.g. 20260918-155230-项目盘点). Rename it with renameRoot only when the user asks; do not restructure the document to hide the stamp.
+- The AI tool marker is the user-facing host tool \`DSH\`, not the selected model or provider. The setting \`includeAIToolMarker\` (默认脑图命名是否添加AI工具标记) defaults to true; turning it off restores \`YYYYMMDD-HHmmss-<description>.md\`. The host applies it automatically: do not put a timestamp or tool marker into \`description\` or invent a full \`name\` to force the format. A user's explicit \`name\` stays unchanged, and existing documents are never renamed by this setting.
+- Because the root node title is the filename, a default-created mindmap shows its timestamp and optional tool marker as the root title (e.g. 20260918-155230-DSH-项目盘点). Rename it with renameRoot only when the user asks; do not restructure the document to hide the stamp.
 - When the user asks to create a mindmap, call mindmap_create. When the user asks to open, view, show, or switch to an existing mindmap, call mindmap_open (do not use mindmap_get alone). Both operations bring that document to the visible mindmap panel automatically.
 - Always mindmap_get before editing, then send the complete updated document and the returned revision as expectedRevision to mindmap_update. If the tool reports a revision conflict, stop and ask the user whether to reload or merge; never overwrite newer text silently. Every call must carry the FULL document, never a fragment.
 - Update step by step: whenever the request involves several parts, call mindmap_update as soon as each part is ready — several small updates beat one giant update at the end. The panel plays a growth animation on newly added/changed nodes, so step-by-step updates make the tree visibly grow while you work. Do not call mindmap_update twice in a row with identical content.
 - Never delete the whole document or restructure it without an explicit user request. Make the smallest change that answers the request.
 - When the user steps away or pauses (e.g. "我去买咖啡"), stop all mindmap edits immediately and wait — never continue autonomously.
-- Native write approval defaults to once per document in the current session, so step-by-step updates stay fluid after the first confirmation. \`per-operation\` asks every time; \`off\` skips ordinary confirmations. A new document, a new session, or renameRoot requires a fresh confirmation. The current mindmap workspace shows and can revoke the current-session grants. Never treat a rejected or failed write as approved.
+- Ordinary writes follow the host's live file policy: explicit \`danger-full-access\` skips the plugin's ordinary confirmations; otherwise native write approval defaults to once per document in the current session. \`per-operation\` asks for each ordinary write; \`off\` skips ordinary confirmations. Rename, clearing content, and broad rewrites still require confirmation in every mode. The current mindmap workspace shows and can revoke the current-session grants. If approval prompts are disabled, that is not permission to bypass a required confirmation; report the failure without claiming that the user personally clicked Reject. Never treat a rejected or failed write as approved.
 - Never run any git command for these files. The user commits themselves.
 - Mindmap files stay inside the session working directory.`
 
@@ -380,9 +390,10 @@ function sanitizeDescription(input) {
   return chars.length > MAX_DESCRIPTION_CHARS ? chars.slice(0, MAX_DESCRIPTION_CHARS).join('') : raw
 }
 
-/** 默认脑图主干：`YYYYMMDD-HHmmss-中文描述`（例 20260918-155230-项目盘点）。 */
-function defaultStem(date, description) {
-  return `${timestampStamp(date)}-${sanitizeDescription(description)}`
+/** 默认脑图主干：`YYYYMMDD-HHmmss-DSH-中文描述`；关闭标记时沿用旧格式。 */
+function defaultStem(date, description, includeAIToolMarker = true) {
+  const marker = includeAIToolMarker !== false ? `-${HOST_TOOL_MARKER}` : ''
+  return `${timestampStamp(date)}${marker}-${sanitizeDescription(description)}`
 }
 
 /** create 参数里的显式目录（去空白）；缺省 = 走默认收件箱。 */
@@ -399,14 +410,14 @@ function explicitDirectory(args) {
  *   生成，撞名可以加后缀。两者互相独立：只给名字不给目录时进收件箱，但那是用户的
  *   命名意图，撞名了不能替他改名。
  */
-function planCreatePaths(cwd, args, now = new Date()) {
+function planCreatePaths(cwd, args, now = new Date(), includeAIToolMarker = true) {
   if (!cwd) throw new Error('The session has no working directory; cannot create a mindmap.')
   const directory = explicitDirectory(args)
   const explicitName = typeof args?.name === 'string' ? args.name.trim() : ''
   if (!explicitName && (typeof args?.description !== 'string' || !args.description.trim())) {
     throw new Error('mindmap_create needs either `name` (an explicit title) or `description` (a short phrase such as 项目盘点); the host supplies the timestamp.')
   }
-  const stem = explicitName ? sanitizeStem(explicitName) : defaultStem(now, args?.description)
+  const stem = explicitName ? sanitizeStem(explicitName) : defaultStem(now, args?.description, includeAIToolMarker)
   return {
     stem,
     relative: join(directory || DEFAULT_MINDMAP_DIR, `${stem}.md`),
@@ -667,6 +678,7 @@ export function apply(ctx, config = {}) {
       cardStyle: cardStyle === 'square' ? 'square' : 'rounded',
       colorTheme: colorTheme === 'sunset' || colorTheme === 'forest' ? colorTheme : 'ocean',
       growthAnimation: configValue(config.growthAnimation) !== false,
+      includeAIToolMarker: configValue(config.includeAIToolMarker) !== false,
     }
   }
 
@@ -704,6 +716,7 @@ export function apply(ctx, config = {}) {
   // 成功后写入，拒绝、失败或取消都不会消耗授权。WeakMap 随 session 生命周期
   // 自然释放，不把授权带到别的会话。
   let approvedTargets = new WeakMap()
+  const effectiveApprovalModes = new WeakMap()
   const pendingApprovals = new WeakMap()
   // 实际写盘路径：默认命名在「审批到写盘」之间被别人抢注时会挪到下一个空闲后缀，
   // 授权必须跟着记真实路径，不能把审批阶段的旧候选登记成本次会话的授权目标。
@@ -718,6 +731,25 @@ export function apply(ctx, config = {}) {
     }
     return mode
   }
+  // 完全权限预设同时关闭审批弹窗（never）：额外返回 ask 会被宿主自动拒绝。
+  // 只认公共 sandboxPolicy 对当前 session 的实时解析；never 本身不是授权。
+  // 能力缺失、解析失败、未知模式或无会话时保留旧策略，不读部署默认值猜权限。
+  const ordinaryApprovalModeOf = (session) => {
+    let mode = readApprovalMode()
+    if (session && typeof session === 'object') {
+      try {
+        const policy = ctx.get?.('sandboxPolicy')?.resolve?.({ session })
+        if (policy?.mode === 'danger-full-access') mode = 'off'
+      } catch { /* 旧宿主或策略不可用时不新增免确认权限。 */ }
+      const previous = effectiveApprovalModes.get(session)
+      if (previous !== undefined && previous !== mode) {
+        // 只撤销本会话的旧授权；pending.state 身份检查也阻止在途结果恢复它。
+        approvedTargets.delete(session)
+      }
+      effectiveApprovalModes.set(session, mode)
+    }
+    return mode
+  }
   const stateOf = (session) => {
     if (!session || typeof session !== 'object') return null
     let state = approvedTargets.get(session)
@@ -728,8 +760,9 @@ export function apply(ctx, config = {}) {
     return state
   }
   const approvalStatusOf = (session) => {
+    const mode = ordinaryApprovalModeOf(session)
     const state = session && typeof session === 'object' ? approvedTargets.get(session) : null
-    return { mode: readApprovalMode(), grantedDocuments: state?.paths.size ?? 0 }
+    return { mode, grantedDocuments: state?.paths.size ?? 0 }
   }
   const revokeApproval = (session) => {
     if (!session || typeof session !== 'object') return approvalStatusOf(session)
@@ -758,7 +791,8 @@ export function apply(ctx, config = {}) {
   const plannedCreate = async (exec, cwd, args) => {
     const cached = createPlans.get(exec)
     if (cached && cached.args === args) return cached.plan
-    const base = planCreatePaths(cwd, args ?? {})
+    // 设置与时间戳一并锁定在本次计划里；确认期间切换开关只影响下一次创建。
+    const base = planCreatePaths(cwd, args ?? {}, new Date(), activeConfig().includeAIToolMarker !== false)
     const first = await resolveMindmapPath(cwd, base.relative)
     // 顺序不能换：先过权威路径校验才敢探测。`.mindmaps` 若是指向外部的符号链接，
     // 上面这一步已经拒了，不会把别人的目录当成候选清单来读。
@@ -814,11 +848,11 @@ export function apply(ctx, config = {}) {
     const target = await targetOf(exec)
     const rename = exec.name === 'mindmap_update' && typeof args.renameRoot === 'string' && args.renameRoot.trim()
     const deleteDocument = exec.name === 'mindmap_update' && typeof args.content === 'string' && args.content.trim() === ''
-    const mode = readApprovalMode()
+    const mode = ordinaryApprovalModeOf(session)
     const broadRewrite = await needsRewriteApproval(exec, target, args.content)
     const highRisk = Boolean(rename || deleteDocument || broadRewrite)
-    const state = stateOf(session)
     if (mode === 'off' && !highRisk) return decision
+    const state = stateOf(session)
     if (mode === 'session' && !highRisk && state?.paths.has(target)) return decision
     if (mode === 'session' && !highRisk && state) pendingApprovals.set(exec, { session, target, state, generation: state.generation })
     if (exec.name === 'mindmap_create') {
@@ -844,7 +878,7 @@ export function apply(ctx, config = {}) {
     if (!pending) return
     pendingApprovals.delete(exec)
     if (result?.isError !== false || exec.signal?.aborted) return
-    if (readApprovalMode() !== 'session') return
+    if (ordinaryApprovalModeOf(pending.session) !== 'session') return
     // 撤销或策略切换之后，尚未结束的旧调用不能重新恢复授权。
     if (approvedTargets.get(pending.session) !== pending.state || pending.state.generation !== pending.generation) return
     // 审批后被抢注、实际写到了 -2 的情形：授权记真实路径，不记用户没见过的那条。
@@ -855,12 +889,12 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(defineTool({
     name: 'mindmap_create',
-    description: `Create a new mindmap markdown file and show it in the mindmap panel. Fails if the file already exists. The filename becomes the root node title. Pass \`name\` when the user gave an explicit title, otherwise pass \`description\` and the file is auto-named YYYYMMDD-HHmmss-<description>.md inside the default mindmap inbox (${DEFAULT_MINDMAP_DIR}/) — the host picks the next free -2/-3 suffix when that name is already taken, so nothing is ever overwritten. Only pass \`directory\` when the user chose a location.`,
+    description: `Create a new mindmap markdown file and show it in the mindmap panel. Fails if the file already exists. The filename becomes the root node title. Pass \`name\` when the user gave an explicit title, otherwise pass \`description\` and the file is auto-named YYYYMMDD-HHmmss-DSH-<description>.md by default (the includeAIToolMarker setting can omit DSH) inside the default mindmap inbox (${DEFAULT_MINDMAP_DIR}/) — the host picks the next free -2/-3 suffix when that name is already taken, so nothing is ever overwritten. Only pass \`directory\` when the user chose a location.`,
     parameters: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Explicit mindmap document name (without .md). Becomes the filename and the root node title; a name collision is reported instead of auto-renaming. Omit it for a quick capture and pass `description` instead.' },
-        description: { type: 'string', description: `Short phrase for the auto-generated filename when \`name\` is omitted (e.g. 项目盘点). Cleaned and truncated to ${MAX_DESCRIPTION_CHARS} characters. Never put a date or time here — the host stamps the real current time.` },
+        description: { type: 'string', description: `Short phrase for the auto-generated filename when \`name\` is omitted (e.g. 项目盘点). Cleaned and truncated to ${MAX_DESCRIPTION_CHARS} characters. Never put a date, time, or AI tool marker here — the host supplies the real time and optional DSH marker.` },
         directory: { type: 'string', description: `Directory relative to the session working directory, only when the user picked one (it must already exist). Omit it to file the mindmap in the default inbox ${DEFAULT_MINDMAP_DIR}/, which is created on first use.` },
       },
       required: [],

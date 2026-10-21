@@ -32,8 +32,10 @@ A DeepSeek Harness plugin that turns a plain Markdown file into a live mindmap. 
 - **Collapsible subtrees** — every node with children carries a small toggle on its connector: collapsing hides the whole subtree and reports how many nodes are hidden, so large maps stay navigable. It is view state only — the markdown file is untouched, image export still covers the full subtree, and switching documents expands everything again.
 - **PNG export** — one click on 导出图片 exports the current mindmap.
 - **Copy as markdown** — one click on 复制全文 (left of 导出图片) copies the current mindmap's raw markdown source to the system clipboard, so pasting into markdown-aware editors restores headings, nested lists, and tables, while plain-text targets keep the literal `#`/`-` source. The button shows 已复制 ✓ for about two seconds on success; failures reuse the export error slot.
+- **Copy current node text** — 复制当前节点文本内容 sits immediately above 复制节点路径 in the node context menu. It copies only the current node's complete text, preserving line breaks and excluding ancestors, paths, and descendants. The mindmap and chat draft remain unchanged.
+- **Copy node path** — the node context menu includes 复制节点路径, which copies the complete root-to-current path as one plain-text line, for example `Node 1--->Node 2--->Node 3--->Node 4`. It excludes descendants and never submits a message or replaces the chat draft. Clipboard failures keep the menu open and show the error.
 - **Node search and quick navigation** — search the current mindmap by text (⌘/Ctrl+F, or the 🔍 in the zoom bar), jump through matches with Enter / ↑ ↓ (wrap-around), and automatically reveal matches inside collapsed subtrees. Jumping keeps your zoom and only scrolls; search is view-only, so the markdown never changes.
-- **Safety** — write approval defaults to “once per session/document”: after the first confirmation, ordinary `mindmap_update` calls for that document in the same session do not interrupt the flow. The settings page also offers “every write” and “disable ordinary confirmations”. Renames, deletes, and broad rewrites still require a separate confirmation; the current workspace shows and can revoke the current-session grant. Trusted automation can explicitly set `requireApproval: false` to skip ordinary confirmations; high-risk writes remain gated. The client has **no write path** to the filesystem — every edit goes through the AI tools.
+- **Safety** — when the host's live session file policy explicitly grants `danger-full-access`, ordinary creates and updates do not request an additional plugin confirmation. Otherwise, write approval defaults to “once per session/document”; the settings page also offers “every write” and “disable ordinary confirmations”, and the current workspace shows and can revoke the current-session grant. Renames, cleared content, and broad rewrites still require a separate confirmation in every mode. Disabling approval prompts alone is not file authorization: the host automatically rejects requests that still need confirmation, including high-risk writes under its full-access preset. Missing or unrecognized host policy APIs retain the configured confirmation policy. Trusted automation can explicitly set `requireApproval: false` to skip ordinary confirmations; high-risk writes remain gated. The client has **no write path** to the filesystem — every edit goes through the AI tools.
 
 Inside Better Sidebar, the mindmap list uses the host's 14px body typography. Markdown files carry a compact M badge; folders and other files use 14px outline icons. Other file formats are display-only, without hover feedback, opening, dragging, or context menus; folders remain expandable. Tabs, actions, and hints use the host's 12px typography role. Standalone mode retains its original appearance, and mindmap node typography, zoom, and image export are unchanged.
 
@@ -44,9 +46,10 @@ The embedded M badge uses a transparent background and inherits the filename's t
 When you ask for a mindmap without naming a location — "创建一个脑图", "把刚才的讨论整理成脑图", "盘点一下这个问题" — the file lands in **`.mindmaps/`**, the mindmap inbox:
 
 ```text
-.mindmaps/20260918-155230-项目盘点.md
+.mindmaps/20260918-155230-DSH-项目盘点.md
 ```
 
+- The **默认脑图命名是否添加AI工具标记** setting is on by default. The marker identifies the user-facing host tool, **DSH**, not its selected model, engine, or provider. Turning it off restores `YYYYMMDD-HHmmss-<description>.md`. This only affects future generated names; explicit user titles and existing files stay unchanged. A create already awaiting confirmation keeps the naming plan shown in that confirmation.
 - The `YYYYMMDD-HHmmss` stamp is read by the host from the real clock; the model only supplies the short description (cleaned and truncated to 24 characters). Two captures in the same second get `-2`, `-3`, … suffixes — an existing file is never overwritten, and the write-confirmation names the exact file it is about to create.
 - The path is checked twice: once when the confirmation is drawn, and again against the filesystem right before the write. If the target directory moved or was swapped for a symlink while you were reading the confirmation, the create is refused instead of writing outside the session working directory.
 - `.mindmaps/` is created on first use, not at install time. The directory tree shows it as **脑图收件箱（.mindmaps）**, because a dotted folder otherwise reads as tool residue.
@@ -87,9 +90,11 @@ New-version cooldown policies can affect package selection shortly after publica
 
 ## Tools
 
+Mindmap requests go directly to these four native `mindmap_*` tools. No skill discovery or loading is needed: `find-skills` and `workbuddy-mindmap` are not part of this plugin's workflow. The AI guidance and new/open commands explicitly request native tools only, without external scripts or generic file-write substitutes. A failed tool call is reported, not bypassed through a different tool.
+
 | Tool | Description |
 | --- | --- |
-| `mindmap_create(name? \| description, directory?)` | Create a mindmap and show it in the panel (fails if the file already exists). With `name`, the file is `<name>.md`; without it, pass a short `description` and the host names the file `YYYYMMDD-HHmmss-<description>.md` inside the `.mindmaps/` inbox. Pass `directory` only when the user chose a location. |
+| `mindmap_create(name? \| description, directory?)` | Create a mindmap and show it in the panel (fails if the file already exists). With `name`, the file is `<name>.md`; without it, pass a short `description` and the host names the file `YYYYMMDD-HHmmss-DSH-<description>.md` by default inside the `.mindmaps/` inbox (the DSH marker can be disabled in settings). Pass `directory` only when the user chose a location. |
 | `mindmap_open(path)` | Open an existing `.md` as a mindmap in the panel. |
 | `mindmap_get(path)` | Read the current Markdown content and revision of a mindmap document. |
 | `mindmap_update(path, content, renameRoot?, expectedRevision?)` | Write the full Markdown; pass the read revision to reject stale writes; optionally rename the root node (renames the file, collisions rejected). |

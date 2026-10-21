@@ -6,6 +6,9 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Added
 
+- Add 复制当前节点文本内容 immediately above 复制节点路径 in node context menus. It copies the current node's complete own text without its path, ancestors, or descendants, preserves line breaks, and reuses the existing clipboard error and busy-state handling without modifying the mindmap or chat draft.
+- Node context menus gain 复制节点路径: copy the complete root-to-current path as single-line plain text joined by `--->`, without descendants, chat submission, or draft replacement. The action uses the existing text clipboard fallback, disables menu actions while pending, and keeps errors visible for retry.
+- Default generated names now include the user-facing host tool: `YYYYMMDD-HHmmss-DSH-<description>.md`. The settings panel adds 默认脑图命名是否添加AI工具标记 (`includeAIToolMarker`, on by default); disabling it restores the unmarked format without changing existing files or explicit user titles. The marker is DSH regardless of the selected model/provider. Changes apply to the next naming plan, while a create already awaiting confirmation keeps the exact path shown to the user.
 - Refresh current mindmap from disk in either panel mode, without replacing drafts or submitting an AI request; failed reads retain the current canvas and show an error.
 - A reproducible `npm run bench:client` benchmark compares cached and full replay using fictional long-conversation data and verifies output equivalence before timing.
 
@@ -25,6 +28,7 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Changed
 
+- Mindmap guidance and create/open commands now route directly to native `mindmap_*` tools, explicitly excluding skill discovery/loading (`find-skills`, `workbuddy-mindmap`), external scripts, and generic file-write substitutes.
 - Share the document projection between the header and workspace, and cache tool-result JSON per session. Changed result text invalidates its entry; session switches discard the previous reducer.
 
 - Node text size is now one constant (`NODE_FONT_SIZE = 13`) with no smaller overrides: code blocks, tables and inline code used to render at 12px, which broke the readable-floor promise — the whole canvas shares a single CSS zoom, so 12px text landed at ~11.1px at the 12/13 floor. Code keeps its monospace face and surface colour, so the hierarchy survives without the size step.
@@ -34,6 +38,7 @@ All notable changes to this project are documented here. Release-specific notes 
 
 ### Fixed
 
+- Ordinary create/update calls no longer request an extra plugin confirmation when the host's live per-session `sandboxPolicy.resolve({ session })` explicitly returns `danger-full-access`. DSH's full-access preset also disables approval prompts, which rejects an extra `ask` as “the user rejected tool” even without a manual rejection. Full-access calls do not create reusable document grants, the workspace reports the effective confirmation mode, and effective-mode changes invalidate that session's prior grants and pending approval results without affecting other sessions. Switching back to a restricted policy restores the configured confirmation behavior. Renames, cleared content, broad rewrites, and upstream denials/asks/cancellations remain gated; missing, failing, or unknown policy APIs retain the previous confirmation policy. No session permission or host configuration is changed.
 - Read draft text and attachment state from the host's `useInput` snapshot, including edits made while a file request is pending. Unknown state preserves input; old action-face getters remain supported. Inline references and attachment-only drafts block automatic submission too.
 - Fresh disk reads no longer lose to older tool snapshots. A later tool event takes over normally; overlapping reads, closing, session switches, and newer open intents invalidate stale requests.
 - Resolve all mindmap HTTP calls against the page base address, retaining reverse-proxy prefixes while refusing cross-origin base URLs.

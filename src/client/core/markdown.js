@@ -138,6 +138,14 @@
 			return [target];
 		}
 
+		/** 复制节点路径：根到当前节点的单行纯文本，不加聊天协议或展开子树。 */
+		function nodePathText(root, target) {
+			return nodePathTo(root, target).map((node) => {
+				const label = String(node.topic ?? "").replace(/\s+/g, " ").trim();
+				return label || EMPTY_NODE_MARKER;
+			}).join("--->");
+		}
+
 		/**
 		 * 037 复制节点及子节点为文本：每个节点一行，每层 2 个半角空格。
 		 * 多行节点内容的每一行都带同一层级前缀，空节点用明确标记保留其存在性。

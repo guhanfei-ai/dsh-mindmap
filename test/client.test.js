@@ -6,7 +6,7 @@ import { Context as CordisContext } from '@deepseek-ai/cordis'
 
 // 照 dsh-grafana test/client.test.js 的套路：vm 里伪造 window.__ModuleLoader__
 // 捕获浏览器模块定义，再用 require 桩喂 react，拿到 exports 测纯函数。
-function loadBrowserModule(source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')) {
+function loadBrowserModule(source = readFileSync(new URL('../client.js', import.meta.url), 'utf8'), hooks) {
   let definition
   const window = {
     __ModuleLoader__: {
@@ -34,7 +34,7 @@ function loadBrowserModule(source = readFileSync(new URL('../client.js', import.
       Fragment: {},
     }
     if (id === 'react') {
-      return { useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, useCallback }
+      return hooks ?? { useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, useCallback }
     }
     throw new Error(`Unexpected browser dependency: ${id}`)
   })
@@ -81,7 +81,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext, warnCalls: sandboxWarnCalls } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, fitAllZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, fitAllZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, nodePathText, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 const READABLE_ZOOM = 12 / Number.parseFloat(S.box.fontSize)
 
 test('browser module declares the expected service inject list', () => {
@@ -387,6 +387,30 @@ test('037 path segments escape display delimiters without changing node content'
   assert.equal(escapePathSegment('a【b】\nc >>> d'), 'a〔b〕 c >>> d')
   assert.equal(PATH_SEPARATOR, ' >>> ')
   assert.equal(nodePathLabel({ topic: 'a【b】' }), '【a〔b〕】')
+})
+
+test('nodePathText copies the root-to-current path with plain arrow-separated labels only', () => {
+  const root = parseMarkdownToTree('# 节点2\n## 节点3\n### 节点4\n#### 不应复制的子节点', '节点1')
+  const target = root.children[0].children[0].children[0]
+  assert.equal(nodePathText(root, target), '节点1--->节点2--->节点3--->节点4')
+  assert.equal(nodePathText(root, root), '节点1')
+  assert.equal(nodePathText(root, null), '')
+})
+
+test('nodePathText identifies the correct branch even when node labels repeat', () => {
+  const root = parseMarkdownToTree('# 分支甲\n- 同名节点\n# 分支乙\n- 同名节点', '根节点')
+  const target = root.children[1].children[0]
+  assert.equal(nodePathText(root, target), '根节点--->分支乙--->同名节点')
+  assert.equal(nodePathText(root, { ...target }), '根节点--->分支乙--->同名节点')
+})
+
+test('nodePathText keeps empty path segments and makes multiline labels single-line', () => {
+  const target = { id: 'empty', topic: '  ', children: [] }
+  const parent = { id: 'parent', topic: '父节点\r\n第二行\t【原文】', children: [target] }
+  const root = { id: 'root', topic: ' 根节点 ', children: [parent] }
+  assert.equal(nodePathText(root, target), `根节点--->父节点 第二行 【原文】--->${EMPTY_NODE_MARKER}`)
+  assert.equal(parent.topic, '父节点\r\n第二行\t【原文】', 'copying never edits the original node label')
+  assert.equal(nodePathText(root, { id: 'missing', topic: '外部节点' }), '外部节点')
 })
 
 test('table parsing limits pathological grid expansion', () => {
@@ -1163,6 +1187,90 @@ test('settings face lifts the legacy requireApproval switch when an explicit app
   assert.equal(writes[2].patch.requireApproval, undefined)
 })
 
+// 命名设置直接在内存加载实际源片段，不依赖 client.js 是否已重新生成。
+function loadNamingClientSource(hooks) {
+  const source = ['runtime/open.js', 'core/theme.js', 'core/tree.js', 'ui/styles.js', 'ui/settings.js']
+    .map(path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8'))
+    .join('\n')
+  const close = readFileSync(new URL('../src/client/runtime/close.js', import.meta.url), 'utf8')
+  return loadBrowserModule(`${source}\nexports.internals = { SettingsPanel, treeCreateDraft };\n${close}`, hooks).runtime.internals
+}
+
+for (const [label, remote, expected] of [
+  ['missing', {}, true],
+  ['unavailable', null, true],
+  ['enabled', { includeAIToolMarker: true }, true],
+  ['disabled', { includeAIToolMarker: false }, false],
+]) {
+  test(`default naming AI marker settings read ${label} remote values`, async () => {
+    const driver = createEffectDriver()
+    const { SettingsPanel } = loadNamingClientSource(driver.hooks)
+    const props = { mindmapFace: { readSettings: async () => remote } }
+    try {
+      driver.beginRender()
+      SettingsPanel(props)
+      driver.flushMount()
+      await new Promise(resolve => setImmediate(resolve))
+      driver.beginRender()
+      const panel = SettingsPanel(props)
+      driver.flushUpdate()
+      const row = findInTree(panel, el => el.props?.children?.[0]?.props?.children === '默认脑图命名是否添加AI工具标记')
+      assert.ok(row, 'exact naming toggle label is visible')
+      const control = row.props.children[1]
+      assert.equal(control.props.value, expected)
+      assert.equal(control.props.disabled, false)
+      assert.deepEqual(Array.from(control.props.options, opt => [opt.value, opt.label]), [[true, '开'], [false, '关']])
+      const hints = collectTexts(panel).join('\n')
+      assert.match(hints, /开启.*YYYYMMDD-HHmmss-DSH-项目盘点\.md/)
+      assert.match(hints, /关闭.*YYYYMMDD-HHmmss-项目盘点\.md/)
+      assert.match(hints, /只对默认命名生效.*显式 name 不变/)
+    } finally { driver.unmount() }
+  })
+}
+
+test('default naming AI marker toggles save only the boolean patch immediately', async () => {
+  const driver = createEffectDriver()
+  const { SettingsPanel } = loadNamingClientSource(driver.hooks)
+  const writes = []
+  let finishSave
+  const props = { mindmapFace: {
+    readSettings: async () => ({ lineStyle: 'curve' }),
+    updateSettings(patch) {
+      writes.push({ ...patch })
+      return new Promise(resolve => { finishSave = resolve })
+    },
+  } }
+  const render = () => {
+    driver.beginRender()
+    const panel = SettingsPanel(props)
+    driver.flushUpdate()
+    const row = findInTree(panel, el => el.props?.children?.[0]?.props?.children === '默认脑图命名是否添加AI工具标记')
+    assert.ok(row)
+    return { panel, control: row.props.children[1] }
+  }
+  try {
+    driver.beginRender()
+    SettingsPanel(props)
+    driver.flushMount()
+    await new Promise(resolve => setImmediate(resolve))
+    for (const [label, expected] of [['关', false], ['开', true]]) {
+      const { control } = render()
+      const button = control.type(control.props).props.children.find(el => el.props.children === label)
+      button.props.onClick()
+      assert.deepEqual(writes.at(-1), { includeAIToolMarker: expected })
+      const saving = render()
+      assert.equal(saving.control.props.value, expected)
+      assert.equal(saving.control.props.disabled, true)
+      finishSave()
+      await new Promise(resolve => setImmediate(resolve))
+      const saved = render()
+      assert.equal(saved.control.props.disabled, false)
+      assert.ok(collectTexts(saved.panel).includes('已保存'))
+    }
+    assert.equal(writes.length, 2)
+  } finally { driver.unmount() }
+})
+
 test('visibleTreeRows walks only expanded directories in pre-order', () => {
   const nodes = {
     '/w': { path: '/w', name: 'w', parentPath: null, entries: [
@@ -1217,12 +1325,35 @@ test('treeDirLabel renames only the mindmap inbox, and the create entry follows 
   assert.equal(treeDirLabel('.git'), '.git')
   assert.equal(treeDirLabel(undefined), '')
   // 有目录上下文 = 尊重用户选的位置；没有才交给默认收件箱。
-  assert.equal(treeCreateDraft('planning'), '我想在 planning 目录里创建一个 Markdown 脑图')
+  assert.match(treeCreateDraft('planning'), /mindmap_create.*planning.*Markdown 脑图/)
   assert.equal(treeCreateLabel('planning'), '在此目录新建 Markdown 脑图')
   assert.match(treeCreateDraft(''), new RegExp(DEFAULT_MINDMAP_DIR))
   assert.equal(treeCreateLabel(''), '在脑图收件箱新建脑图')
   // 根目录右键的 rel 恒为空串，与「无目录上下文」同义。
   assert.equal(treeCreateDraft(undefined), treeCreateDraft(''))
+})
+
+test('create entry explicitly uses native mindmap tools without skill discovery', () => {
+  for (const directory of ['', 'planning']) {
+    const draft = treeCreateDraft(directory)
+    assert.match(draft, /mindmap_create/)
+    assert.match(draft, /只使用 mindmap_.*原生工具/)
+    assert.match(draft, /不查找或加载技能/)
+    assert.match(draft, /不运行.*脚本/)
+  }
+})
+
+test('default naming create entry leaves filenames timestamps and DSH markers to the host settings', () => {
+  const { treeCreateDraft: createDraft } = loadNamingClientSource()
+  for (const directory of ['', 'planning']) {
+    const draft = createDraft(directory)
+    assert.match(draft, /默认命名时只传 description，不传 name/)
+    assert.match(draft, /文件名、时间戳和 AI 工具标记由宿主 DSH 按设置自动处理/)
+    assert.match(draft, /不要自行拼接名字、时间戳或标记/)
+    assert.match(draft, /只使用 mindmap_.*原生工具/)
+    assert.match(draft, /不查找或加载技能/)
+    assert.match(draft, /不运行外部脚本/)
+  }
 })
 
 test('the client inbox constant matches the host default directory', async () => {
@@ -3030,6 +3161,36 @@ test('pending disk reads cannot send or replace content after a session switch',
   } finally { harness.driver.unmount() }
 })
 
+for (const variant of ['sidebar', 'standalone']) {
+  test(`${variant}: opening from the directory sends a native-tools-only instruction`, async () => {
+    const harness = loadClientWithEffectDriver()
+    const sent = []
+    const path = '/w/plan.md'
+    const props = {
+      variant, visible: true, sessionId: 'native-open', nodes: [], onAutoOpen() {},
+      inputActions: { setDraft: text => sent.push(text), submit: () => sent.push('submit') },
+      readInputState: () => ({ draft: '', attachmentIds: [] }),
+      mindmapFace: {
+        listTree: async () => ({ path: '/w', cwd: '/w', entries: [{ name: 'plan.md', path, isDir: false }] }),
+        readDocument: async () => ({ path, content: '# Plan', revision: 'plan' }),
+      },
+    }
+    try {
+      renderWorkspaceAfterEffects(harness, props, true)
+      await new Promise(resolve => setImmediate(resolve))
+      const list = renderWorkspaceAfterEffects(harness, props)
+      const entry = findInTree(list, el => (el.key ?? el.props?.key) === path && typeof el.props?.onClick === 'function')
+      assert.ok(entry)
+      await entry.props.onClick()
+      assert.equal(sent.length, 2)
+      assert.match(sent[0], /mindmap_open.*plan\.md/)
+      assert.match(sent[0], /只使用 mindmap_.*原生工具/)
+      assert.match(sent[0], /不查找或加载技能/)
+      assert.equal(sent[1], 'submit')
+    } finally { harness.driver.unmount() }
+  })
+}
+
 test('directory reads use the latest draft state and ignore older overlapping requests', async () => {
   const harness = loadClientWithEffectDriver()
   const pending = []
@@ -3163,6 +3324,160 @@ test('032 copy-text button: writes the raw markdown source to the clipboard', as
   } finally {
     harness.driver.unmount()
   }
+})
+
+function openNodePathMenu(harness, root, target, inputCalls = []) {
+  const props = {
+    node: root, theme: null, fitKey: 'node-path.md', reveal: null,
+    inputActions: { setDraft: value => inputCalls.push(value), submit: () => inputCalls.push('submit') },
+    readInputState: () => ({ draft: '保留聊天草稿', attachmentIds: ['draft-attachment'] }),
+  }
+  const render = (mounting = false) => {
+    harness.driver.beginRender()
+    const canvas = harness.MindmapCanvas(props)
+    if (mounting) harness.driver.flushMount()
+    else harness.driver.flushUpdate()
+    return canvas
+  }
+  const canvas = render(true)
+  const treeRow = findInTree(canvas, element => typeof element.props?.onNodeContextMenu === 'function')
+  assert.ok(treeRow)
+  treeRow.props.onNodeContextMenu({ clientX: 100, clientY: 80 }, target)
+  const opened = render()
+  const button = findInTree(opened, element => element.type === 'button' && element.props?.children === '复制节点路径')
+  assert.ok(button, 'the node context menu exposes the exact requested action')
+  return { button, render, opened }
+}
+
+test('copy current node text appears directly above copy path and excludes ancestors and descendants', async () => {
+  const harness = loadClientWithEffectDriver()
+  const own = '当前节点的完整文本\n第二行保持换行\n' + '长内容'.repeat(60)
+  const target = { id: 'current', kind: 'text', topic: '截断的标题…', data: { raw: own }, children: [{ id: 'child', kind: 'text', topic: '不能复制的子节点', children: [] }] }
+  const root = { id: 'root', kind: 'root', topic: '不能复制的父节点', children: [target] }
+  const before = JSON.stringify(root)
+  const inputCalls = []
+  const copied = []
+  let finishCopy
+  harness.ctx.navigator = { clipboard: { writeText(text) {
+    copied.push(text)
+    return new Promise(resolve => { finishCopy = resolve })
+  } } }
+  try {
+    const { render, opened } = openNodePathMenu(harness, root, target, inputCalls)
+    const texts = collectTexts(opened)
+    assert.ok(texts.includes('复制当前节点文本内容'))
+    assert.equal(texts.indexOf('复制当前节点文本内容') + 1, texts.indexOf('复制节点路径'), 'the new action sits immediately above copy path')
+    const button = findInTree(opened, element => element.props?.children === '复制当前节点文本内容')
+    const pending = button.props.onClick()
+    assert.deepEqual(copied, [own], 'copy full node text without truncation, path, or children')
+    const busy = render()
+    assert.equal(findInTree(busy, element => element.props?.children === '复制中…').props.disabled, true)
+    assert.equal(findInTree(busy, element => element.props?.children === '复制节点路径').props.disabled, true)
+    finishCopy()
+    await pending
+    assert.equal(findInTree(render(), element => element.props?.children === '复制当前节点文本内容'), null)
+    assert.deepEqual(inputCalls, [], 'copy leaves the chat draft and attachments untouched')
+    assert.equal(JSON.stringify(root), before, 'copy does not modify the mindmap')
+  } finally { harness.driver.unmount() }
+})
+
+for (const [kind, target, expected] of [
+  ['code', { id: 'code', kind: 'code', topic: '[js] first line', data: { code: 'first line\nsecond line' }, children: [] }, 'first line\nsecond line'],
+  ['table', { id: 'table', kind: 'table', topic: '表格', data: { rows: [['标题'], ['内容']] }, children: [] }, '| 标题 |\n| --- |\n| 内容 |'],
+  ['empty', { id: 'empty', kind: 'placeholder', topic: '', data: {}, children: [] }, ''],
+  ['root', { id: 'root', kind: 'root', topic: '根节点自身', children: [{ id: 'child', topic: '不能复制的子节点', children: [] }] }, '根节点自身'],
+]) {
+  test(`copy current node text preserves the complete ${kind} node content`, async () => {
+    const harness = loadClientWithEffectDriver()
+    const copied = []
+    harness.ctx.navigator = { clipboard: { writeText: async text => { copied.push(text) } } }
+    const root = kind === 'root' ? target : { id: 'root', topic: '父节点', children: [target] }
+    try {
+      const { opened } = openNodePathMenu(harness, root, target)
+      const button = findInTree(opened, element => element.props?.children === '复制当前节点文本内容')
+      assert.ok(button)
+      await button.props.onClick()
+      assert.deepEqual(copied, [expected])
+    } finally { harness.driver.unmount() }
+  })
+}
+
+test('copy current node text keeps its menu and reports clipboard rejection', async () => {
+  const harness = loadClientWithEffectDriver()
+  const root = parseMarkdownToTree('# 当前节点', '根节点')
+  const inputCalls = []
+  harness.ctx.navigator = { clipboard: { writeText: async () => { throw new Error('Clipboard denied') } } }
+  try {
+    const { opened, render } = openNodePathMenu(harness, root, root.children[0], inputCalls)
+    const button = findInTree(opened, element => element.props?.children === '复制当前节点文本内容')
+    assert.ok(button)
+    await button.props.onClick()
+    const failed = render()
+    assert.equal(findInTree(failed, element => element.props?.children === '复制当前节点文本内容').props.disabled, false)
+    assert.ok(collectTexts(failed).includes('Clipboard denied'))
+    assert.deepEqual(inputCalls, [])
+  } finally { harness.driver.unmount() }
+})
+
+test('copy node path writes only the complete path, preserves chat drafts, and closes after success', async () => {
+  const harness = loadClientWithEffectDriver()
+  const root = parseMarkdownToTree('# 节点2\n## 节点3\n### 节点4\n#### 不应复制的子节点', '节点1')
+  const target = root.children[0].children[0].children[0]
+  const inputCalls = []
+  const copied = []
+  let finishCopy
+  harness.ctx.navigator = { clipboard: { writeText(text) {
+    copied.push(text)
+    return new Promise(resolve => { finishCopy = resolve })
+  } } }
+  try {
+    const { button, render } = openNodePathMenu(harness, root, target, inputCalls)
+    const pending = button.props.onClick()
+    assert.deepEqual(copied, ['节点1--->节点2--->节点3--->节点4'])
+    const busy = render()
+    assert.equal(findInTree(busy, element => element.props?.children === '复制中…').props.disabled, true)
+    assert.equal(findInTree(busy, element => element.props?.children === '复制节点及子节点为文本').props.disabled, true)
+    finishCopy()
+    await pending
+    assert.equal(findInTree(render(), element => element.props?.children === '复制节点路径'), null)
+    assert.deepEqual(inputCalls, [], 'copy never overwrites or submits a chat draft')
+    assert.equal(nodePathText(root, target), copied[0], 'copying leaves the document tree intact')
+  } finally { harness.driver.unmount() }
+})
+
+test('copy node path keeps the menu available and reports clipboard rejection', async () => {
+  const harness = loadClientWithEffectDriver()
+  const root = parseMarkdownToTree('# 当前节点', '根节点')
+  const inputCalls = []
+  harness.ctx.navigator = { clipboard: { writeText: async () => { throw new Error('Clipboard denied') } } }
+  try {
+    const { button, render } = openNodePathMenu(harness, root, root.children[0], inputCalls)
+    await button.props.onClick()
+    const failed = render()
+    assert.equal(findInTree(failed, element => element.props?.children === '复制节点路径').props.disabled, false)
+    assert.ok(collectTexts(failed).includes('Clipboard denied'))
+    assert.deepEqual(inputCalls, [])
+  } finally { harness.driver.unmount() }
+})
+
+test('copy node path uses the existing text clipboard fallback without changing the path', async () => {
+  const harness = loadClientWithEffectDriver()
+  const root = parseMarkdownToTree('# 当前节点', '根节点')
+  const textarea = { style: {}, select() {}, remove() { this.removed = true } }
+  let command
+  harness.ctx.navigator = {}
+  harness.ctx.document = {
+    createElement(tag) { assert.equal(tag, 'textarea'); return textarea },
+    body: { appendChild(element) { assert.equal(element, textarea) } },
+    execCommand(value) { command = value; return true },
+  }
+  try {
+    const { button } = openNodePathMenu(harness, root, root.children[0])
+    await button.props.onClick()
+    assert.equal(command, 'copy')
+    assert.equal(textarea.value, '根节点--->当前节点')
+    assert.equal(textarea.removed, true)
+  } finally { harness.driver.unmount() }
 })
 
 // —— 033 画布缩放/聚焦体验优化：交互层行为 ——

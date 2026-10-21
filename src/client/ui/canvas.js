@@ -198,7 +198,7 @@
 						const fitStampRef = react.useRef([]);
 						const [zoom, setZoomState] = react.useState(1);
 							const [hover, setHover] = react.useState(null);
-							// 037 节点右键菜单：{x, y, node}；null = 关闭。busy 标记 chat/text/
+							// 037 节点右键菜单：{x, y, node}；null = 关闭。busy 标记 chat/self/path/text/
 							// copy/export 中的当前动作；任一动作在途时整张菜单禁用。
 							const [nodeMenu, setNodeMenu] = react.useState(null);
 							const [nodeMenuBusy, setNodeMenuBusy] = react.useState(null);
@@ -906,7 +906,7 @@
 					setNodeMenu({ x: e.clientX, y: e.clientY, node: target });
 				}
 
-				// 037 菜单动作：chat = 节点焦点上下文自动发送；text = 子树文本写剪贴板；copy = PNG 写系统剪贴板
+				// 037 菜单动作：chat = 节点焦点上下文自动发送；self = 当前节点全文；path = 根到当前节点路径；text = 子树文本；copy = PNG 写系统剪贴板
 				// （可粘贴到聊天/文档）；export = PNG 下载为文件。图片范围 = 该节点
 				// 及其全部子孙（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
 				async function onNodeMenuAction(mode) {
@@ -917,6 +917,8 @@
 					try {
 						if (mode === "chat") submitNodeChat(nodeFocusPrompt(node, target));
 						else if (mode === "text") await copyPlainText(nodeTreeText(target));
+						else if (mode === "self") await copyPlainText(nodeFullText(target));
+						else if (mode === "path") await copyPlainText(nodePathText(node, target));
 						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
 						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
@@ -1140,6 +1142,24 @@
 								title: "把该节点及其全部子节点按层级缩进复制为文本",
 								onClick: () => onNodeMenuAction("text"),
 								children: nodeMenuBusy === "text" ? "复制中…" : "复制节点及子节点为文本",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuItemStyle("self"),
+								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("self"),
+								title: "只复制当前节点自身的完整文本，不包含路径和子节点",
+								onClick: () => onNodeMenuAction("self"),
+								children: nodeMenuBusy === "self" ? "复制中…" : "复制当前节点文本内容",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuItemStyle("path"),
+								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("path"),
+								title: "把根节点到当前节点的路径复制到剪贴板，节点间使用 ---> 连接",
+								onClick: () => onNodeMenuAction("path"),
+								children: nodeMenuBusy === "path" ? "复制中…" : "复制节点路径",
 							}),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",

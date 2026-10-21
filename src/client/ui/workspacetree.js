@@ -9,7 +9,7 @@
 				if (draftBlocked()) return false;
 				if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
 				try {
-					inputActions.setDraft(text);
+					inputActions.setDraft(nativeMindmapCommand(text));
 					inputActions.submit();
 					return true;
 				} catch {

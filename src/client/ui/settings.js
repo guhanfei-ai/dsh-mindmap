@@ -39,6 +39,7 @@
 							defaultPanelWidth: v && typeof v.defaultPanelWidth === "number" ? v.defaultPanelWidth : 42,
 							// 018：旧设置/读不到都默认开（!== false 语义）。
 							growthAnimation: !(v && v.growthAnimation === false),
+							includeAIToolMarker: !(v && v.includeAIToolMarker === false),
 						});
 					} catch (err) {
 						if (alive) setError(String(err?.message ?? err));
@@ -157,6 +158,16 @@
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启后，脑图每次更新的新增/变化节点会逐个渐显长出（总时长不超过 2 秒）；关闭则整棵树立刻完整显示。" }),
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "默认脑图命名是否添加AI工具标记" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: true, label: "开" }, { value: false, label: "关" }],
+							value: value.includeAIToolMarker,
+							disabled: saving,
+							onChange: (v) => setField({ includeAIToolMarker: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启例：YYYYMMDD-HHmmss-DSH-项目盘点.md；关闭例：YYYYMMDD-HHmmss-项目盘点.md。AI 工具标记指宿主 DSH，不是模型；只对默认命名生效，显式 name 不变。" }),
 				] }),
 				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "写入确认" }),
 				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
@@ -174,6 +185,7 @@
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: value.approvalMode === "session" ? "本会话首次写入当前脑图后，后续普通更新无需重复确认。切换文件或会话会重新确认。" : value.approvalMode === "off" ? "普通更新不再弹窗；重命名、删除和大范围重写仍需确认。" : "每次写入都会弹窗确认。" }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "DSH 明确授予完全文件权限时，普通新建和更新不额外确认；重命名、清空和大范围重写仍需确认。仅关闭审批弹窗不等于授予文件权限。" }),
 					value.approvalMode === "session" ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "授权状态显示在当前脑图工作区；可在那里撤销当前会话的普通写入授权。" }) : null,
 				] }),
 				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,

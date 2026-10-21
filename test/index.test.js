@@ -62,6 +62,9 @@ function createContext(config = {}, options = {}) {
     },
   }
   const ctx = {
+    get(name) {
+      return name === 'sandboxPolicy' ? options.sandboxPolicy : undefined
+    },
     root: { loader: { await: options.loaderAwait ?? (async () => {}) } },
     on(name, listener) {
       listeners.set(name, listener)
@@ -95,7 +98,7 @@ function createContext(config = {}, options = {}) {
     },
     // 0.1.7+ settings 服务面：真实宿主仅有 describe/update，没有 register。
     inject(names, callback) {
-      if (names && names.includes('settings')) {
+      if (names && names.includes('settings') && options.settingsAvailable !== false) {
         callback({
           settings: settingsService,
           root: ctx.root,
@@ -146,6 +149,16 @@ test('apply registers the four tools and the GUIDANCE section', () => {
   assert.ok(sections[0].text.includes('never a fragment'))
 })
 
+test('mindmap guidance routes directly to native tools instead of skills or scripts', () => {
+  const guidance = createContext().sections[0].text
+  assert.match(guidance, /use only the native `mindmap_\*` tools/i)
+  assert.match(guidance, /do not (?:search for|discover), load, or install skills/i)
+  assert.match(guidance, /workbuddy-mindmap/)
+  assert.match(guidance, /find-skills/)
+  assert.match(guidance, /do not use (?:shell|bash).*scripts/i)
+  assert.match(guidance, /approval prompts are disabled.*not.*permission/i)
+})
+
 test('mindmap_create files an explicit name into the inbox and reports root title', async () => {
   const cwd = await tmpWorkspace()
   const { byName } = createContext()
@@ -165,11 +178,59 @@ test('mindmap_create auto-names a nameless request with the host timestamp', asy
   const cwd = await tmpWorkspace()
   const { byName } = createContext()
   const result = parseResult(await byName('mindmap_create').execute({ description: '项目盘点' }, execution(cwd)))
-  assert.match(result.path, new RegExp(`^${join(cwd, DEFAULT_MINDMAP_DIR).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/\\d{8}-\\d{6}-项目盘点\\.md$`))
-  assert.match(result.rootTitle, /^\d{8}-\d{6}-项目盘点$/)
+  assert.match(result.path, new RegExp(`^${join(cwd, DEFAULT_MINDMAP_DIR).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/\\d{8}-\\d{6}-DSH-项目盘点\\.md$`))
+  assert.match(result.rootTitle, /^\d{8}-\d{6}-DSH-项目盘点$/)
   assert.equal(await readFile(result.path, 'utf8'), '')
   // 根标题暂时带上时间戳（036 第四节）：文件名与显示标题分离是独立需求。
   assert.equal(JSON.parse(await byName('mindmap_get').execute({ path: result.path }, execution(cwd))).op, 'get')
+})
+
+test('default naming uses the host tool DSH rather than the selected AI provider or model', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName } = createContext()
+  const exec = { ...execution(cwd) }
+  exec.agent.options = { provider: 'example-provider', model: 'example-model' }
+  const result = parseResult(await byName('mindmap_create').execute({ description: '项目盘点' }, exec))
+  assert.match(result.rootTitle, /^\d{8}-\d{6}-DSH-项目盘点$/)
+  assert.doesNotMatch(result.path, /example-provider|example-model/)
+})
+
+test('default naming marker follows live settings and leaves existing documents untouched', async () => {
+  const cwd = await tmpWorkspace()
+  const { byName, settingsService } = createContext()
+  const create = byName('mindmap_create')
+  const first = parseResult(await create.execute({ description: '开启标记' }, execution(cwd)))
+  assert.match(first.rootTitle, /^\d{8}-\d{6}-DSH-开启标记$/)
+  await settingsService.update('mindmap', { includeAIToolMarker: false }, 0)
+  const second = parseResult(await create.execute({ description: '关闭标记' }, execution(cwd)))
+  assert.match(second.rootTitle, /^\d{8}-\d{6}-关闭标记$/)
+  await settingsService.update('mindmap', { includeAIToolMarker: true }, 1)
+  const third = parseResult(await create.execute({ description: '恢复标记' }, execution(cwd)))
+  assert.match(third.rootTitle, /^\d{8}-\d{6}-DSH-恢复标记$/)
+  const names = await readdir(join(cwd, DEFAULT_MINDMAP_DIR))
+  assert.deepEqual(names.sort(), [first, second, third].map(value => `${value.rootTitle}.md`).sort())
+})
+
+test('volatile entry configuration also controls the tool marker without a settings service', async () => {
+  const cwd = await tmpWorkspace()
+  let enabled = true
+  const { byName } = createContext({ includeAIToolMarker: { get: () => enabled } }, { settingsAvailable: false })
+  const create = byName('mindmap_create')
+  const first = parseResult(await create.execute({ description: '标记开启' }, execution(cwd)))
+  assert.match(first.rootTitle, /^\d{8}-\d{6}-DSH-标记开启$/)
+  enabled = false
+  const second = parseResult(await create.execute({ description: '标记关闭' }, execution(cwd)))
+  assert.match(second.rootTitle, /^\d{8}-\d{6}-标记关闭$/)
+})
+
+test('explicit titles do not acquire a timestamp or tool marker in either setting', async () => {
+  for (const includeAIToolMarker of [true, false]) {
+    const cwd = await tmpWorkspace()
+    const { byName } = createContext({ includeAIToolMarker })
+    const created = parseResult(await byName('mindmap_create').execute({ name: '自定标题', description: '忽略描述' }, execution(cwd)))
+    assert.equal(created.rootTitle, '自定标题')
+    assert.equal(created.path, join(cwd, DEFAULT_MINDMAP_DIR, '自定标题.md'))
+  }
 })
 
 test('mindmap_create reuses an existing inbox without disturbing it', async () => {
@@ -219,8 +280,8 @@ test('sanitizeDescription cleans whitespace, truncates and rejects unsafe phrase
 test('planCreatePaths is pure and pins the stamp for both approval and execute', () => {
   const now = new Date(2026, 8, 18, 15, 52, 30)
   assert.deepEqual(planCreatePaths('/w', { description: '项目盘点' }, now), {
-    stem: '20260918-155230-项目盘点',
-    relative: join('.mindmaps', '20260918-155230-项目盘点.md'),
+    stem: '20260918-155230-DSH-项目盘点',
+    relative: join('.mindmaps', '20260918-155230-DSH-项目盘点.md'),
     defaultDir: true,
     autoNamed: true,
   })
@@ -232,6 +293,35 @@ test('planCreatePaths is pure and pins the stamp for both approval and execute',
   assert.deepEqual([placed.relative, placed.defaultDir], [join('docs', '架构.md'), false])
   assert.throws(() => planCreatePaths(null, { description: 'x' }, now), /no working directory/)
 })
+
+test('pure naming plans apply the optional DSH marker only to generated names', () => {
+  const now = new Date(2026, 8, 18, 15, 52, 30)
+  assert.equal(internals.defaultStem(now, '项目盘点'), '20260918-155230-DSH-项目盘点')
+  assert.equal(internals.defaultStem(now, '项目盘点', false), '20260918-155230-项目盘点')
+  assert.equal(planCreatePaths('/w', { description: '项目盘点' }, now, false).relative,
+    join(DEFAULT_MINDMAP_DIR, '20260918-155230-项目盘点.md'))
+  assert.equal(planCreatePaths('/w', { description: '项目盘点', directory: 'notes' }, now).relative,
+    join('notes', '20260918-155230-DSH-项目盘点.md'))
+  for (const enabled of [true, false]) {
+    assert.equal(planCreatePaths('/w', { name: '自定标题' }, now, enabled).stem, '自定标题')
+  }
+})
+
+for (const initiallyEnabled of [true, false]) {
+  test(`a naming toggle during approval preserves the already planned path (initial ${initiallyEnabled})`, async () => {
+    const cwd = await tmpWorkspace()
+    const { byName, listeners, settingsService } = createContext({ includeAIToolMarker: initiallyEnabled })
+    const args = { description: '命名锁定' }
+    const exec = { ...execution(cwd), name: 'mindmap_create', arguments: args }
+    const target = approvedPath(await listeners.get('tools/pre-execute')(exec, async () => ({ kind: 'allow' })))
+    assert.equal(target.includes('-DSH-'), initiallyEnabled)
+    await settingsService.update('mindmap', { includeAIToolMarker: !initiallyEnabled }, 0)
+    const created = parseResult(await byName('mindmap_create').execute(args, exec))
+    assert.equal(created.path, target)
+    const next = parseResult(await byName('mindmap_create').execute({ description: '下一颗' }, execution(cwd)))
+    assert.equal(next.path.includes('-DSH-'), !initiallyEnabled)
+  })
+}
 
 test('stemForAttempt and firstFreeAttempt pick the next free default name', async () => {
   assert.equal(stemForAttempt('stem', 1), 'stem')
@@ -338,7 +428,7 @@ test('the approval target of a default create is the path actually written', asy
   assert.equal(ask.kind, 'ask')
   const target = approvedPath(ask)
   assert.equal(target, join(cwd, DEFAULT_MINDMAP_DIR, `${target.split('/').pop()}`))
-  assert.match(target.split('/').pop(), /^\d{8}-\d{6}-待确认\.md$/)
+  assert.match(target.split('/').pop(), /^\d{8}-\d{6}-DSH-待确认\.md$/)
   // 审批算出的路径必须就是写盘的那条：否则会话授权既记错文件、又白要一次确认。
   const created = parseResult(await byName('mindmap_create').execute(args, exec))
   assert.equal(created.path, target)
@@ -478,6 +568,9 @@ test('GUIDANCE and the create schema teach the inbox default', () => {
   assert.match(guidance, /never overwritten/)
   // 036 并发一致性：抢注后挪名要在结果里报真实路径，模型不能假设就是确认过的那条。
   assert.match(guidance, /reports the final path in the tool result/)
+  assert.match(guidance, /YYYYMMDD-HHmmss-DSH-<description>/)
+  assert.match(guidance, /includeAIToolMarker/)
+  assert.match(guidance, /not the selected model or provider/)
   const create = byName('mindmap_create')
   assert.deepEqual(create.parameters.required, [])
   assert.deepEqual(Object.keys(create.parameters.properties).sort(), ['description', 'directory', 'name'])
@@ -691,6 +784,149 @@ test('requireApproval gates mindmap_create and mindmap_update, and reads the set
   // 上游已拒绝时透传
   const denied = { kind: 'deny' }
   assert.equal(await listener({ name: 'mindmap_update', arguments: {} }, async () => denied), denied)
+})
+
+for (const mode of ['session', 'per-operation', 'off']) {
+  test(`host full file access skips ordinary create/update confirmations in ${mode} mode`, async () => {
+    const cwd = await tmpWorkspace()
+    const session = { header: { cwd } }
+    const resolvedSessions = []
+    const { listeners, byName, sessions, routes } = createContext({ approvalMode: mode }, {
+      sandboxPolicy: { resolve(request) {
+        assert.deepEqual(Object.keys(request), ['session'], 'the plugin must not supply a mode override')
+        resolvedSessions.push(request.session)
+        return { mode: 'danger-full-access', workspaceRoot: cwd }
+      } },
+    })
+    sessions.set('full-access', session)
+    const listener = listeners.get('tools/pre-execute')
+    const next = async () => ({ kind: 'allow' })
+    const createArgs = { name: 'Native' }
+    const create = { ...execution(cwd), agent: { id: 'full-access' }, name: 'mindmap_create', arguments: createArgs }
+    // DSH approval policy "never" rejects every ask: these calls must be allow,
+    // not ask (nor a fake successful result replacing a rejected execution).
+    assert.equal((await listener(create, next)).kind, 'allow')
+    const created = parseResult(await byName(create.name).execute(createArgs, create))
+    listeners.get('tools/result')(create, { isError: false })
+    const updateArgs = { path: created.path, content: '# Native\n- One\n', expectedRevision: created.revision }
+    const update = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: updateArgs }
+    assert.equal((await listener(update, next)).kind, 'allow')
+    await byName(update.name).execute(updateArgs, update)
+    listeners.get('tools/result')(update, { isError: false })
+    assert.equal(await readFile(created.path, 'utf8'), updateArgs.content)
+    assert.ok(resolvedSessions.length >= 2)
+    assert.ok(resolvedSessions.every(value => value === session))
+    const status = fakeRes()
+    await routes[0].handler(fakeReq({ url: '/mindmap/api/approval', headers: TRUSTED, body: JSON.stringify({ sessionId: 'full-access' }) }), status)
+    assert.deepEqual(JSON.parse(status.body).value, { mode: 'off', grantedDocuments: 0 })
+  })
+}
+
+test('full file access is live per session and never creates a reusable approval grant', async () => {
+  const cwd = await tmpWorkspace()
+  const first = { header: { cwd } }
+  const second = { header: { cwd } }
+  const policyModes = new Map([[first, 'danger-full-access'], [second, 'workspace-write']])
+  const { listeners, routes, sessions } = createContext({}, { sandboxPolicy: { resolve: ({ session }) => ({ mode: policyModes.get(session) }) } })
+  sessions.set('first', first)
+  const listener = listeners.get('tools/pre-execute')
+  const next = async () => ({ kind: 'allow' })
+  const call = session => ({ ...execution(cwd), agent: { session }, name: 'mindmap_create', arguments: { name: 'Native' } })
+  const full = call(first)
+  assert.equal((await listener(full, next)).kind, 'allow')
+  listeners.get('tools/result')(full, { isError: false })
+  assert.equal((await listener(call(second), next)).kind, 'ask')
+  for (const mode of ['workspace-write', 'read-only']) {
+    policyModes.set(first, mode)
+    assert.equal((await listener(call(first), next)).kind, 'ask', 'full access must not grant later restricted calls')
+    const status = fakeRes()
+    await routes[0].handler(fakeReq({ url: '/mindmap/api/approval', headers: TRUSTED, body: JSON.stringify({ sessionId: 'first' }) }), status)
+    assert.deepEqual(JSON.parse(status.body).value, { mode: 'session', grantedDocuments: 0 })
+  }
+  policyModes.set(first, 'danger-full-access')
+  assert.equal((await listener(call(first), next)).kind, 'allow')
+})
+
+for (const restrictedMode of ['read-only', 'workspace-write']) {
+  test(`returning from full access to ${restrictedMode} invalidates existing grants only for that session`, async () => {
+    const cwd = await tmpWorkspace()
+    const first = { header: { cwd } }
+    const other = { header: { cwd } }
+    const modes = new Map([[first, 'workspace-write'], [other, 'workspace-write']])
+    const { listeners, sessions, routes } = createContext({}, { sandboxPolicy: { resolve: ({ session }) => ({ mode: modes.get(session) }) } })
+    sessions.set('first', first)
+    const listener = listeners.get('tools/pre-execute')
+    const next = async () => ({ kind: 'allow' })
+    const call = session => ({ ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } })
+    for (const session of [first, other]) {
+      const pending = call(session)
+      assert.equal((await listener(pending, next)).kind, 'ask')
+      listeners.get('tools/result')(pending, { isError: false })
+      assert.equal((await listener(call(session), next)).kind, 'allow')
+    }
+    modes.set(first, 'danger-full-access')
+    assert.equal((await listener(call(first), next)).kind, 'allow')
+    const status = fakeRes()
+    await routes[0].handler(fakeReq({ url: '/mindmap/api/approval', headers: TRUSTED, body: JSON.stringify({ sessionId: 'first' }) }), status)
+    assert.deepEqual(JSON.parse(status.body).value, { mode: 'off', grantedDocuments: 0 })
+    modes.set(first, restrictedMode)
+    assert.equal((await listener(call(first), next)).kind, 'ask')
+    assert.equal((await listener(call(other), next)).kind, 'allow', 'another session keeps its own grant')
+  })
+}
+
+test('an approval pending before a full-access transition cannot restore an old grant', async () => {
+  const cwd = await tmpWorkspace()
+  let mode = 'workspace-write'
+  const { listeners } = createContext({}, { sandboxPolicy: { resolve: () => ({ mode }) } })
+  const listener = listeners.get('tools/pre-execute')
+  const next = async () => ({ kind: 'allow' })
+  const session = { header: { cwd } }
+  const call = () => ({ ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'a.md', content: 'x' } })
+  const pending = call()
+  assert.equal((await listener(pending, next)).kind, 'ask')
+  mode = 'danger-full-access'
+  assert.equal((await listener(call(), next)).kind, 'allow')
+  mode = 'workspace-write'
+  listeners.get('tools/result')(pending, { isError: false })
+  assert.equal((await listener(call(), next)).kind, 'ask')
+})
+
+test('missing, failed, or unrecognized host policies never waive configured approvals', async () => {
+  const cwd = await tmpWorkspace()
+  const policies = [undefined, {}, { resolve() { throw new Error('unavailable') } }, { resolve: () => undefined },
+    ...[undefined, 'unknown', 'workspace-write', 'read-only'].map(mode => ({ resolve: () => ({ mode }) }))]
+  for (const sandboxPolicy of policies) {
+    const { listeners } = createContext({}, { sandboxPolicy })
+    const call = { ...execution(cwd), name: 'mindmap_create', arguments: { name: 'Native', mode: 'danger-full-access' } }
+    assert.equal((await listeners.get('tools/pre-execute')(call, async () => ({ kind: 'allow' }))).kind, 'ask')
+  }
+  const { listeners } = createContext({}, { sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) } })
+  const agentless = { name: 'mindmap_create', arguments: { name: 'Native' } }
+  assert.equal((await listeners.get('tools/pre-execute')(agentless, async () => ({ kind: 'allow' }))).kind, 'ask')
+})
+
+test('full file access preserves upstream asks, denials, and cancellations', async () => {
+  const { listeners } = createContext({}, { sandboxPolicy: { resolve() { throw new Error('must not be consulted') } } })
+  const call = { ...execution('/w'), name: 'mindmap_create', arguments: { name: 'Native' } }
+  for (const kind of ['ask', 'deny', 'cancel']) {
+    const upstream = { kind, reason: 'upstream policy' }
+    assert.equal(await listeners.get('tools/pre-execute')(call, async () => upstream), upstream)
+  }
+})
+
+test('host full file access still confirms rename, cleared content, and broad rewrites', async () => {
+  const cwd = await tmpWorkspace()
+  const original = 'a'.repeat(20 * 1024)
+  await writeFile(join(cwd, 'large.md'), original, 'utf8')
+  const { listeners } = createContext({ approvalMode: 'off', requireApproval: false }, {
+    sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) },
+  })
+  for (const args of [{ renameRoot: 'Renamed' }, { content: '' }, { content: 'z'.repeat(20 * 1024) }]) {
+    const call = { ...execution(cwd), name: 'mindmap_update', arguments: { path: 'large.md', ...args } }
+    assert.equal((await listeners.get('tools/pre-execute')(call, async () => ({ kind: 'allow' }))).kind, 'ask')
+  }
+  assert.equal(await readFile(join(cwd, 'large.md'), 'utf8'), original)
 })
 
 test('approval hook keeps malformed create arguments on the normal tool path', async () => {
@@ -1023,6 +1259,12 @@ test('Config schema fields are all marked volatile for 0.1.7 settings storage', 
   }
 })
 
+test('the tool marker setting defaults on and uses a volatile boolean schema', () => {
+  assert.equal(CONFIG_DEFAULTS.includeAIToolMarker, true)
+  assert.ok(Config.dict.includeAIToolMarker)
+  assert.equal(Config.dict.includeAIToolMarker.meta.volatile, true)
+})
+
 test('host approval follows describe/update changes without the removed register API', async () => {
   const cwd = await tmpWorkspace()
   const { listeners, settingsService, settingsUpdates } = createContext()
@@ -1160,6 +1402,8 @@ jumpserver:
   requireApproval: false
 `
   assert.deepEqual(parseLegacyMindmapSection(raw4), { requireApproval: false })
+  assert.deepEqual(parseLegacyMindmapSection('mindmap:\n  includeAIToolMarker: false\n'), { includeAIToolMarker: false })
+  assert.equal(parseLegacyMindmapSection('mindmap:\n  includeAIToolMarker: invalid\n'), null)
 
   // 空文件
   assert.equal(parseLegacyMindmapSection(''), null)

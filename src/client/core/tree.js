@@ -50,12 +50,18 @@
 			return raw === DEFAULT_MINDMAP_DIR ? DEFAULT_MINDMAP_DIR_LABEL : raw;
 		}
 
+		/** 脑图入口直接路由到原生工具，不让通用技能发现把请求带到其它宿主。 */
+		function nativeMindmapCommand(text) {
+			return `${text}。本次脑图操作只使用 mindmap_ 开头的原生工具，不查找或加载技能，不运行外部脚本。`;
+		}
+
 		/** 新建入口文案：有目录上下文就写进那个目录，没有才交给默认收件箱。 */
 		function treeCreateDraft(relDirectory) {
 			const dir = String(relDirectory ?? "").trim();
-			return dir
-				? `我想在 ${dir} 目录里创建一个 Markdown 脑图`
-				: `我想新建一个脑图，按默认命名放进 ${DEFAULT_MINDMAP_DIR} 脑图收件箱`;
+			const request = dir
+				? `请直接用 mindmap_create 在 ${dir} 目录里创建一个 Markdown 脑图`
+				: `请直接用 mindmap_create 新建一个脑图，按默认命名放进 ${DEFAULT_MINDMAP_DIR} 脑图收件箱`;
+			return nativeMindmapCommand(`${request}。默认命名时只传 description，不传 name；文件名、时间戳和 AI 工具标记由宿主 DSH 按设置自动处理，不要自行拼接名字、时间戳或标记`);
 		}
 
 		function treeCreateLabel(relDirectory) {

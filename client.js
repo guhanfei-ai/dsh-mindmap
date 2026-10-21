@@ -392,6 +392,14 @@ window.__ModuleLoader__.load({
 			return [target];
 		}
 
+		/** 复制节点路径：根到当前节点的单行纯文本，不加聊天协议或展开子树。 */
+		function nodePathText(root, target) {
+			return nodePathTo(root, target).map((node) => {
+				const label = String(node.topic ?? "").replace(/\s+/g, " ").trim();
+				return label || EMPTY_NODE_MARKER;
+			}).join("--->");
+		}
+
 		/**
 		 * 037 复制节点及子节点为文本：每个节点一行，每层 2 个半角空格。
 		 * 多行节点内容的每一行都带同一层级前缀，空节点用明确标记保留其存在性。
@@ -1133,12 +1141,18 @@ window.__ModuleLoader__.load({
 			return raw === DEFAULT_MINDMAP_DIR ? DEFAULT_MINDMAP_DIR_LABEL : raw;
 		}
 
+		/** 脑图入口直接路由到原生工具，不让通用技能发现把请求带到其它宿主。 */
+		function nativeMindmapCommand(text) {
+			return `${text}。本次脑图操作只使用 mindmap_ 开头的原生工具，不查找或加载技能，不运行外部脚本。`;
+		}
+
 		/** 新建入口文案：有目录上下文就写进那个目录，没有才交给默认收件箱。 */
 		function treeCreateDraft(relDirectory) {
 			const dir = String(relDirectory ?? "").trim();
-			return dir
-				? `我想在 ${dir} 目录里创建一个 Markdown 脑图`
-				: `我想新建一个脑图，按默认命名放进 ${DEFAULT_MINDMAP_DIR} 脑图收件箱`;
+			const request = dir
+				? `请直接用 mindmap_create 在 ${dir} 目录里创建一个 Markdown 脑图`
+				: `请直接用 mindmap_create 新建一个脑图，按默认命名放进 ${DEFAULT_MINDMAP_DIR} 脑图收件箱`;
+			return nativeMindmapCommand(`${request}。默认命名时只传 description，不传 name；文件名、时间戳和 AI 工具标记由宿主 DSH 按设置自动处理，不要自行拼接名字、时间戳或标记`);
 		}
 
 		function treeCreateLabel(relDirectory) {
@@ -1821,6 +1835,7 @@ window.__ModuleLoader__.load({
 							defaultPanelWidth: v && typeof v.defaultPanelWidth === "number" ? v.defaultPanelWidth : 42,
 							// 018：旧设置/读不到都默认开（!== false 语义）。
 							growthAnimation: !(v && v.growthAnimation === false),
+							includeAIToolMarker: !(v && v.includeAIToolMarker === false),
 						});
 					} catch (err) {
 						if (alive) setError(String(err?.message ?? err));
@@ -1939,6 +1954,16 @@ window.__ModuleLoader__.load({
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启后，脑图每次更新的新增/变化节点会逐个渐显长出（总时长不超过 2 秒）；关闭则整棵树立刻完整显示。" }),
+					(0, react_jsx_runtime.jsxs)("div", { style: S.settingsRow, children: [
+						(0, react_jsx_runtime.jsx)("span", { style: S.settingsLabel, children: "默认脑图命名是否添加AI工具标记" }),
+						(0, react_jsx_runtime.jsx)(Segmented, {
+							options: [{ value: true, label: "开" }, { value: false, label: "关" }],
+							value: value.includeAIToolMarker,
+							disabled: saving,
+							onChange: (v) => setField({ includeAIToolMarker: v }),
+						}),
+					] }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "开启例：YYYYMMDD-HHmmss-DSH-项目盘点.md；关闭例：YYYYMMDD-HHmmss-项目盘点.md。AI 工具标记指宿主 DSH，不是模型；只对默认命名生效，显式 name 不变。" }),
 				] }),
 				(0, react_jsx_runtime.jsx)("p", { style: S.settingsGroupTitle, children: "写入确认" }),
 				(0, react_jsx_runtime.jsxs)("div", { style: S.settingsGroup, children: [
@@ -1956,6 +1981,7 @@ window.__ModuleLoader__.load({
 						}),
 					] }),
 					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: value.approvalMode === "session" ? "本会话首次写入当前脑图后，后续普通更新无需重复确认。切换文件或会话会重新确认。" : value.approvalMode === "off" ? "普通更新不再弹窗；重命名、删除和大范围重写仍需确认。" : "每次写入都会弹窗确认。" }),
+					(0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "DSH 明确授予完全文件权限时，普通新建和更新不额外确认；重命名、清空和大范围重写仍需确认。仅关闭审批弹窗不等于授予文件权限。" }),
 					value.approvalMode === "session" ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "授权状态显示在当前脑图工作区；可在那里撤销当前会话的普通写入授权。" }) : null,
 				] }),
 				saving ? (0, react_jsx_runtime.jsx)("p", { style: S.settingsHint, children: "保存中…" }) : null,
@@ -2544,7 +2570,7 @@ window.__ModuleLoader__.load({
 						const fitStampRef = react.useRef([]);
 						const [zoom, setZoomState] = react.useState(1);
 							const [hover, setHover] = react.useState(null);
-							// 037 节点右键菜单：{x, y, node}；null = 关闭。busy 标记 chat/text/
+							// 037 节点右键菜单：{x, y, node}；null = 关闭。busy 标记 chat/self/path/text/
 							// copy/export 中的当前动作；任一动作在途时整张菜单禁用。
 							const [nodeMenu, setNodeMenu] = react.useState(null);
 							const [nodeMenuBusy, setNodeMenuBusy] = react.useState(null);
@@ -3252,7 +3278,7 @@ window.__ModuleLoader__.load({
 					setNodeMenu({ x: e.clientX, y: e.clientY, node: target });
 				}
 
-				// 037 菜单动作：chat = 节点焦点上下文自动发送；text = 子树文本写剪贴板；copy = PNG 写系统剪贴板
+				// 037 菜单动作：chat = 节点焦点上下文自动发送；self = 当前节点全文；path = 根到当前节点路径；text = 子树文本；copy = PNG 写系统剪贴板
 				// （可粘贴到聊天/文档）；export = PNG 下载为文件。图片范围 = 该节点
 				// 及其全部子孙（buildExportSvg 以任意节点为根重排布局，根样式随深度判定）。
 				async function onNodeMenuAction(mode) {
@@ -3263,6 +3289,8 @@ window.__ModuleLoader__.load({
 					try {
 						if (mode === "chat") submitNodeChat(nodeFocusPrompt(node, target));
 						else if (mode === "text") await copyPlainText(nodeTreeText(target));
+						else if (mode === "self") await copyPlainText(nodeFullText(target));
+						else if (mode === "path") await copyPlainText(nodePathText(node, target));
 						else if (mode === "copy") await copyPng(target, theme && theme.colorTheme);
 						else await exportPng(target, target.topic, theme && theme.colorTheme);
 						setNodeMenu(null);
@@ -3486,6 +3514,24 @@ window.__ModuleLoader__.load({
 								title: "把该节点及其全部子节点按层级缩进复制为文本",
 								onClick: () => onNodeMenuAction("text"),
 								children: nodeMenuBusy === "text" ? "复制中…" : "复制节点及子节点为文本",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuItemStyle("self"),
+								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("self"),
+								title: "只复制当前节点自身的完整文本，不包含路径和子节点",
+								onClick: () => onNodeMenuAction("self"),
+								children: nodeMenuBusy === "self" ? "复制中…" : "复制当前节点文本内容",
+							}),
+							(0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								style: nodeMenuItemStyle("path"),
+								disabled: Boolean(nodeMenuBusy),
+								...nodeMenuHoverProps("path"),
+								title: "把根节点到当前节点的路径复制到剪贴板，节点间使用 ---> 连接",
+								onClick: () => onNodeMenuAction("path"),
+								children: nodeMenuBusy === "path" ? "复制中…" : "复制节点路径",
 							}),
 							(0, react_jsx_runtime.jsx)("button", {
 								type: "button",
@@ -3800,7 +3846,7 @@ window.__ModuleLoader__.load({
 				if (draftBlocked()) return false;
 				if (!inputActions || typeof inputActions.setDraft !== "function" || typeof inputActions.submit !== "function") return false;
 				try {
-					inputActions.setDraft(text);
+					inputActions.setDraft(nativeMindmapCommand(text));
 					inputActions.submit();
 					return true;
 				} catch {
@@ -5322,6 +5368,7 @@ window.__ModuleLoader__.load({
 			escapePathSegment,
 			nodePathTo,
 			nodePathLabel,
+			nodePathText,
 			renderInline,
 			// 038 行内链接 token 拆解 + 脑图区主体模式判定（纯函数，供测试）。
 			parseInlineLinkToken,
