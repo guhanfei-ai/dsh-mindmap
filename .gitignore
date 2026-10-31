@@ -30,3 +30,7 @@ out
 node_modules
 __pycache__/
 **/__pycache__/
+
+# Local AI release executor (never commit)
+/deploy_agent.sh
+/out/deploy_agent/
