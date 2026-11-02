@@ -1228,6 +1228,29 @@ for (const [label, remote, expected] of [
   })
 }
 
+for (const approvalMode of ['session', 'per-operation', 'off']) {
+  test(`approval settings explain the full-access exception in ${approvalMode} mode`, async () => {
+    const driver = createEffectDriver()
+    const { SettingsPanel } = loadNamingClientSource(driver.hooks)
+    const props = { mindmapFace: { readSettings: async () => ({ approvalMode }) } }
+    try {
+      driver.beginRender()
+      SettingsPanel(props)
+      driver.flushMount()
+      await new Promise(resolve => setImmediate(resolve))
+      driver.beginRender()
+      const panel = SettingsPanel(props)
+      driver.flushUpdate()
+      const hints = collectTexts(panel).join('\n')
+      assert.match(hints, /非完全权限时/)
+      assert.match(hints, /DSH 明确授予完全文件权限时，新建、更新、重命名、清空和大范围重写均不额外请求插件确认/)
+      assert.match(hints, /路径、重名和版本冲突检查仍保留/)
+      assert.match(hints, /仅关闭审批弹窗不等于授予文件权限/)
+      assert.match(hints, /不会绕过宿主的其他审批决定/)
+    } finally { driver.unmount() }
+  })
+}
+
 test('default naming AI marker toggles save only the boolean patch immediately', async () => {
   const driver = createEffectDriver()
   const { SettingsPanel } = loadNamingClientSource(driver.hooks)

@@ -14,8 +14,8 @@
 //   供模型续编辑，client 用同一份重放面板（工具结果即实时通道，002 第二节）。
 // - requireApproval 配置（决策 6）：默认 true；approvalMode 默认按「当前会话 + 当前文件」
 //   首次确认，后续普通更新复用授权；per-operation 可恢复每次确认，off 关闭普通确认。
-//   宿主明确授予 danger-full-access 时普通写入不额外确认，不缓存成文档授权。
-//   重命名、清空和大范围重写始终重新确认，关闭普通确认也不能跳过。
+//   宿主明确授予 danger-full-access 时所有脑图写入不额外确认，不缓存成文档授权。
+//   非完全权限下，重命名、清空和大范围重写始终重新确认，关闭普通确认也不能跳过。
 //   015 起经 settings namespace 可运行时切换。
 // - 依赖：仅 @deepseek-ai/schemastery（settings schema；发布包正常解析，
 //   link 开发需先 npm i）。工具参数 schema 仍手写 JSON Schema（003 偏差 1）。
@@ -131,8 +131,8 @@ function configValue(value) {
 }
 
 export const Config = Schema.object({
-  requireApproval: Schema.boolean().default(true).description('Legacy switch: false skips ordinary confirmations only, and is lifted when the settings panel picks an explicit approval mode. Rename, clearing content, and broad rewrites always require approval.').extra('volatile', true),
-  approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. Explicit host danger-full-access skips ordinary confirmations. High-risk writes always require approval.').extra('volatile', true),
+  requireApproval: Schema.boolean().default(true).description('Legacy switch: false skips ordinary confirmations only, and is lifted when the settings panel picks an explicit approval mode. Rename, clearing content, and broad rewrites require approval unless the host explicitly grants danger-full-access.').extra('volatile', true),
+  approvalMode: Schema.union([...APPROVAL_MODES, 'once-per-document', 'always']).default('session').description('Confirm every ordinary write, once per document in the current session, or disable ordinary confirmations. Explicit host danger-full-access skips all plugin write confirmations, including rename, clearing content, and broad rewrites. Otherwise high-risk writes always require approval.').extra('volatile', true),
   defaultPanelWidth: Schema.number().default(42).description('Default floating-panel width as a percentage of the viewport (clamped 20-80 on the client).').extra('volatile', true),
   lineStyle: Schema.union(['curve', 'elbow']).default('elbow').description('Connector line style between nodes: curve (bezier) or elbow (orthogonal).').extra('volatile', true),
   cardStyle: Schema.union(['rounded', 'square']).default('rounded').description('Node card corner style.').extra('volatile', true),
@@ -185,7 +185,7 @@ Behavior rules:
 - Update step by step: whenever the request involves several parts, call mindmap_update as soon as each part is ready — several small updates beat one giant update at the end. The panel plays a growth animation on newly added/changed nodes, so step-by-step updates make the tree visibly grow while you work. Do not call mindmap_update twice in a row with identical content.
 - Never delete the whole document or restructure it without an explicit user request. Make the smallest change that answers the request.
 - When the user steps away or pauses (e.g. "我去买咖啡"), stop all mindmap edits immediately and wait — never continue autonomously.
-- Ordinary writes follow the host's live file policy: explicit \`danger-full-access\` skips the plugin's ordinary confirmations; otherwise native write approval defaults to once per document in the current session. \`per-operation\` asks for each ordinary write; \`off\` skips ordinary confirmations. Rename, clearing content, and broad rewrites still require confirmation in every mode. The current mindmap workspace shows and can revoke the current-session grants. If approval prompts are disabled, that is not permission to bypass a required confirmation; report the failure without claiming that the user personally clicked Reject. Never treat a rejected or failed write as approved.
+- Writes follow the host's live file policy: explicit \`danger-full-access\` skips all of this plugin's write confirmations, including rename, clearing content, and broad rewrites. This does not bypass upstream approval decisions or path, collision, size, and revision checks. Without full file access, native write approval defaults to once per document in the current session; \`per-operation\` asks for each ordinary write and \`off\` skips ordinary confirmations, but rename, clearing content, and broad rewrites still require confirmation. The current mindmap workspace shows and can revoke the current-session grants. If approval prompts are disabled, that alone is not file permission and does not bypass a required confirmation; report the failure without claiming that the user personally clicked Reject. Never treat a rejected or failed write as approved.
 - Never run any git command for these files. The user commits themselves.
 - Mindmap files stay inside the session working directory.`
 
@@ -734,12 +734,14 @@ export function apply(ctx, config = {}) {
   // 完全权限预设同时关闭审批弹窗（never）：额外返回 ask 会被宿主自动拒绝。
   // 只认公共 sandboxPolicy 对当前 session 的实时解析；never 本身不是授权。
   // 能力缺失、解析失败、未知模式或无会话时保留旧策略，不读部署默认值猜权限。
-  const ordinaryApprovalModeOf = (session) => {
+  const approvalPolicyOf = (session) => {
     let mode = readApprovalMode()
+    let fullAccess = false
     if (session && typeof session === 'object') {
       try {
         const policy = ctx.get?.('sandboxPolicy')?.resolve?.({ session })
-        if (policy?.mode === 'danger-full-access') mode = 'off'
+        fullAccess = policy?.mode === 'danger-full-access'
+        if (fullAccess) mode = 'off'
       } catch { /* 旧宿主或策略不可用时不新增免确认权限。 */ }
       const previous = effectiveApprovalModes.get(session)
       if (previous !== undefined && previous !== mode) {
@@ -748,7 +750,8 @@ export function apply(ctx, config = {}) {
       }
       effectiveApprovalModes.set(session, mode)
     }
-    return mode
+    // 配置的 off 只免普通确认；宿主完全文件权限才免除高风险确认，不能混为一谈。
+    return { mode, fullAccess }
   }
   const stateOf = (session) => {
     if (!session || typeof session !== 'object') return null
@@ -760,7 +763,7 @@ export function apply(ctx, config = {}) {
     return state
   }
   const approvalStatusOf = (session) => {
-    const mode = ordinaryApprovalModeOf(session)
+    const { mode } = approvalPolicyOf(session)
     const state = session && typeof session === 'object' ? approvedTargets.get(session) : null
     return { mode, grantedDocuments: state?.paths.size ?? 0 }
   }
@@ -846,9 +849,12 @@ export function apply(ctx, config = {}) {
     const args = exec.arguments ?? {}
     const session = sessionOf(exec)
     const target = await targetOf(exec)
+    const { mode, fullAccess } = approvalPolicyOf(session)
+    // 完全权限涵盖所有脑图写入；不请求宿主无法展示的额外确认，也不缓存授权。
+    // 只跳过本插件的确认，execute 中的路径、重名、大小与 revision 校验照常执行。
+    if (fullAccess) return decision
     const rename = exec.name === 'mindmap_update' && typeof args.renameRoot === 'string' && args.renameRoot.trim()
     const deleteDocument = exec.name === 'mindmap_update' && typeof args.content === 'string' && args.content.trim() === ''
-    const mode = ordinaryApprovalModeOf(session)
     const broadRewrite = await needsRewriteApproval(exec, target, args.content)
     const highRisk = Boolean(rename || deleteDocument || broadRewrite)
     if (mode === 'off' && !highRisk) return decision
@@ -866,7 +872,7 @@ export function apply(ctx, config = {}) {
     const bytes = typeof args.content === 'string' ? byteLength(args.content) : 0
     return {
       kind: 'ask',
-      reason: `${rename ? 'Rename and write' : deleteDocument ? 'Delete mindmap content' : broadRewrite ? 'Broad rewrite' : 'Write'} mindmap ${JSON.stringify(String(args.path ?? '?'))} (${bytes} bytes${renameNote}). ${highRisk ? 'This operation always requires confirmation.' : mode === 'per-operation' ? 'Confirm this write.' : 'Confirm once for this document in the current session.'}`,
+      reason: `${rename ? 'Rename and write' : deleteDocument ? 'Delete mindmap content' : broadRewrite ? 'Broad rewrite' : 'Write'} mindmap ${JSON.stringify(String(args.path ?? '?'))} (${bytes} bytes${renameNote}). ${highRisk ? 'Without host full file access, this operation requires confirmation.' : mode === 'per-operation' ? 'Confirm this write.' : 'Confirm once for this document in the current session.'}`,
     }
   })
 
@@ -878,7 +884,7 @@ export function apply(ctx, config = {}) {
     if (!pending) return
     pendingApprovals.delete(exec)
     if (result?.isError !== false || exec.signal?.aborted) return
-    if (ordinaryApprovalModeOf(pending.session) !== 'session') return
+    if (approvalPolicyOf(pending.session).mode !== 'session') return
     // 撤销或策略切换之后，尚未结束的旧调用不能重新恢复授权。
     if (approvedTargets.get(pending.session) !== pending.state || pending.state.generation !== pending.generation) return
     // 审批后被抢注、实际写到了 -2 的情形：授权记真实路径，不记用户没见过的那条。

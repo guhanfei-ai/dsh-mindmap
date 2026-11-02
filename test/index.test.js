@@ -159,6 +159,15 @@ test('mindmap guidance routes directly to native tools instead of skills or scri
   assert.match(guidance, /approval prompts are disabled.*not.*permission/i)
 })
 
+test('guidance distinguishes host full access from ordinary confirmation opt-outs', () => {
+  const guidance = createContext().sections[0].text
+  assert.match(guidance, /explicit `danger-full-access` skips all of this plugin's write confirmations, including rename, clearing content, and broad rewrites/)
+  assert.match(guidance, /does not bypass upstream approval decisions or path, collision, size, and revision checks/)
+  assert.match(guidance, /Without full file access.*rename, clearing content, and broad rewrites still require confirmation/)
+  assert.match(guidance, /approval prompts are disabled.*not file permission/)
+  assert.doesNotMatch(guidance, /require confirmation in every mode/)
+})
+
 test('mindmap_create files an explicit name into the inbox and reports root title', async () => {
   const cwd = await tmpWorkspace()
   const { byName } = createContext()
@@ -915,18 +924,141 @@ test('full file access preserves upstream asks, denials, and cancellations', asy
   }
 })
 
-test('host full file access still confirms rename, cleared content, and broad rewrites', async () => {
+for (const config of [{ approvalMode: 'session' }, { approvalMode: 'per-operation' }, { approvalMode: 'off' }, { requireApproval: false }]) {
+  test(`host full file access permits rename, clearing, and broad rewrites with ${JSON.stringify(config)}`, async (t) => {
+    const cwd = await tmpWorkspace()
+    t.after(() => rm(cwd, { recursive: true, force: true }))
+    const session = { header: { cwd } }
+    const { listeners, byName, sessions, routes } = createContext(config, {
+      sandboxPolicy: { resolve(request) {
+        assert.deepEqual(request, { session }, 'only the live host session policy grants full access')
+        return { mode: 'danger-full-access' }
+      } },
+    })
+    sessions.set('full-access', session)
+    const cases = [
+      { name: 'rename-only', patch: { renameRoot: 'Renamed' } },
+      { name: 'rename-and-write', patch: { renameRoot: 'Updated', content: '# Updated\n' } },
+      { name: 'clear', patch: { content: '' } },
+      { name: 'whitespace', patch: { content: ' \n\t' } },
+      { name: 'broad', patch: { content: 'z'.repeat(20 * 1024) } },
+      { name: 'ratio', original: 'a'.repeat(6 * 1024), patch: { content: 'z'.repeat(6 * 1024) } },
+    ]
+    for (const [index, { name, original = 'a'.repeat(20 * 1024), patch }] of cases.entries()) {
+      const path = join(cwd, `${name}.md`)
+      await writeFile(path, original, 'utf8')
+      const args = { path, ...patch, expectedRevision: internals.revisionOfContent(original) }
+      // Cover both host generations: agent.session and agent.id -> sessions.get.
+      const call = { ...execution(cwd), agent: index % 2 ? { session } : { id: 'full-access' }, name: 'mindmap_update', arguments: args }
+      const decision = await listeners.get('tools/pre-execute')(call, async () => ({ kind: 'allow' }))
+      // With approval policy "never", an ask is rejected before execute runs.
+      assert.equal(decision.kind, 'allow', `${name} must not request an extra approval`)
+      const result = parseResult(await byName(call.name).execute(args, call))
+      listeners.get('tools/result')(call, { isError: false })
+      const expectedContent = patch.content ?? original
+      const expectedPath = patch.renameRoot ? join(cwd, `${patch.renameRoot}.md`) : path
+      assert.equal(result.path, expectedPath)
+      assert.equal(result.content, expectedContent)
+      assert.equal(result.revision, internals.revisionOfContent(expectedContent))
+      assert.equal(await readFile(expectedPath, 'utf8'), expectedContent)
+      if (patch.renameRoot) {
+        assert.equal(result.renamedFrom, path)
+        await assert.rejects(readFile(path), { code: 'ENOENT' })
+      }
+    }
+    const status = fakeRes()
+    await routes[0].handler(fakeReq({ url: '/mindmap/api/approval', headers: TRUSTED, body: JSON.stringify({ sessionId: 'full-access' }) }), status)
+    assert.deepEqual(JSON.parse(status.body).value, { mode: 'off', grantedDocuments: 0 })
+  })
+}
+
+test('high-risk writes follow live full-access changes without granting other sessions', async (t) => {
   const cwd = await tmpWorkspace()
+  t.after(() => rm(cwd, { recursive: true, force: true }))
   const original = 'a'.repeat(20 * 1024)
   await writeFile(join(cwd, 'large.md'), original, 'utf8')
-  const { listeners } = createContext({ approvalMode: 'off', requireApproval: false }, {
-    sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) },
+  const first = { header: { cwd } }
+  const other = { header: { cwd } }
+  let mode = 'workspace-write'
+  const { listeners } = createContext({ approvalMode: 'off' }, {
+    sandboxPolicy: { resolve: ({ session }) => ({ mode: session === first ? mode : 'workspace-write' }) },
   })
-  for (const args of [{ renameRoot: 'Renamed' }, { content: '' }, { content: 'z'.repeat(20 * 1024) }]) {
-    const call = { ...execution(cwd), name: 'mindmap_update', arguments: { path: 'large.md', ...args } }
+  const listener = listeners.get('tools/pre-execute')
+  const next = async () => ({ kind: 'allow' })
+  for (const currentMode of ['workspace-write', 'danger-full-access', 'read-only', 'danger-full-access', 'workspace-write']) {
+    mode = currentMode
+    for (const session of [first, other]) {
+      for (const patch of [{ renameRoot: 'Renamed' }, { content: '' }, { content: 'z'.repeat(20 * 1024) }]) {
+        const call = { ...execution(cwd), agent: { session }, name: 'mindmap_update', arguments: { path: 'large.md', ...patch } }
+        const fullAccess = session === first && mode === 'danger-full-access'
+        assert.equal((await listener(call, next)).kind, fullAccess ? 'allow' : 'ask')
+        if (fullAccess) listeners.get('tools/result')(call, { isError: false })
+      }
+    }
+  }
+  assert.equal(await readFile(join(cwd, 'large.md'), 'utf8'), original)
+})
+
+test('ordinary opt-outs and unavailable host policies never waive high-risk confirmations', async (t) => {
+  const cwd = await tmpWorkspace()
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const original = 'a'.repeat(20 * 1024)
+  await writeFile(join(cwd, 'large.md'), original, 'utf8')
+  const policies = [undefined, {}, { resolve() { throw new Error('unavailable') } }, { resolve: () => undefined },
+    ...[undefined, 'unknown', 'off', 'workspace-write', 'read-only'].map(mode => ({ resolve: () => ({ mode }) }))]
+  for (const sandboxPolicy of policies) {
+    const { listeners } = createContext({ approvalMode: 'off', requireApproval: false }, { sandboxPolicy })
+    for (const patch of [{ renameRoot: 'Renamed' }, { content: '' }, { content: 'z'.repeat(20 * 1024) }]) {
+      const call = { ...execution(cwd), name: 'mindmap_update', arguments: { path: 'large.md', ...patch, mode: 'danger-full-access', approvalPolicy: 'never' } }
+      assert.equal((await listeners.get('tools/pre-execute')(call, async () => ({ kind: 'allow' }))).kind, 'ask')
+    }
+  }
+  const { listeners } = createContext({ approvalMode: 'off' }, { sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) } })
+  for (const agent of [undefined, { id: 'missing-session' }]) {
+    const call = { agent, name: 'mindmap_update', arguments: { path: join(cwd, 'large.md'), renameRoot: 'Renamed' } }
     assert.equal((await listeners.get('tools/pre-execute')(call, async () => ({ kind: 'allow' }))).kind, 'ask')
   }
   assert.equal(await readFile(join(cwd, 'large.md'), 'utf8'), original)
+})
+
+test('full-access rename still respects upstream ask, deny, and cancel decisions', async () => {
+  const { listeners } = createContext({}, { sandboxPolicy: { resolve() { throw new Error('must not be consulted') } } })
+  const call = { ...execution('/w'), name: 'mindmap_update', arguments: { path: 'doc.md', renameRoot: 'Renamed' } }
+  for (const kind of ['ask', 'deny', 'cancel']) {
+    const upstream = { kind, reason: 'upstream policy' }
+    assert.equal(await listeners.get('tools/pre-execute')(call, async () => upstream), upstream)
+  }
+})
+
+test('full access preserves revision, collision, path, and content-size validation', async (t) => {
+  const cwd = await tmpWorkspace()
+  const outside = await tmpWorkspace()
+  t.after(() => Promise.all([cwd, outside].map(path => rm(path, { recursive: true, force: true }))))
+  const original = '# Original\n'
+  await writeFile(join(cwd, 'doc.md'), original, 'utf8')
+  await writeFile(join(cwd, 'occupied.md'), '# Keep\n', 'utf8')
+  await writeFile(join(outside, 'external.md'), '# Outside\n', 'utf8')
+  await symlink(join(outside, 'external.md'), join(cwd, 'link.md'))
+  const { listeners, byName } = createContext({}, { sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) } })
+  const cases = [
+    { args: { path: 'doc.md', renameRoot: 'New', content: '# Stale\n', expectedRevision: internals.revisionOfContent('# Old\n') }, error: /changed since it was read/ },
+    { args: { path: 'doc.md', renameRoot: 'occupied', content: '# Replace\n' }, error: /already exists/ },
+    { args: { path: 'doc.md', renameRoot: '../escape' }, error: /Invalid mindmap name/ },
+    { args: { path: '../escape.md', content: '' }, error: /stay inside/ },
+    { args: { path: 'link.md', content: '' }, error: /stay inside/ },
+    { args: { path: 'missing.md', renameRoot: 'New' }, error: /not found/ },
+    { args: { path: 'doc.md', renameRoot: 'New', content: 'x'.repeat(internals.MAX_CONTENT_BYTES + 1) }, error: /exceeds the .*-byte limit/ },
+  ]
+  for (const { args, error } of cases) {
+    const call = { ...execution(cwd), name: 'mindmap_update', arguments: args }
+    assert.equal((await listeners.get('tools/pre-execute')(call, async () => ({ kind: 'allow' }))).kind, 'allow')
+    await assert.rejects(byName(call.name).execute(args, call), error)
+    listeners.get('tools/result')(call, { isError: true })
+    assert.equal(await readFile(join(cwd, 'doc.md'), 'utf8'), original)
+    assert.equal(await readFile(join(cwd, 'occupied.md'), 'utf8'), '# Keep\n')
+    assert.equal(await readFile(join(outside, 'external.md'), 'utf8'), '# Outside\n')
+    assert.deepEqual((await readdir(cwd)).sort(), ['doc.md', 'link.md', 'occupied.md'])
+  }
 })
 
 test('approval hook keeps malformed create arguments on the normal tool path', async () => {
