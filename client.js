@@ -868,13 +868,22 @@ window.__ModuleLoader__.load({
 		 * content 文本块——host 的工具结果 JSON 就写在其中）。Code 等工具的结果
 		 * 还可能把真实的 mindmap ToolResultNode 放在 subCalls 中，因此这里按事件
 		 * 顺序递归重放整棵调用树。
-		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标。
+		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标；
+		 * latestActivePath（issue #4）= 最后一次 create/open/update 的文档，
+		 * 作焦点同步的事件驱动比较基准——order 只反映首次出现顺序，不可比。
 		 */
+		// issue #4 焦点同步的事件驱动基准：这些 op 的成功结果代表 AI「最后正在
+		// 打开/编辑」的文档。get 是纯读（模型常仅为回答问题而读），不算焦点，
+		// 否则读一下另一颗脑图就会把面板的同步基准拽走。
+		const ACTIVE_OPS = new Set(["create", "open", "update"]);
+
 		function reduceDocuments(nodes, cache) {
 			const byPath = Object.create(null);
 			let order = [];
 			let latestOpeningPath = null;
 			let latestOpeningEventKey = null;
+			// 最后一次 create/open/update 成功事件的文档路径（事件驱动焦点）。
+			let latestActivePath = null;
 			// 016 错误捕获（S2 成因）：isError / ok!==true 的 mindmap_* 结果不进
 			// 文档集（语义不变），但记录为错误信号——errorByPath（可归因路径的
 			// 最近错误）+ latestError（最近一次 mindmap 错误，含无路径归因的）。
@@ -923,6 +932,9 @@ window.__ModuleLoader__.load({
 								latestOpeningPath = parsed.path;
 								latestOpeningEventKey = eventKey;
 							}
+							// issue #4：update（含 renameRoot 的新路径）同样移动
+							// 事件焦点——AI 编辑过谁，焦点就在谁。
+							if (ACTIVE_OPS.has(op)) latestActivePath = parsed.path;
 							if (renamedFrom && renamedDocument && renamedFrom !== parsed.path) {
 								delete byPath[renamedFrom];
 								order = order.filter((p) => p !== renamedFrom);
@@ -974,7 +986,7 @@ window.__ModuleLoader__.load({
 			for (const [nodeIndex, node] of (Array.isArray(nodes) ? nodes : []).entries()) {
 				replayNode(node, String(nodeIndex), 0);
 			}
-			return { order, byPath, latestOpeningPath, latestOpeningEventKey, errorByPath, latestError };
+			return { order, byPath, latestOpeningPath, latestOpeningEventKey, latestActivePath, errorByPath, latestError };
 		}
 
 		/**
@@ -1021,6 +1033,7 @@ window.__ModuleLoader__.load({
 				byPath,
 				latestOpeningPath: snapshot?.latestOpeningPath ?? null,
 				latestOpeningEventKey: snapshot?.latestOpeningEventKey ?? null,
+				latestActivePath: snapshot?.latestActivePath ?? null,
 				errorByPath: snapshot?.errorByPath ?? {},
 				latestError: snapshot?.latestError ?? null,
 			};
@@ -3675,12 +3688,20 @@ window.__ModuleLoader__.load({
 			const [exporting, setExporting] = react.useState(false);
 			const [exportError, setExportError] = react.useState("");
 			const [filledHint, setFilledHint] = react.useState("");
+			// issue #4：焦点同步超上限静默的一次性提示。独立于 filledHint——后者
+			// 只渲染在目录视图，而触发上限时用户正盯着脑图，永远看不见。
+			const [focusNotice, setFocusNotice] = react.useState("");
 			// 032 复制全文：copying = 写剪贴板进行中；copiedOk = 成功短反馈
 			//（按钮文案短暂变「已复制 ✓」约 2s；失败复用 exportError 展示位）。
 			const [copying, setCopying] = react.useState(false);
 			const [copiedOk, setCopiedOk] = react.useState(false);
 			// fsTree：nodes = {path → 节点}, expanded = {path → true}, loading = {path → true}。
 			const [fsTree, setFsTree] = react.useState({ nodes: {}, expanded: {}, loading: {}, cwd: null, error: null });
+			// issue #4：cwd 只影响消息文本（相对/绝对路径），不改变「要不要发」。
+			// 用 ref 在发送时刻读最新值，避免 cwd 到达（重挂载后目录树异步加载完）
+			// 本身成为焦点同步 effect 的触发源。
+			const fsTreeRef = react.useRef(fsTree);
+			fsTreeRef.current = fsTree;
 			// 会话切换时递增，使旧请求的异步回包不能写入新会话的目录树。
 			const treeGenerationRef = react.useRef(0);
 			// 013 右键菜单：{x, y, kind: "root"|"dir", rel}；null = 关闭。
@@ -3748,11 +3769,21 @@ window.__ModuleLoader__.load({
 				? matchDocError(merged, doc.path, localErrorBaseRef.current)
 				: null;
 
-			// 013「所见即所编」焦点同步：AI 焦点 = 快照里最新工具结果的文档路径；
+			// 013「所见即所编」焦点同步：AI 焦点 = 最后一次 create/open/update 成功
+			// 事件的文档（事件驱动）。issue #4：order 只反映文档首次出现（创建）的
+			// 顺序，第二份脑图出现后 order 末位永远钉在较新文件上，显示旧文档时
+			// 比较永不相等——自发消息循环的根因；改成事件驱动后，模型打开/编辑了
+			// 用户正在看的文档，比较即可达「相等」从而收敛。
 			// 脑图视图激活且其文档 ≠ 焦点时，仅在草稿为空时自动发送，让 AI
 			// 跟上用户眼睛看的那颗脑图，又不覆盖用户正在编辑的消息。
-			const focusPath = docs.order.length > 0 ? docs.order[docs.order.length - 1] : null;
+			const focusPath = docs.latestActivePath
+				?? (docs.order.length > 0 ? docs.order[docs.order.length - 1] : null);
 			const focusSentRef = react.useRef(null);
+			// issue #4 回路断点：auto-open 在挂载时确立的初始「显示 vs AI 焦点」
+			// 组合（focusMountSkipRef）是存量状态，不是新变化——重挂载（BS 卸载
+			// 不可见 Tab、二开窗口、页面重载）不得为它自发消息。真实变化（人类
+			// 切换显示 / AI 工具事件改焦点）产生的是别的组合，照常触发。
+			const focusMountSkipRef = react.useRef(null);
 			// 所有这些状态都属于会话，不得让 A 会话的在途打开/目录结果遗留到 B。
 			// 这个 effect 必须先于自动打开 effect 声明：React 会按声明顺序运行同一轮
 			// effect，否则清理会把刚自动选中的脑图又切回「目录」。
@@ -3768,8 +3799,10 @@ window.__ModuleLoader__.load({
 				setTreeMenu(null);
 				setTabMenu(null);
 				setFilledHint("");
+				setFocusNotice("");
 				localErrorBaseRef.current = null;
 				focusSentRef.current = null;
+				focusMountSkipRef.current = null;
 				seen.current = null;
 				prevIdsRef.current = { path: null, ids: null };
 				return () => { documentReadRef.current += 1; };
@@ -3779,6 +3812,7 @@ window.__ModuleLoader__.load({
 			// 无论面板/Tab 当前是否可见，都拉起并切到这次意图对应的文档；首次挂载的
 			// 历史快照也照常显示最近一次打开的脑图，避免出现「AI 说已打开但面板没了」。
 			react.useEffect(() => {
+				const firstSight = seen.current === null; // 挂载/会话切换的恢复轮
 				const targetPath = autoOpenTarget(merged, seen.current);
 				seen.current = openingEventKeys(merged);
 				if (targetPath) {
@@ -3790,21 +3824,49 @@ window.__ModuleLoader__.load({
 					setHiddenPath(null);
 					setCurrentPath(targetPath);
 					setView("mindmap");
+					// issue #4：只在恢复轮记下初始「显示 vs AI 焦点」组合，供焦点
+					// 同步豁免——重挂载/切会话恢复的存量失配不是新变化；之后的
+					// auto-open 都是真实新事件，不再刷新豁免（那会误吞真实失配）。
+					if (firstSight) {
+						focusMountSkipRef.current = { active: targetPath, focus: docs.latestActivePath ?? null };
+					}
 				}
 			}, [merged, sessionId]);
 
+			// issue #4 防振荡：effect 只由真实变化触发（显示文档 active / AI 焦点
+			// focusPath / 可见性 / 会话），依赖全部是值——不再挂 docs 对象身份
+			// （每个工具事件都换引用，等于任何事件都重跑）与 fsTree.cwd（重挂载
+			// 后目录树异步到达）。防重三层：① 每次挂载对同一文档至多 1 条
+			// （focusSentRef）；② 同一「显示文档 vs AI 焦点」组合跨重挂载不重发
+			// （focusGuard 模块级记忆，BS 卸载不可见 Tab / 双窗口都清不掉它）；
+			// ③ 每会话自动发送总量硬上限，超限静默停止并一次性提示。
 			react.useEffect(() => {
 				if (!visible) return; // 面板/Tab 不可见时不自动发消息
 				if (!sessionId) return;
 				if (!active || active === TREE_TAB) return;
 				if (!docs.byPath[active]) return; // 本地占位：它的 open 请求已在途
 				if (focusPath === active) return;
-				if (focusSentRef.current === active) return; // 已发过，等 AI 结果追平
-				const rel = fsTree.cwd ? relPathWithin(fsTree.cwd, active, stemOf(active)) : active;
+				// 挂载恢复的存量失配（显示与焦点都等于 auto-open 记下的初始组合）
+				// 不是新变化：重挂载/页面重载不得为它自发消息。
+				if (focusMountSkipRef.current
+					&& focusMountSkipRef.current.active === active
+					&& focusMountSkipRef.current.focus === focusPath) return;
+				if (focusSentRef.current === active) return; // 本次挂载已发过，等 AI 结果追平
+				if (!focusGuard.maySend(sessionId, active, focusPath)) {
+					// 组合已发过或已超会话上限：静默停止；超限只提示一次
+					//（notified 标记在模块级 store 里，跨重挂载不重复提示）。
+					if (focusGuard.shouldNotify(sessionId)) {
+						focusGuard.markNotified(sessionId);
+						setFocusNotice("自动焦点同步已达本会话上限，已静默停止；需要打开脑图请在聊天里直接说");
+					}
+					return;
+				}
+				const rel = fsTreeRef.current.cwd ? relPathWithin(fsTreeRef.current.cwd, active, stemOf(active)) : active;
 				if (submitChatCommand(`用 mindmap_open 打开 ${rel}`)) {
 					focusSentRef.current = active;
+					focusGuard.record(sessionId, active, focusPath);
 				}
-			}, [active, focusPath, fsTree.cwd, docs, visible]);
+			}, [sessionId, visible, active, focusPath]);
 
 			async function onExport() {
 				if (!tree || !doc || exporting) return;
@@ -4356,7 +4418,11 @@ window.__ModuleLoader__.load({
 	// 038 脑图区主体模式（目录 / 加载中 / 解析失败 / 画布）：判定抽成纯函数，两个 variant
 	// 共用同一份分派，不再各写一遍三元链；解析失败有独立分支，不再静默走目录。
 	// 四态常量见 render.js 的 BODY_MODE（mindmapBodyMode 返回值与其同源）。
-	const bodyMode = mindmapBodyMode(active, TREE_TAB, doc, tree, parseError);
+		const bodyMode = mindmapBodyMode(active, TREE_TAB, doc, tree, parseError);
+		// issue #4：焦点同步超上限的一次性提示，两种视图、目录/脑图都可见。
+		const focusNoticeView = focusNotice
+			? (0, react_jsx_runtime.jsx)("p", { style: S.emptyHint, children: focusNotice })
+			: null;
 	const parseErrorView = bodyMode === BODY_MODE.error
 		? (0, react_jsx_runtime.jsxs)("div", { style: S.loadingWrap, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.loadingFailMark, children: "⚠" }),
@@ -4424,6 +4490,7 @@ window.__ModuleLoader__.load({
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
 			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+			focusNoticeView,
 			bodyMode === BODY_MODE.canvas
 				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions, readInputState })
 				: (0, react_jsx_runtime.jsx)("div", { style: S.body, children: bodyMode === BODY_MODE.tree
@@ -4512,11 +4579,12 @@ window.__ModuleLoader__.load({
 			}, shown) : null,
 		] }),
 	];
-	return (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }, children: [
-		(0, react_jsx_runtime.jsx)("div", { style: wsHeaderStyle, children: wsHeaderChildren }),
-		// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
-		// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
-		active === TREE_TAB || (doc && doc.op === "local") || !tree
+		return (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }, children: [
+			(0, react_jsx_runtime.jsx)("div", { style: wsHeaderStyle, children: wsHeaderChildren }),
+			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
+			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+			focusNoticeView,
+			active === TREE_TAB || (doc && doc.op === "local") || !tree
 			? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
 				? renderTree()
 				: (doc && doc.op === "local")
@@ -5014,6 +5082,62 @@ window.__ModuleLoader__.load({
 		})();
 		//#endregion
 
+	//#region issue #4 焦点同步防振荡记忆
+	// 焦点同步的防重与硬上限必须活过组件重挂载：BS 会卸载不可见的 Tab、
+	// 同会话可能开两个窗口，每个面板实例各持一份组件 state（focusSentRef）
+	// 会互相纠正，产生「打开 A→打开 B→打开 A」的自发消息振荡（issue #4）。
+	// 因此防重记忆放模块级、按 sessionId 隔离：
+	// - pairs：已自动发送过的「显示文档 \0 AI 焦点」组合——同一组合不重发
+	//   （防重按事件组合，不按单一 path；焦点真变了才算新事件）；
+	// - total：本会话自动发送总量，达到 FOCUS_SYNC_SESSION_CAP 后静默停止，
+	//   由面板一次性提示（notified 标记，跨挂载不重复提示）。
+	// 会话数超限时淘汰最旧条目，防长驻页面无限增长；clear() 供测试隔离。
+	const FOCUS_SYNC_SESSION_CAP = 5;
+	const FOCUS_SYNC_MAX_SESSIONS = 16;
+	const focusGuard = (() => {
+		const sessions = new Map();
+		const pairKey = (activePath, focusPath) => `${activePath}\u0000${focusPath}`;
+		function stateOf(sessionId) {
+			let state = sessions.get(sessionId);
+			if (!state) {
+				state = { pairs: new Set(), total: 0, notified: false };
+				sessions.set(sessionId, state);
+				if (sessions.size > FOCUS_SYNC_MAX_SESSIONS) {
+					sessions.delete(sessions.keys().next().value);
+				}
+			}
+			return state;
+		}
+		return {
+			// 该「显示文档 vs AI 焦点」组合是否还允许自动发送。
+			maySend(sessionId, activePath, focusPath) {
+				const state = sessions.get(sessionId);
+				if (!state) return true;
+				if (state.total >= FOCUS_SYNC_SESSION_CAP) return false;
+				return !state.pairs.has(pairKey(activePath, focusPath));
+			},
+			// 记一次已发送（成对记忆 + 总量计数）。
+			record(sessionId, activePath, focusPath) {
+				const state = stateOf(sessionId);
+				state.pairs.add(pairKey(activePath, focusPath));
+				state.total += 1;
+			},
+			// 是否需要向用户提示一次「已超上限静默停止」。
+			shouldNotify(sessionId) {
+				const state = sessions.get(sessionId);
+				return Boolean(state && state.total >= FOCUS_SYNC_SESSION_CAP && !state.notified);
+			},
+			markNotified(sessionId) {
+				const state = sessions.get(sessionId);
+				if (state) state.notified = true;
+			},
+			clear() {
+				sessions.clear();
+			},
+		};
+	})();
+	//#endregion
+
 		/**
 		 * settings describe 应答的双代信封解析（023）：dsh ≤0.1.1 的远端把
 		 * 描述符聚合在 result.value.namespaces[]；0.1.2-rc.1 起直接返回描述符
@@ -5404,6 +5528,9 @@ window.__ModuleLoader__.load({
 			// 026 better-sidebar 共存：服务总线 + 会话数据桥 + Tab 壳（供测试）。
 			sidebarBus,
 			sessionStore,
+			// issue #4 焦点同步防振荡：跨重挂载的成对防重 + 会话总量硬上限（供测试）。
+			focusGuard,
+			FOCUS_SYNC_SESSION_CAP,
 			MindmapSidebarTab,
 			// 027 内嵌头部视觉对齐：壳无关工作区组件 + 样式表（供测试验证 variant 分支）。
 			MindmapWorkspace,

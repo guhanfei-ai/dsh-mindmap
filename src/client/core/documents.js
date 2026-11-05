@@ -81,13 +81,22 @@
 		 * content 文本块——host 的工具结果 JSON 就写在其中）。Code 等工具的结果
 		 * 还可能把真实的 mindmap ToolResultNode 放在 subCalls 中，因此这里按事件
 		 * 顺序递归重放整棵调用树。
-		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标。
+		 * 返回文档集及最近一次 create/open 意图，用于驱动面板自动切换目标；
+		 * latestActivePath（issue #4）= 最后一次 create/open/update 的文档，
+		 * 作焦点同步的事件驱动比较基准——order 只反映首次出现顺序，不可比。
 		 */
+		// issue #4 焦点同步的事件驱动基准：这些 op 的成功结果代表 AI「最后正在
+		// 打开/编辑」的文档。get 是纯读（模型常仅为回答问题而读），不算焦点，
+		// 否则读一下另一颗脑图就会把面板的同步基准拽走。
+		const ACTIVE_OPS = new Set(["create", "open", "update"]);
+
 		function reduceDocuments(nodes, cache) {
 			const byPath = Object.create(null);
 			let order = [];
 			let latestOpeningPath = null;
 			let latestOpeningEventKey = null;
+			// 最后一次 create/open/update 成功事件的文档路径（事件驱动焦点）。
+			let latestActivePath = null;
 			// 016 错误捕获（S2 成因）：isError / ok!==true 的 mindmap_* 结果不进
 			// 文档集（语义不变），但记录为错误信号——errorByPath（可归因路径的
 			// 最近错误）+ latestError（最近一次 mindmap 错误，含无路径归因的）。
@@ -136,6 +145,9 @@
 								latestOpeningPath = parsed.path;
 								latestOpeningEventKey = eventKey;
 							}
+							// issue #4：update（含 renameRoot 的新路径）同样移动
+							// 事件焦点——AI 编辑过谁，焦点就在谁。
+							if (ACTIVE_OPS.has(op)) latestActivePath = parsed.path;
 							if (renamedFrom && renamedDocument && renamedFrom !== parsed.path) {
 								delete byPath[renamedFrom];
 								order = order.filter((p) => p !== renamedFrom);
@@ -187,7 +199,7 @@
 			for (const [nodeIndex, node] of (Array.isArray(nodes) ? nodes : []).entries()) {
 				replayNode(node, String(nodeIndex), 0);
 			}
-			return { order, byPath, latestOpeningPath, latestOpeningEventKey, errorByPath, latestError };
+			return { order, byPath, latestOpeningPath, latestOpeningEventKey, latestActivePath, errorByPath, latestError };
 		}
 
 		/**
@@ -234,6 +246,7 @@
 				byPath,
 				latestOpeningPath: snapshot?.latestOpeningPath ?? null,
 				latestOpeningEventKey: snapshot?.latestOpeningEventKey ?? null,
+				latestActivePath: snapshot?.latestActivePath ?? null,
 				errorByPath: snapshot?.errorByPath ?? {},
 				latestError: snapshot?.latestError ?? null,
 			};

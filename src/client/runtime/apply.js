@@ -389,6 +389,9 @@
 			// 026 better-sidebar 共存：服务总线 + 会话数据桥 + Tab 壳（供测试）。
 			sidebarBus,
 			sessionStore,
+			// issue #4 焦点同步防振荡：跨重挂载的成对防重 + 会话总量硬上限（供测试）。
+			focusGuard,
+			FOCUS_SYNC_SESSION_CAP,
 			MindmapSidebarTab,
 			// 027 内嵌头部视觉对齐：壳无关工作区组件 + 样式表（供测试验证 variant 分支）。
 			MindmapWorkspace,

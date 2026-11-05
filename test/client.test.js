@@ -81,7 +81,7 @@ function toolResultWithSubCalls(name, payload, subCalls, options = {}) {
 }
 
 const { runtime, window: fakeWindow, context: sandboxContext, warnCalls: sandboxWarnCalls } = loadBrowserModule()
-const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, fitAllZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, nodePathText, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
+const { parseMarkdownToTree, reduceDocuments, mergeDocuments, autoOpenTarget, openingEventKeys, nodesFingerprint, matchDocError, errorEventKeys, stemOf, buildExportSvg, measureExportBox, exportCanvasSize, resultTextOfBlocks, relPathWithin, visibleTreeRows, DEFAULT_MINDMAP_DIR, treeDirLabel, treeCreateDraft, treeCreateLabel, readDraftText, draftBlocksAutoSend, submitNodeFocusMessage, toggleCollapsed, countDescendants, pruneCollapsed, searchTreeMatches, stepMatchIndex, reconcileActiveMatch, expandAncestorsFor, TreeRow, clampZoom, stepZoom, fitZoom, fitAllZoom, focusZoom, clampFocusJump, edgePullOffsets, collectTreeIds, planGrowthReveal, resolveToken, resolveNodeStyle, exportPalette, hasInlineFormat, isTableSeparator, parseTableRow, nodeFullText, nodeTreeText, nodeFocusPrompt, nodePathText, EMPTY_NODE_MARKER, PATH_SEPARATOR, escapePathSegment, nodePathTo, nodePathLabel, renderInline, parseInlineLinkToken, mindmapBodyMode, parseTreeResult, stripInlineForExport, wrapExportText, openLink, COLOR_THEMES, PAN, shouldStartPan, panScroll, isTextEntry, isActivatable, MindmapCanvas, conversationNodesOf, settingsNamespacesOf, sidebarBus, sessionStore, focusGuard, FOCUS_SYNC_SESSION_CAP, MindmapSidebarTab, MindmapWorkspace, S, MindmapSlot } = runtime.internals
 const READABLE_ZOOM = 12 / Number.parseFloat(S.box.fontSize)
 
 test('browser module declares the expected service inject list', () => {
@@ -641,6 +641,54 @@ test('autoOpenTarget ignores already consumed opens but switches to a repeated o
     toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/a.md', content: 'a' }, { callId: 'open-a-2' }),
   ])
   assert.equal(autoOpenTarget(repeated, openingEventKeys(first)), '/w/a.md')
+})
+
+// issue #4：焦点同步的比较基准必须事件驱动——order 只反映首次出现（创建）
+// 顺序，两文档并存后 order 末位永远钉在较新文档上，显示旧文档时比较永不
+// 相等，这是自发消息循环的根因。latestActivePath = 最后一次 create/open/
+// update 成功事件的文档（get 是纯读，不移动焦点）。
+test('reduceDocuments tracks latestActivePath by event, not creation order (issue #4)', () => {
+  const twoDocs = reduceDocuments([
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/older.md', content: '' }, { callId: 'create-older' }),
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/newer.md', content: '' }, { callId: 'create-newer' }),
+  ])
+  // order 仍是创建序（快照回放的既有语义不变）；焦点跟随最后的事件。
+  assert.deepEqual([...twoDocs.order], ['/w/older.md', '/w/newer.md'])
+  assert.equal(twoDocs.latestActivePath, '/w/newer.md')
+
+  // 重新打开旧文档：order 不动，焦点移过去——比较从此可达「相等」。
+  const reopened = reduceDocuments([
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/older.md', content: '' }, { callId: 'create-older' }),
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/newer.md', content: '' }, { callId: 'create-newer' }),
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/older.md', content: 'older' }, { callId: 'open-older' }),
+  ])
+  assert.deepEqual([...reopened.order], ['/w/older.md', '/w/newer.md'], 'order keeps first-seen positions')
+  assert.equal(reopened.latestActivePath, '/w/older.md')
+
+  // update（AI 编辑）同样移动焦点；get（纯读）不动。
+  const edited = reduceDocuments([
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/older.md', content: '' }, { callId: 'create-older' }),
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/newer.md', content: '' }, { callId: 'create-newer' }),
+    toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/older.md', content: '# A' }, { callId: 'update-older' }),
+  ])
+  assert.equal(edited.latestActivePath, '/w/older.md')
+  const read = reduceDocuments([
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/older.md', content: '' }, { callId: 'create-older' }),
+    toolResultNode('mindmap_create', { ok: true, op: 'create', path: '/w/newer.md', content: '' }, { callId: 'create-newer' }),
+    toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/older.md', content: '# A' }, { callId: 'update-older' }),
+    toolResultNode('mindmap_get', { ok: true, op: 'get', path: '/w/newer.md', content: 'read only' }, { callId: 'get-newer' }),
+  ])
+  assert.equal(read.latestActivePath, '/w/older.md', 'a read-only get must not move the focus baseline')
+
+  // renameRoot：update 携带新路径，焦点跟到新路径；merge 透传。
+  const renamed = reduceDocuments([
+    toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/older.md', content: 'older' }, { callId: 'open-older' }),
+    toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/renamed.md', renamedFrom: '/w/older.md', content: '# B' }, { callId: 'update-rename' }),
+  ])
+  assert.equal(renamed.latestActivePath, '/w/renamed.md')
+  const merged = mergeDocuments(renamed, {})
+  assert.equal(merged.latestActivePath, '/w/renamed.md', 'mergeDocuments passes the event focus through')
+  assert.equal(reduceDocuments([]).latestActivePath, null, 'empty replay has no focus')
 })
 
 test('mergeDocuments: snapshot wins, locals append, rename drops stale local tabs', () => {
@@ -2318,6 +2366,35 @@ test('sessionStore isolates data by sessionId and notifies subscribers', () => {
   unsub1()
 })
 
+// issue #4 焦点同步防振荡记忆：模块级（跨重挂载存活）、按会话隔离、按
+// 「显示文档 vs AI 焦点」组合防重、总量硬上限 + 一次性提示。
+test('focusGuard dedupes per event pair, caps per session, and isolates sessions (issue #4)', () => {
+  focusGuard.clear()
+  assert.equal(FOCUS_SYNC_SESSION_CAP, 5, 'session cap is a small fixed budget')
+  const session = 'focus-session'
+  // 同一组合只允许一次；组合反转（显示 B 焦点 A）是另一事件，各一次。
+  assert.equal(focusGuard.maySend(session, '/w/a.md', '/w/b.md'), true)
+  focusGuard.record(session, '/w/a.md', '/w/b.md')
+  assert.equal(focusGuard.maySend(session, '/w/a.md', '/w/b.md'), false, 'same display/focus pair never resends')
+  assert.equal(focusGuard.maySend(session, '/w/b.md', '/w/a.md'), true, 'the mirrored pair is a distinct event')
+  // 会话隔离：另一会话从零开始。
+  assert.equal(focusGuard.maySend('focus-session-2', '/w/a.md', '/w/b.md'), true)
+  // 新组合持续放行直到总量到上限；记录到上限后一切组合静默拒绝。
+  for (const doc of ['c', 'd', 'e', 'f']) {
+    assert.equal(focusGuard.maySend(session, `/w/${doc}.md`, '/w/b.md'), true)
+    focusGuard.record(session, `/w/${doc}.md`, '/w/b.md')
+  }
+  assert.equal(focusGuard.maySend(session, '/w/g.md', '/w/b.md'), false, 'over the session cap everything is refused')
+  assert.equal(focusGuard.shouldNotify(session), true, 'cap trip asks for a one-time notice')
+  focusGuard.markNotified(session)
+  assert.equal(focusGuard.shouldNotify(session), false, 'the notice fires only once per session')
+  assert.equal(focusGuard.shouldNotify('focus-session-2'), false, 'uncapped sessions need no notice')
+  // 提示标记只随上限而来：未超限的会话即使有已发组合也不提示。
+  assert.equal(focusGuard.shouldNotify('focus-session-3'), false)
+  focusGuard.clear()
+  assert.equal(focusGuard.maySend(session, '/w/a.md', '/w/b.md'), true, 'clear resets the memory for tests')
+})
+
 test('apply standalone: no betterSidebar → registers header slot + settings, injects layout-push CSS, no Tab registration', () => {
   const sb = applySandbox({ betterSidebar: undefined })
   withSandboxDoc(sb.fakeDoc, () => {
@@ -3038,7 +3115,18 @@ function createEffectDriver() {
       if (s.cleanup) { s.cleanup(); s.cleanup = null }
     }
   }
-  return { hooks, beginRender, flushMount, flushUpdate, unmount }
+  // issue #4 重挂载模拟：清空组件级 hook 状态（state/refs/memos/effects），
+  // 保留模块级 store（focusGuard 等）——等价于 Better Sidebar 卸载不可见
+  // Tab 后重新挂载：组件 state 归零，模块级防重记忆必须活过这一步。
+  function resetHooks() {
+    unmount()
+    stateValues.length = 0
+    refValues.length = 0
+    memoValues.length = 0
+    prevSlots = []
+    currSlots = []
+  }
+  return { hooks, beginRender, flushMount, flushUpdate, unmount, resetHooks }
 }
 
 // 030 组件 effect 测试公共设施：重新加载 client.js 到独立 vm 沙箱，
@@ -3764,6 +3852,134 @@ test('workspace preserves manual directory selection on updates and switches for
     const canvas = workspaceCanvas(renderWorkspaceAfterEffects(harness, created))
     assert.ok(canvas)
     assert.equal(canvas.props.fitKey, '/w/second.md')
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+// —— issue #4 焦点同步死循环回归（自发消息振荡器）——
+// 报告人场景：同会话两份脑图、聊天输入为空、面板可见、静置，面板每 ~3 秒
+// 自发一条「用 mindmap_open 打开 X」在两文档间交替（实测 43 条）。三层修复
+// 的回归锚点：比较基准事件驱动（真实失配 ≤1 条且收敛）、防重记忆活过重挂载、
+// 会话总量硬上限（超限静默 + 一次性提示）。
+const ISSUE4_IDLE_NODES = extra => [
+  toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/older.md', content: '# Older' }, { callId: 'open-older-1' }),
+  ...extra,
+]
+const ISSUE4_SENT_PROPS = (sent, sessionId, nodes) => ({
+  variant: 'sidebar', visible: true, sessionId, onAutoOpen() {}, nodes,
+  // 生产路径（MindmapSidebarTab）总是同时传 nodes + nodesVersion：宿主 store
+  // 会原地改数组，光靠引用判不了变化。每阶段追加一个节点，长度即指纹。
+  nodesVersion: String(nodes.length),
+  inputActions: { setDraft: text => sent.push(text), submit: () => {} },
+  readInputState: () => ({ draft: '', attachmentIds: [] }),
+})
+
+test('issue #4: two documents idle send at most one open and converge', () => {
+  const harness = loadClientWithEffectDriver()
+  const sent = []
+  const props = extra => ISSUE4_SENT_PROPS(sent, 'issue4-idle', ISSUE4_IDLE_NODES(extra))
+  const updNewer = id => toolResultNode('mindmap_update', { ok: true, op: 'update', path: '/w/newer.md', content: '# Newer' }, { callId: `upd-newer-${id}` })
+  const openOlder2 = toolResultNode('mindmap_open', { ok: true, op: 'open', path: '/w/older.md', content: '# Older' }, { callId: 'open-older-2' })
+  try {
+    // 挂载：只开过旧文档——显示 = 焦点 = older，零消息（挂载首轮本就不发）。
+    renderWorkspaceAfterEffects(harness, props([]), true)
+    assert.equal(sent.length, 0)
+    // AI 编辑了另一份文档（真实事件）：显示 older ≠ 焦点 newer → 恰好一条。
+    renderWorkspaceAfterEffects(harness, props([updNewer(1)]))
+    assert.equal(sent.length, 1)
+    assert.ok(sent[0].includes('mindmap_open'), `unexpected message: ${sent[0]}`)
+    assert.ok(sent[0].includes('older'), 'the sync asks for the displayed document')
+    // 模型照办打开 older：焦点追上显示，比较可达相等 → 收敛。
+    const opened = renderWorkspaceAfterEffects(harness, props([updNewer(1), openOlder2]))
+    assert.equal(sent.length, 1)
+    assert.equal(workspaceCanvas(opened).props.fitKey, '/w/older.md', 'display stays on the user document')
+    // 静置 + AI 对 newer 的后续编辑（焦点又离开 older）：同组合已发过 → 静默。
+    // 旧版在此因 order 基准永不相等 + 每事件重跑 effect 而振荡（43 条实测）。
+    renderWorkspaceAfterEffects(harness, props([updNewer(1), openOlder2, updNewer(2)]))
+    const settled = renderWorkspaceAfterEffects(harness, props([updNewer(1), openOlder2, updNewer(2), updNewer(3)]))
+    assert.equal(sent.length, 1, 'idle churn must not resurrect the oscillator')
+    assert.equal(workspaceCanvas(settled).props.fitKey, '/w/older.md')
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('issue #4: remount never sends from the mount run and keeps the dedup memory', () => {
+  const harness = loadClientWithEffectDriver()
+  const sent = []
+  const upd = (path, id) => toolResultNode('mindmap_update', { ok: true, op: 'update', path, content: `# ${id}` }, { callId: `upd-${id}` })
+  const props = extra => ISSUE4_SENT_PROPS(sent, 'issue4-remount', ISSUE4_IDLE_NODES(extra))
+  try {
+    // 挂载即处于失配（显示 older / 焦点 newer，组合从未发过）：挂载首轮不发
+    // ——重挂载不是真实变化，这条闸正是「绝对路径消息 = 刚重挂载痕迹」的断点。
+    renderWorkspaceAfterEffects(harness, props([upd('/w/newer.md', 'newer-1')]), true)
+    assert.equal(sent.length, 0, 'a mount must not emit a spontaneous message by itself')
+    // 真实新事件（AI 编辑第三份文档）→ 恰好一条，组合 older::third 入模块级记忆。
+    renderWorkspaceAfterEffects(harness, props([upd('/w/newer.md', 'newer-1'), upd('/w/third.md', 'third-1')]))
+    assert.equal(sent.length, 1)
+    // 重挂载（BS 卸载不可见 Tab 后再挂）：组件 state 归零、模块级记忆还在——
+    // 同组合不得重发。
+    harness.driver.resetHooks()
+    renderWorkspaceAfterEffects(harness, props([upd('/w/newer.md', 'newer-1'), upd('/w/third.md', 'third-1')]), true)
+    assert.equal(sent.length, 1, 'the pair memory survives the remount')
+    // 重挂载后真实新事件照常放行（新组合 older::fourth）——功能未被误伤。
+    renderWorkspaceAfterEffects(harness, props([upd('/w/newer.md', 'newer-1'), upd('/w/third.md', 'third-1'), upd('/w/fourth.md', 'fourth-1')]))
+    assert.equal(sent.length, 2)
+    // 再次重挂载后焦点回到第三份（组合 older::third 已发过）：仍静默。
+    harness.driver.resetHooks()
+    renderWorkspaceAfterEffects(harness, props([upd('/w/newer.md', 'newer-1'), upd('/w/third.md', 'third-1'), upd('/w/fourth.md', 'fourth-1'), upd('/w/third.md', 'third-2')]), true)
+    assert.equal(sent.length, 2, 'remount does not reset already-sent pairs')
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('issue #4: session hard cap stops sends silently with a single notice', () => {
+  const harness = loadClientWithEffectDriver()
+  const sent = []
+  const open = (path, id) => toolResultNode('mindmap_open', { ok: true, op: 'open', path, content: `# ${id}` }, { callId: `open-${id}` })
+  const upd = (path, id) => toolResultNode('mindmap_update', { ok: true, op: 'update', path, content: `# ${id}` }, { callId: `upd-${id}` })
+  const CAP_HINT = '自动焦点同步已达本会话上限，已静默停止；需要打开脑图请在聊天里直接说'
+  // 交替「AI 打开 X / AI 编辑 Y」制造一串真实失配：每次恰一条，5 条后到顶。
+  const script = [
+    ['open', '/w/a.md', 'a1'], // 挂载：显示 a = 焦点 a → 0 条
+    ['upd', '/w/b.md', 'b1'], // 1（a::b）
+    ['open', '/w/b.md', 'b2'],
+    ['upd', '/w/a.md', 'a2'], // 2（b::a）
+    ['open', '/w/a.md', 'a3'],
+    ['upd', '/w/c.md', 'c1'], // 3（a::c）
+    ['open', '/w/c.md', 'c2'],
+    ['upd', '/w/a.md', 'a4'], // 4（c::a）
+    ['open', '/w/a.md', 'a5'],
+    ['upd', '/w/d.md', 'd1'], // 5（a::d）→ 到达上限
+    ['open', '/w/e.md', 'e1'],
+    ['upd', '/w/a.md', 'a6'], // 第 6 次尝试：静默 + 一次性提示
+    ['open', '/w/a.md', 'a7'],
+    ['upd', '/w/e.md', 'e2'], // 仍静默（本挂载对 a 已发过）
+    ['open', '/w/e.md', 'e3'],
+    ['upd', '/w/a.md', 'a8'], // 仍静默（上限），且不再提示
+  ]
+  const expectedAfter = { a1: 0, b1: 1, b2: 1, a2: 2, a3: 2, c1: 3, c2: 3, a4: 4, a5: 4, d1: 5, e1: 5, a6: 5, a7: 5, e2: 5, e3: 5, a8: 5 }
+  const nodes = []
+  let cappedRender = null
+  try {
+    let first = true
+    for (const [op, path, id] of script) {
+      nodes.push(op === 'open' ? open(path, id) : upd(path, id))
+      const rendered = renderWorkspaceAfterEffects(harness, ISSUE4_SENT_PROPS(sent, 'issue4-cap', [...nodes]), first)
+      first = false
+      if (id === 'a6') cappedRender = rendered
+      assert.equal(sent.length, expectedAfter[id], `sends after ${id}`)
+    }
+    assert.equal(sent.length, harness.internals.FOCUS_SYNC_SESSION_CAP, 'cap reached exactly')
+    // 超限那次尝试：静默停止 + 一次性提示出现在目录区。
+    assert.ok(findInTree(cappedRender, el => el.props?.children === CAP_HINT), 'the cap trip surfaces a one-time notice')
+    // 提示只出现一次：重挂载后（组件 state 清零、notified 已标记）不再提示、不再发送。
+    harness.driver.resetHooks()
+    const remounted = renderWorkspaceAfterEffects(harness, ISSUE4_SENT_PROPS(sent, 'issue4-cap', nodes), true)
+    assert.equal(sent.length, 5, 'post-cap remount stays silent')
+    assert.ok(!findInTree(remounted, el => el.props?.children === CAP_HINT), 'the notice never repeats')
   } finally {
     harness.driver.unmount()
   }

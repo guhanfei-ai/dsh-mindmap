@@ -51,7 +51,11 @@
 	// 038 脑图区主体模式（目录 / 加载中 / 解析失败 / 画布）：判定抽成纯函数，两个 variant
 	// 共用同一份分派，不再各写一遍三元链；解析失败有独立分支，不再静默走目录。
 	// 四态常量见 render.js 的 BODY_MODE（mindmapBodyMode 返回值与其同源）。
-	const bodyMode = mindmapBodyMode(active, TREE_TAB, doc, tree, parseError);
+		const bodyMode = mindmapBodyMode(active, TREE_TAB, doc, tree, parseError);
+		// issue #4：焦点同步超上限的一次性提示，两种视图、目录/脑图都可见。
+		const focusNoticeView = focusNotice
+			? (0, react_jsx_runtime.jsx)("p", { style: S.emptyHint, children: focusNotice })
+			: null;
 	const parseErrorView = bodyMode === BODY_MODE.error
 		? (0, react_jsx_runtime.jsxs)("div", { style: S.loadingWrap, children: [
 			(0, react_jsx_runtime.jsx)("span", { style: S.loadingFailMark, children: "⚠" }),
@@ -119,6 +123,7 @@
 			] }),
 			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
 			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+			focusNoticeView,
 			bodyMode === BODY_MODE.canvas
 				? (0, react_jsx_runtime.jsx)(MindmapCanvas, { node: tree, theme, fitKey: doc && doc.path, reveal, inputActions, readInputState })
 				: (0, react_jsx_runtime.jsx)("div", { style: S.body, children: bodyMode === BODY_MODE.tree
@@ -207,11 +212,12 @@
 			}, shown) : null,
 		] }),
 	];
-	return (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }, children: [
-		(0, react_jsx_runtime.jsx)("div", { style: wsHeaderStyle, children: wsHeaderChildren }),
-		// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
-		// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
-		active === TREE_TAB || (doc && doc.op === "local") || !tree
+		return (0, react_jsx_runtime.jsxs)("div", { style: { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }, children: [
+			(0, react_jsx_runtime.jsx)("div", { style: wsHeaderStyle, children: wsHeaderChildren }),
+			// 016：脑图视图走 MindmapCanvas（自带滚动 + 居中 + 右上角缩放控制条），
+			// 不再套 S.body（避免嵌套滚动容器与双重 padding）；目录/加载/空态保持原样。
+			focusNoticeView,
+			active === TREE_TAB || (doc && doc.op === "local") || !tree
 			? (0, react_jsx_runtime.jsx)("div", { style: S.body, children: active === TREE_TAB
 				? renderTree()
 				: (doc && doc.op === "local")
