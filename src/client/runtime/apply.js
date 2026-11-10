@@ -395,6 +395,7 @@
 			MindmapSidebarTab,
 			// 027 内嵌头部视觉对齐：壳无关工作区组件 + 样式表（供测试验证 variant 分支）。
 			MindmapWorkspace,
+			MindmapDetailsPanel,
 			S,
 			// 029 会话清理组件测试：MindmapSlot 直接调用（供测试验证 store 清理）。
 			MindmapSlot,

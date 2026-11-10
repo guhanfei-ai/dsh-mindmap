@@ -1,6 +1,7 @@
 // Generated source fragment. Edit this file, then run npm run build:client.
 		/**
 		 * 独立 fixed 壳（026 拆分）：仅 Better Sidebar 未安装或服务不可用时使用。
+		 * 通过 portal 挂到 document.body，避免被头部槽位祖先的 overflow 裁剪。
 		 * 管理壳特有几何——右缘贴边悬浮、左缘拖拽调宽（localStorage 持久化）、
 		 * 头部高度对齐聊天区、layout-push CSS 变量（--dsh-mindmap-width）。
 		 * 壳内始终挂载 MindmapWorkspace（visible=open）：收起时 display:none 隐藏，
@@ -164,8 +165,9 @@
 				headerHeight,
 				variant: "standalone",
 			});
-			return (0, react_jsx_runtime.jsx)("div", { style: open ? S.panelHost : { display: "none" }, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: open ? { ...S.overlayRoot, width: panelWidth } : { display: "none" }, children: [
+			const host = (0, react_jsx_runtime.jsx)("div", { style: open ? S.panelHost : { display: "none" }, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: open ? { ...S.overlayRoot, width: panelWidth } : { display: "none" }, children: [
 				open ? (0, react_jsx_runtime.jsx)("div", { style: S.overlayHandle, onMouseDown: startResize }) : null,
 				workspace,
 			] }) });
+			return react_dom.createPortal(host, document.body);
 		}

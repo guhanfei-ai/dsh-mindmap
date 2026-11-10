@@ -3,11 +3,11 @@
 //
 // 职责：
 // - 「思维脑图」按钮：挂 conversation.session.header.actions（list 槽，追加式），
-//   点击切换右侧悬浮脑图面板的开/合；面板宿主层（fixed）与按钮同槽位渲染，
-//   会话能力（useSession/sessionId/inputActions）经 props 直给面板组件。
-// - 脑图面板：014 起注册在 shell.overlay（list 槽、root scope、点击穿透层），
-//   右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，localStorage 持久化）；
-//   details 槽已归还官方（原生「工具详情」栏恢复，003 的顶替方案退役）。
+//   点击切换右侧悬浮脑图面板的开/合；会话能力（useSession/sessionId/inputActions）
+//   经 props 直给面板组件。
+// - 独立脑图面板：通过 react-dom portal 挂到 document.body，避开头部祖先的
+//   overflow 裁剪；右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，
+//   localStorage 持久化）。details 槽已归还官方（003 的顶替方案退役）。
 // - 实时数据通路：消费会话快照里 mindmap_* 工具的 ToolResultNode，重放出各文档
 //   的最新内容并渲染（002/003：无自定义事件通道，工具调用本身就是事件流）。
 //   023 双代：useChat → ChatSnapshot.legacy.nodes（dsh 0.1.2-rc.1+）优先，
@@ -26,6 +26,7 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
+		let react_dom = require("react-dom");
 
 		const inject = ["slots"];
 

@@ -4,6 +4,10 @@ import test from 'node:test'
 import vm from 'node:vm'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 
+function createTestPortal(children, containerInfo) {
+  return { type: 'portal', props: { children }, containerInfo }
+}
+
 // 照 dsh-grafana test/client.test.js 的套路：vm 里伪造 window.__ModuleLoader__
 // 捕获浏览器模块定义，再用 require 桩喂 react，拿到 exports 测纯函数。
 function loadBrowserModule(source = readFileSync(new URL('../client.js', import.meta.url), 'utf8'), hooks) {
@@ -36,6 +40,7 @@ function loadBrowserModule(source = readFileSync(new URL('../client.js', import.
     if (id === 'react') {
       return hooks ?? { useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, useCallback }
     }
+    if (id === 'react-dom') return { createPortal: createTestPortal }
     throw new Error(`Unexpected browser dependency: ${id}`)
   })
   return { runtime, window, context, warnCalls }
@@ -3161,10 +3166,72 @@ function loadClientWithEffectDriver() {
   const rt = def.factory((id) => {
     if (id === 'react/jsx-runtime') return { jsx(t,p,k){return{type:t,props:p||{},key:k}}, jsxs(t,p,k){return{type:t,props:p||{},key:k}}, Fragment:{} }
     if (id === 'react') return driver.hooks
+    if (id === 'react-dom') return { createPortal: createTestPortal }
     throw new Error('unexpected:'+id)
   })
-  return { driver, ctx, rafQueue, winListeners, internals: rt.internals, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, MindmapCanvas: rt.internals.MindmapCanvas, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
+  return { driver, ctx, win, rafQueue, winListeners, internals: rt.internals, MindmapSlot: rt.internals.MindmapSlot, MindmapWorkspace: rt.internals.MindmapWorkspace, MindmapDetailsPanel: rt.internals.MindmapDetailsPanel, MindmapCanvas: rt.internals.MindmapCanvas, sessionStore: rt.internals.sessionStore, sidebarBus: rt.internals.sidebarBus }
 }
+
+test('standalone panel portals to body and close keeps the workspace mounted but hidden (issue #5)', () => {
+  const harness = loadClientWithEffectDriver()
+  const cssValues = new Map()
+  const body = { tagName: 'BODY' }
+  harness.ctx.document = {
+    body,
+    documentElement: { style: {
+      setProperty(key, value) { cssValues.set(key, value) },
+      removeProperty(key) { cssValues.delete(key) },
+    } },
+    querySelector() { return null },
+  }
+  harness.ctx.localStorage = { getItem() { return '504' }, setItem() {} }
+  harness.win.innerWidth = 1200
+  const props = {
+    mindmapFace: null,
+    sessionId: 'portal-test',
+    inputActions: null,
+    readInputState: () => null,
+    nodes: [],
+    nodesVersion: 0,
+    documents: {},
+    onOpen() {},
+    onClose() {},
+  }
+  const render = (open, mounting = false) => {
+    harness.driver.beginRender()
+    const portal = harness.MindmapDetailsPanel({ ...props, open })
+    if (mounting) harness.driver.flushMount()
+    else harness.driver.flushUpdate()
+    return portal
+  }
+  try {
+    const opened = render(true, true)
+    assert.equal(opened.type, 'portal')
+    assert.equal(opened.containerInfo, body, 'portal target is body, not the header actions slot')
+    const openedHost = opened.props.children
+    assert.equal(openedHost.type, 'div')
+    assert.equal(openedHost.props.style.position, 'fixed')
+    assert.equal(openedHost.props.style.pointerEvents, 'none')
+    assert.notEqual(openedHost.props.children.props.style.display, 'none')
+    assert.equal(cssValues.get('--dsh-mindmap-width'), '504px')
+
+    const closed = render(false)
+    assert.equal(closed.containerInfo, body, 'closing does not move the portal away from body')
+    assert.equal(closed.props.children.props.style.display, 'none')
+    assert.equal(closed.props.children.props.children.props.style.display, 'none')
+    const workspace = closed.props.children.props.children.props.children[1]
+    assert.equal(workspace.type.name, 'MindmapWorkspace')
+    assert.equal(workspace.props.visible, false, 'close hides the existing workspace instead of unmounting it')
+    assert.equal(cssValues.has('--dsh-mindmap-width'), false)
+
+    render(true)
+    assert.equal(cssValues.has('--dsh-mindmap-width'), true)
+    harness.driver.unmount()
+    assert.equal(cssValues.has('--dsh-mindmap-width'), false, 'unmount still cleans the layout variable')
+  } finally {
+    harness.driver.unmount()
+  }
+})
 
 // 驱动工作区的 effect，再重渲染一次读取最终画布；只调用 openTab 并不代表
 // 内层已经选中脑图，必须检查实际渲染结果，才能捕获会话清理覆盖自动打开。

@@ -2,11 +2,11 @@
 //
 // 职责：
 // - 「思维脑图」按钮：挂 conversation.session.header.actions（list 槽，追加式），
-//   点击切换右侧悬浮脑图面板的开/合；面板宿主层（fixed）与按钮同槽位渲染，
-//   会话能力（useSession/sessionId/inputActions）经 props 直给面板组件。
-// - 脑图面板：014 起注册在 shell.overlay（list 槽、root scope、点击穿透层），
-//   右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，localStorage 持久化）；
-//   details 槽已归还官方（原生「工具详情」栏恢复，003 的顶替方案退役）。
+//   点击切换右侧悬浮脑图面板的开/合；会话能力（useSession/sessionId/inputActions）
+//   经 props 直给面板组件。
+// - 独立脑图面板：通过 react-dom portal 挂到 document.body，避开头部祖先的
+//   overflow 裁剪；右缘贴边全高悬浮、左缘拖拽调宽（280~80% 视口，
+//   localStorage 持久化）。details 槽已归还官方（003 的顶替方案退役）。
 // - 实时数据通路：消费会话快照里 mindmap_* 工具的 ToolResultNode，重放出各文档
 //   的最新内容并渲染（002/003：无自定义事件通道，工具调用本身就是事件流）。
 //   023 双代：useChat → ChatSnapshot.legacy.nodes（dsh 0.1.2-rc.1+）优先，
@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		let react_jsx_runtime = require("react/jsx-runtime");
 		let react = require("react");
+		let react_dom = require("react-dom");
 
 		const inject = ["slots"];
 
@@ -4613,6 +4614,7 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * 独立 fixed 壳（026 拆分）：仅 Better Sidebar 未安装或服务不可用时使用。
+		 * 通过 portal 挂到 document.body，避免被头部槽位祖先的 overflow 裁剪。
 		 * 管理壳特有几何——右缘贴边悬浮、左缘拖拽调宽（localStorage 持久化）、
 		 * 头部高度对齐聊天区、layout-push CSS 变量（--dsh-mindmap-width）。
 		 * 壳内始终挂载 MindmapWorkspace（visible=open）：收起时 display:none 隐藏，
@@ -4776,10 +4778,11 @@ window.__ModuleLoader__.load({
 				headerHeight,
 				variant: "standalone",
 			});
-			return (0, react_jsx_runtime.jsx)("div", { style: open ? S.panelHost : { display: "none" }, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: open ? { ...S.overlayRoot, width: panelWidth } : { display: "none" }, children: [
+			const host = (0, react_jsx_runtime.jsx)("div", { style: open ? S.panelHost : { display: "none" }, children: (0, react_jsx_runtime.jsxs)("div", { ref: panelRootRef, style: open ? { ...S.overlayRoot, width: panelWidth } : { display: "none" }, children: [
 				open ? (0, react_jsx_runtime.jsx)("div", { style: S.overlayHandle, onMouseDown: startResize }) : null,
 				workspace,
 			] }) });
+			return react_dom.createPortal(host, document.body);
 		}
 
 		/**
@@ -5534,6 +5537,7 @@ window.__ModuleLoader__.load({
 			MindmapSidebarTab,
 			// 027 内嵌头部视觉对齐：壳无关工作区组件 + 样式表（供测试验证 variant 分支）。
 			MindmapWorkspace,
+			MindmapDetailsPanel,
 			S,
 			// 029 会话清理组件测试：MindmapSlot 直接调用（供测试验证 store 清理）。
 			MindmapSlot,

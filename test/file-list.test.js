@@ -24,6 +24,7 @@ function renderList(variant) {
       useEffect() {}, useLayoutEffect() {}, useMemo: fn => fn(), useCallback: fn => fn,
       useRef: value => ({ current: value }), useSyncExternalStore: (_, read) => read(),
     }
+    if (id === 'react-dom') return { createPortal: (children, containerInfo) => ({ type: 'portal', props: { children }, containerInfo }) }
     throw new Error(`Unexpected dependency: ${id}`)
   })
   const tree = runtime.internals.MindmapWorkspace({ variant, visible: true, sessionId: 'files', nodes: [], onAutoOpen() {}, inputActions: { getDraft: () => '', setDraft: text => calls.push(text), submit: () => calls.push('submit') } })
