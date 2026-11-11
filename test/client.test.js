@@ -1775,6 +1775,242 @@ test('exportCanvasSize rejects image dimensions that exceed the memory budget', 
   assert.throws(() => exportCanvasSize(4096, 4097), /图片过大/)
 })
 
+// —— 039 导出版式：断词 / 贴边 / 疏密失衡 ——
+
+// 039 复现样例：四阶段工作进度（内容为通用技术词，不含任何真实环境标识）。
+const EXPORT_SAMPLE_MD = `# 阶段一（阶段性完成）
+- 【完成】AIOPS基建：AI内网身份认证与发放
+- 【完成】AIOPS基建：审计链路全链路追踪
+- 【完成】AIOPS基建：AI身份追踪与已有负载均衡及独立基建之间全流程打通
+
+# 阶段二（阶段性完成）
+- 【完成】AI代替开发者：读写Apollo
+- 【完成】AI代替开发者：读写RabbitMQ
+- 【完成】AI代替开发者：只读线下环境MySQL【DDL、DML】等关键决策信息
+  - DML多环境多集群可查
+  - DDL多环境多集群可查
+- 【完成】AI代替开发者：只读线下环境MongoDB【DML】等关键决策信息
+- 【完成】AI代替开发者：检查SQL语句合法性与规则冲突
+
+# 阶段三
+- 【完成】AI代替开发者：创建一个即将发布的应用，含跨环境预先创建各种环境变量及资源配置
+- 【未启动】AI代替开发者：触发CICD发布状态机校验与循环
+- 【未启动】AI代替开发者：观测发布过程中各种实时工具日志流及状态值
+- 【未启动】AI代替开发者：确认发布完整性及该生命周期中的各种细节信息
+
+# 阶段四
+- 【未启动】AI代替开发者：查阅容器运行中的各种（机器或容器内运行时）自身事实状态
+- 【未启动】AI代替开发者：查阅时间轴上的（监控原始机器信息 + 日志原始机器信息）
+`
+
+/** 导出 SVG 里的卡片盒（rx="7" 的圆角矩形）。 */
+function exportSvgBoxes(svg) {
+  return [...svg.matchAll(/<rect x="([\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="7"/g)]
+    .map((m) => ({ x: Number(m[1]), y: Number(m[2]), w: Number(m[3]), h: Number(m[4]) }))
+}
+
+/** 导出 SVG 里的文字行。 */
+function exportSvgTexts(svg) {
+  return [...svg.matchAll(/<text x="([\d.]+)" y="(-?[\d.]+)"[^>]*>([^<]*)<\/text>/g)]
+    .map((m) => ({ x: Number(m[1]), y: Number(m[2]), text: m[3] }))
+}
+
+/**
+ * 拉丁词被跨行拆开的判定：上一行行尾是拉丁字符、下一行行首也是拉丁字符，
+ * 且上一行不以空白结尾（行尾空白说明断点落在词与词之间，是正常换行）。
+ */
+function splitsLatinWord(lines) {
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    if (/\s$/.test(lines[i])) continue
+    if (/[0-9A-Za-z]$/.test(lines[i]) && /^[0-9A-Za-z]/.test(lines[i + 1])) return true
+  }
+  return false
+}
+
+/** 导出度量的字符宽度估算（与导出实现同源）：CJK 一个字号，其余 0.55 折算。 */
+function exportEstimateWidth(text, fontSize = 13) {
+  let w = 0
+  for (const ch of String(text)) w += ch.charCodeAt(0) > 0x2e7f ? fontSize : fontSize * 0.55
+  return w
+}
+
+test('039 wrapExportText breaks by word: Apollo/RabbitMQ/CICD are never split mid-word', () => {
+  const cases = [
+    ['【完成】AI代替开发者：读写Apollo', 'Apollo'],
+    ['【完成】AI代替开发者：读写RabbitMQ', 'RabbitMQ'],
+    ['【未启动】AI代替开发者：触发CICD发布状态机校验与循环', 'CICD'],
+    ['【完成】AI代替开发者：检查SQL语句合法性与规则冲突', 'SQL'],
+  ]
+  for (const [text, word] of cases) {
+    const lines = wrapExportText(text, 196, 13)
+    assert.ok(lines.some((line) => line.includes(word)), `${word} 完整落在同一行：${JSON.stringify(lines)}`)
+    assert.equal(lines.join(''), text, '折行不丢字符')
+    assert.ok(!splitsLatinWord(lines), `${word} 未被拆开：${JSON.stringify(lines)}`)
+  }
+})
+
+test('039 wrapExportText still honours explicit newlines and keeps long strings whole', () => {
+  assert.equal(wrapExportText('l1\nl2', 100, 13).length, 2)
+  // 超长串（长 URL）走硬断兜底：字符一个不丢
+  const url = `https://example.com/${'a'.repeat(120)}`
+  const lines = wrapExportText(url, 196, 13)
+  assert.ok(lines.length > 1)
+  assert.equal(lines.join(''), url)
+  // 中文照常逐字换行，不受按词优先影响
+  const cn = wrapExportText('一二三四五六七八九十一二三四五六七八九十', 40, 13)
+  assert.ok(cn.length > 1)
+  assert.equal(cn.join(''), '一二三四五六七八九十一二三四五六七八九十')
+})
+
+test('039 export lays out the four-stage sample: no broken words, content-fit widths, aligned columns', () => {
+  const tree = parseMarkdownToTree(EXPORT_SAMPLE_MD, 'AIOPS工作进度（11月11日）')
+  const { svg, width, height } = buildExportSvg(tree, 'ocean')
+  const boxes = exportSvgBoxes(svg)
+  const texts = exportSvgTexts(svg)
+  const nodes = []
+  const walk = (node) => {
+    nodes.push(node)
+    for (const child of node.children || []) walk(child)
+  }
+  walk(tree)
+  assert.equal(boxes.length, nodes.length)
+
+  nodes.forEach((node, index) => {
+    const box = boxes[index]
+    const lines = texts
+      .filter((t) => t.x >= box.x && t.x < box.x + box.w && t.y >= box.y - 1 && t.y <= box.y + box.h)
+      .sort((a, b) => a.y - b.y)
+      .map((t) => t.text)
+    assert.ok(lines.length > 0, `节点应有文字：${node.topic}`)
+    assert.equal(lines.join(''), node.topic, `文字必须完整保留：${node.topic}`)
+    assert.ok(!splitsLatinWord(lines), `不得拆词：${node.topic} → ${JSON.stringify(lines)}`)
+    // 文字实际宽度落在卡片内容区内（左右各留 12px 内距）
+    for (const line of lines) {
+      const chrome = node.kind === "quote" ? 27 : 24
+      assert.ok(
+        exportEstimateWidth(line) <= box.w - chrome,
+        `文字越界或贴边：${JSON.stringify(line)} 宽 ${exportEstimateWidth(line)} 盒宽 ${box.w}`,
+      )
+    }
+  })
+
+  // 短标题的卡片明显窄于长工作项（旧的固定 220px 一刀切已废除）
+  const stageBox = boxes[nodes.findIndex((node) => node.topic === '阶段三')]
+  const longBox = boxes[nodes.findIndex((node) => node.topic.includes('AI身份追踪与已有负载均衡'))]
+  assert.ok(stageBox.w < 220, `短标题卡片应收窄：${stageBox.w}`)
+  assert.ok(longBox.w > stageBox.w * 2, `长工作项卡片应放宽：${longBox.w} vs ${stageBox.w}`)
+
+  // 同层节点左缘对齐成列
+  const workItemXs = new Set(nodes
+    .filter((node) => node.kind === 'list' && node.topic.startsWith('【'))
+    .map((node) => boxes[nodes.indexOf(node)].x))
+  assert.equal(workItemXs.size, 1, '同层工作项应左缘对齐')
+
+  assert.ok(width > 0 && height > 0)
+})
+
+test('039 export node width adapts to content instead of a fixed 220px box', () => {
+  const short = measureExportBox({ id: 'a', kind: 'list', topic: '阶段三', children: [] })
+  const long = measureExportBox({ id: 'b', kind: 'list', topic: '【完成】AIOPS基建：AI身份追踪与已有负载均衡及独立基建之间全流程打通', children: [] })
+  assert.ok(short.w < 220, `短标题应收窄：${short.w}`)
+  assert.ok(long.w > short.w, `长正文应放宽：${long.w}`)
+  assert.equal(short.h, 34, '单行节点高度不变')
+  assert.ok(long.h > short.h, '长正文折行后高度增加')
+})
+
+test('039 wrapExportText counts the gap before deciding to break a line', () => {
+  // 复查反例：词本身放得下、连同词间空白放不下时也必须断行——
+  // 否则该行会顶破内容区、吃掉右内距（357.5px 挤进 356px 的内容区）。
+  const input = 'a'.repeat(25) + ' ' + 'b'.repeat(24)
+  const lines = wrapExportText(input, 356, 13)
+  assert.equal(lines.length, 2, `必须断行：${JSON.stringify(lines)}`)
+  assert.equal(lines.join(''), input, '折行不丢字符')
+  for (const line of lines) {
+    assert.ok(exportEstimateWidth(line) <= 356, `每行宽度必须在内容区内：${exportEstimateWidth(line)}`)
+  }
+  // 不含空格的同长度串仍是一行：边界只在「加上空白才超」时生效
+  const tight = 'a'.repeat(25) + 'b'.repeat(24)
+  assert.equal(wrapExportText(tight, 356, 13).length, 1)
+})
+
+test('039 table cells break on the gap instead of overflowing the cell', () => {
+  // 两列表：列盒 110px、内容区 110-16=94px；单元格估宽 99px 必须在空白处断开。
+  const cell = 'aaaaaaa bbbbbbb'
+  const table = { id: 't', kind: 'table', topic: '表', children: [], data: { rows: [['h1', cell]] } }
+  const tree = { id: 'r', kind: 'heading', topic: 'root', children: [table] }
+  const { svg } = buildExportSvg(tree, 'ocean')
+  const texts = exportSvgTexts(svg).map((t) => t.text)
+  // 行尾空白保留在行末（渲染时被 SVG 折叠），故比对时按 trim 判定
+  assert.ok(texts.some((t) => t.trim() === 'aaaaaaa'), `单元格应断行：${JSON.stringify(texts)}`)
+  assert.ok(texts.some((t) => t.trim() === 'bbbbbbb'), `单元格应断行：${JSON.stringify(texts)}`)
+  for (const text of texts) {
+    assert.ok(exportEstimateWidth(text, 12) <= 94, `单元格文字越界：${JSON.stringify(text)} 宽 ${exportEstimateWidth(text, 12)}`)
+  }
+})
+
+test('039 hard-broken long words keep the original whitespace order', () => {
+  // 复查反例：超长词被逐字硬断时，先于该词的空白必须留在第一片，不能被搬到末片。
+  const cases = ['  abcdefghij', '\tabcdefghij', 'a  b', 'a\tb', 'x\n  abcdefghij']
+  for (const text of cases) {
+    const lines = wrapExportText(text, 20, 13)
+    // 显式换行由行边界承载（每行一个 <text>），拼接比对时去掉换行符
+    assert.equal(lines.join(''), text.replace(/\n/g, ''), `空白顺序必须保持：${JSON.stringify(text)} → ${JSON.stringify(lines)}`)
+  }
+  assert.equal(wrapExportText('  abcdefghij', 20, 13)[0], '  ab')
+  // 真实 Markdown 入口：行内代码保留前导空白，导出文本必须原样保序。
+  const plain = '  ' + 'a'.repeat(60)
+  const tree = parseMarkdownToTree('`' + plain + '`', 'probe')
+  const { svg } = buildExportSvg(tree, 'ocean')
+  const codeLines = exportSvgTexts(svg).map((t) => t.text).filter((text) => text !== 'probe')
+  assert.equal(codeLines.join(''), plain, `导出文本必须保序：${JSON.stringify(codeLines)}`)
+})
+
+test('039 export measures text with real font metrics when the browser canvas is available', () => {
+  // 浏览器里有 canvas：走 measureText 真实字形，字体串与 SVG 绘制同源；
+  // 没有 canvas 的环境才退回字符估算兜底。
+  // 注意：本用例只证明「度量分支确实被调用 + 内距约束在该度量下成立」，
+  // 不能替代真实浏览器里的字形/光栅化验证。
+  const fonts = []
+  const fakeDoc = {
+    createElement(tag) {
+      if (tag !== 'canvas') return { style: {} }
+      return {
+        getContext() {
+          return {
+            font: '',
+            measureText(text) {
+              fonts.push(this.font)
+              let w = 0
+              for (const ch of String(text)) w += ch.charCodeAt(0) > 0x2e7f ? 13 : 10
+              return { width: w }
+            },
+          }
+        },
+      }
+    },
+  }
+  const { runtime: isolated, context: isolatedContext } = loadBrowserModule()
+  isolatedContext.document = fakeDoc
+  const tree = isolated.internals.parseMarkdownToTree('# 标题\n- Apollo', 'doc')
+  const { svg } = isolated.internals.buildExportSvg(tree, 'ocean')
+  assert.ok(fonts.length > 0, '导出应走 canvas 真实字形度量')
+  assert.ok(fonts.every((font) => /^\d+ 13px /.test(font)), `字体串应与绘制一致：${fonts[0]}`)
+  assert.ok(svg.includes('>Apollo<'), '文字内容不受度量方式影响')
+  // 在本用例注入的度量下，每行文字仍必须落在卡片内容区内（左右各 12px 内距）。
+  const boxes = exportSvgBoxes(svg)
+  const texts = exportSvgTexts(svg)
+  assert.ok(boxes.length >= 2)
+  for (const box of boxes) {
+    for (const text of texts) {
+      if (text.x < box.x || text.x >= box.x + box.w) continue
+      if (text.y < box.y - 1 || text.y > box.y + box.h) continue
+      let w = 0
+      for (const ch of text.text) w += ch.charCodeAt(0) > 0x2e7f ? 13 : 10
+      assert.ok(w <= box.w - 24, `文字越界：${JSON.stringify(text.text)} 宽 ${w} 盒宽 ${box.w}`)
+    }
+  }
+})
+
 test('clampZoom clamps to [0.25, 3] and guards non-finite or non-positive input', () => {
   assert.equal(clampZoom(1), 1)
   assert.equal(clampZoom(0.5), 0.5)
