@@ -135,17 +135,31 @@
 			// 014 布局让位：面板打开/拖宽时把宽度写进 CSS 变量，挤窄 #root 推走
 			// 聊天区（better-sidebar 同款）；关闭/卸载时移除变量恢复全宽。
 			// 仅独立壳模式启用——BS Tab 模式不渲染本组件，不写此变量。
+			// issue #6（共享契约 L2/L3）：写入/移除之后派发 dsh:panel-layout；只有 open
+			// 切换才挂动画临时类——拖宽是逐帧跟随，动画会拖尾。
+			// 上一次布局状态的初值取「关闭」：挂载前 #root 既无宽度变量也无动画类，所以
+			// 首次挂载即打开也按一次开切换处理，播放一次开合动画（挂载即关不播放）。
+			const layoutOpenRef = react.useRef(false);
 			react.useLayoutEffect(() => {
 				if (typeof document === "undefined") return;
+				const toggled = layoutOpenRef.current !== open;
+				layoutOpenRef.current = open;
 				if (open) {
 					document.documentElement.style.setProperty("--dsh-mindmap-width", `${panelWidth}px`);
 				} else {
 					document.documentElement.style.removeProperty("--dsh-mindmap-width");
 				}
+				if (toggled) pulseLayoutAnimating();
+				dispatchPanelLayout(open ? panelWidth : 0);
 				return () => {
 					document.documentElement.style.removeProperty("--dsh-mindmap-width");
 				};
 			}, [open, panelWidth]);
+			// issue #6 L5：卸载时清掉自己的动画类与计时器，并派发宽度 0（面板已不占位）。
+			react.useLayoutEffect(() => () => {
+				clearLayoutAnimating();
+				dispatchPanelLayout(0);
+			}, []);
 
 			// 始终挂载 MindmapWorkspace：收起时用 display:none 隐藏外壳，
 			// 但组件实例保留——hooks（auto-open / 焦点同步 / 目录树）照常跑。

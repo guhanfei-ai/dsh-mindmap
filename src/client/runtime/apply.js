@@ -27,6 +27,55 @@
 			return url.href;
 		}
 
+		/**
+		 * layout-push 规则（issue #6，共享契约 L1）：与 zterm 逐字相同。两个插件都按
+		 * 视口 − 脑图 − zterm − sidebar 计算 #root，公式一致，插入顺序不再决定谁的预留
+		 * 宽度生效。基础块不得声明 transition；动画只属于「自己改宽度」的一方，由下方
+		 * html.dsh-layout-animating 临时类开启（L2）。
+		 */
+		const LAYOUT_PUSH_CSS = [
+			"#root{",
+			"  margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-zterm-width,0px) + var(--dsh-sidebar-width,0px))!important;",
+			"  width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-zterm-width,0px) - var(--dsh-sidebar-width,0px))!important;",
+			"}",
+			"html.dsh-layout-animating #root{transition:margin-right .3s ease-in-out,width .3s ease-in-out}",
+		].join("\n");
+
+		/**
+		 * 布局动画临时类（issue #6，L2）：仅面板一键开/关时挂到 <html>，约 320ms 后
+		 * 移除，重复触发重置计时。拖宽与窗口 resize 不挂（逐帧跟随时动画会拖尾）。
+		 */
+		const LAYOUT_ANIMATING_CLASS = "dsh-layout-animating";
+		const LAYOUT_ANIMATING_MS = 320;
+		let layoutAnimatingTimer = null;
+		function pulseLayoutAnimating() {
+			if (typeof document === "undefined") return;
+			const root = document.documentElement;
+			root.classList.add(LAYOUT_ANIMATING_CLASS);
+			if (layoutAnimatingTimer !== null) clearTimeout(layoutAnimatingTimer);
+			layoutAnimatingTimer = setTimeout(() => {
+				layoutAnimatingTimer = null;
+				root.classList.remove(LAYOUT_ANIMATING_CLASS);
+			}, LAYOUT_ANIMATING_MS);
+		}
+		function clearLayoutAnimating() {
+			if (layoutAnimatingTimer !== null) {
+				clearTimeout(layoutAnimatingTimer);
+				layoutAnimatingTimer = null;
+			}
+			if (typeof document !== "undefined") document.documentElement.classList.remove(LAYOUT_ANIMATING_CLASS);
+		}
+
+		/**
+		 * 布局变更事件（issue #6，L3）：面板 open/close/resize 后派发到 window，
+		 * detail = { id: "dsh-mindmap", width }，width 为像素数，关闭为 0。zterm 据此
+		 * 收起自己的独立面板，替代其 MutationObserver 轮询。
+		 */
+		function dispatchPanelLayout(width) {
+			if (typeof window === "undefined") return;
+			window.dispatchEvent(new CustomEvent("dsh:panel-layout", { detail: { id: "dsh-mindmap", width } }));
+		}
+
 		function apply(ctx) {
 			const face = {};
 
@@ -124,13 +173,7 @@
 						if (!layoutStyle) {
 							layoutStyle = document.createElement("style");
 							layoutStyle.setAttribute("data-dsh-mindmap", "layout-push");
-							layoutStyle.textContent = [
-								"#root{",
-								"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
-								"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
-								"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
-								"}",
-							].join("");
+							layoutStyle.textContent = LAYOUT_PUSH_CSS;
 							document.head.appendChild(layoutStyle);
 						}
 					}
@@ -146,13 +189,7 @@
 			// ctx.effect 不可用：直接注入（015 原始行为），standalone 模式。
 			const style = document.createElement("style");
 			style.setAttribute("data-dsh-mindmap", "layout-push");
-			style.textContent = [
-				"#root{",
-				"margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-sidebar-width,0px))!important;",
-				"width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-sidebar-width,0px))!important;",
-				"transition:margin-right var(--ds-transition-duration-slow) var(--ds-ease-in-out),width var(--ds-transition-duration-slow) var(--ds-ease-in-out);",
-				"}",
-			].join("");
+			style.textContent = LAYOUT_PUSH_CSS;
 			document.head.appendChild(style);
 		}
 

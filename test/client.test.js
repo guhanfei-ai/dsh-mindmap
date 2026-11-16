@@ -3370,6 +3370,14 @@ function createEffectDriver() {
   return { hooks, beginRender, flushMount, flushUpdate, unmount, resetHooks }
 }
 
+// issue #6：沙箱里的 CustomEvent 桩，只保留 type 与 detail，足够断言布局事件载荷。
+class FakeCustomEvent {
+  constructor(type, init = {}) {
+    this.type = type
+    this.detail = init.detail
+  }
+}
+
 // 030 组件 effect 测试公共设施：重新加载 client.js 到独立 vm 沙箱，
 // 注入能保持 hook 状态、执行 effect/cleanup 的 driver，返回沙箱内的组件和 store。
 // 034：window 加监听器桩（MindmapCanvas 的空格键/菜单 effect 需要）；rAF 换
@@ -3384,6 +3392,7 @@ function loadClientWithEffectDriver() {
   const win = {
     __ModuleLoader__: { load(v) { def = v } },
     addEventListener(type, fn) { winListeners.push({ type, fn }) },
+    dispatchEvent() { return true },
     removeEventListener(type, fn) {
       const i = winListeners.findIndex((l) => l.type === type && l.fn === fn)
       if (i >= 0) winListeners.splice(i, 1)
@@ -3395,6 +3404,7 @@ function loadClientWithEffectDriver() {
     window: win,
     setTimeout,
     clearTimeout,
+    CustomEvent: FakeCustomEvent,
     requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length },
     cancelAnimationFrame(id) { if (Number.isInteger(id) && id >= 1 && id <= rafQueue.length) rafQueue[id - 1] = null },
   })
@@ -3417,7 +3427,7 @@ test('standalone panel portals to body and close keeps the workspace mounted but
     documentElement: { style: {
       setProperty(key, value) { cssValues.set(key, value) },
       removeProperty(key) { cssValues.delete(key) },
-    } },
+    }, classList: fakeClassList() },
     querySelector() { return null },
   }
   harness.ctx.localStorage = { getItem() { return '504' }, setItem() {} }
@@ -3464,6 +3474,240 @@ test('standalone panel portals to body and close keeps the workspace mounted but
     assert.equal(cssValues.has('--dsh-mindmap-width'), true)
     harness.driver.unmount()
     assert.equal(cssValues.has('--dsh-mindmap-width'), false, 'unmount still cleans the layout variable')
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+// issue #6（共享契约 v1 L1/L2/L3/L5）：layout-push 样式归属、动画临时类与布局事件。
+const SHARED_LAYOUT_RULE = [
+  '#root{',
+  '  margin-right:calc(var(--dsh-mindmap-width,0px) + var(--dsh-zterm-width,0px) + var(--dsh-sidebar-width,0px))!important;',
+  '  width:calc(100% - var(--dsh-mindmap-width,0px) - var(--dsh-zterm-width,0px) - var(--dsh-sidebar-width,0px))!important;',
+  '}',
+].join('\n')
+
+// <html> 的 classList 桩：动画临时类的挂载与摘除可以直接断言。
+function fakeClassList() {
+  const names = new Set()
+  return {
+    add(name) { names.add(name) },
+    remove(name) { names.delete(name) },
+    contains(name) { return names.has(name) },
+  }
+}
+
+// 手动计时器：逐个触发到期回调，不真等 320ms；clearTimeout 只做标记。
+function installManualTimers(ctx) {
+  const timers = []
+  ctx.setTimeout = (fn, ms) => {
+    const timer = { fn, ms, cleared: false }
+    timers.push(timer)
+    return timer
+  }
+  ctx.clearTimeout = (timer) => { if (timer) timer.cleared = true }
+  return {
+    pending: () => timers.filter((timer) => !timer.cleared),
+    fireAll() {
+      for (const timer of timers.filter((item) => !item.cleared)) {
+        timer.cleared = true
+        timer.fn()
+      }
+    },
+  }
+}
+
+// 独立面板的布局沙箱：记录 <html> 的 CSS 变量与类；window.dispatchEvent 记录派发时刻的
+// 快照（变量是否已写入、动画类是否在场），用来断言「先更新变量、后派发」。
+function layoutPanelHarness() {
+  const harness = loadClientWithEffectDriver()
+  const cssValues = new Map()
+  const classes = fakeClassList()
+  const dispatched = []
+  harness.ctx.document = {
+    body: { tagName: 'BODY' },
+    documentElement: {
+      style: {
+        setProperty(key, value) { cssValues.set(key, value) },
+        removeProperty(key) { cssValues.delete(key) },
+      },
+      classList: classes,
+    },
+    querySelector() { return null },
+  }
+  harness.ctx.localStorage = { getItem() { return '504' }, setItem() {} }
+  harness.win.innerWidth = 1200
+  harness.win.dispatchEvent = (event) => {
+    // detail 在 vm 沙箱里创建（原型属于沙箱 realm）：复制成外层普通对象再比较。
+    dispatched.push({
+      type: event.type,
+      detail: { id: event.detail.id, width: event.detail.width },
+      cssAtDispatch: cssValues.get('--dsh-mindmap-width') ?? null,
+      animating: classes.contains('dsh-layout-animating'),
+    })
+    return true
+  }
+  const timers = installManualTimers(harness.ctx)
+  const props = {
+    mindmapFace: null,
+    sessionId: 'layout-test',
+    inputActions: null,
+    readInputState: () => null,
+    nodes: [],
+    nodesVersion: 0,
+    documents: {},
+    onOpen() {},
+    onClose() {},
+  }
+  const render = (open, mounting = false) => {
+    harness.driver.beginRender()
+    const portal = harness.MindmapDetailsPanel({ ...props, open })
+    if (mounting) harness.driver.flushMount()
+    else harness.driver.flushUpdate()
+    return portal
+  }
+  return { harness, cssValues, classes, dispatched, timers, render }
+}
+
+test('issue #6 L1: standalone layout-push carries the shared rule verbatim, and its base block declares no transition', () => {
+  sidebarBus.set(null)
+  const sb = applySandbox({ betterSidebar: undefined })
+  withSandboxDoc(sb.fakeDoc, () => {
+    runtime.apply(sb.ctx)
+    sb.effects.forEach((fn) => fn())
+  })
+  const layoutPush = sb.headChildren.find((el) => !el._removed && el.attributes['data-dsh-mindmap'] === 'layout-push')
+  assert.ok(layoutPush, 'layout-push CSS injected in standalone')
+  const css = layoutPush.textContent
+  const baseBlock = css.slice(0, css.indexOf('}') + 1)
+  assert.equal(baseBlock, SHARED_LAYOUT_RULE, 'base block is the shared L1 rule, byte for byte')
+  assert.equal(/transition/.test(baseBlock), false, 'base block declares no transition')
+  assert.ok(css.includes('html.dsh-layout-animating #root{transition:margin-right .3s ease-in-out,width .3s ease-in-out}'),
+    'the animation lives in the class-scoped companion rule')
+  assert.equal(css.match(/transition/g).length, 1, 'transition appears exactly once')
+})
+
+test('issue #6 L2/L3: open and close dispatch dsh:panel-layout after the CSS variable, and only the toggle pulses the animation class', () => {
+  const { harness, cssValues, classes, dispatched, timers, render } = layoutPanelHarness()
+  try {
+    render(false, true)
+    assert.deepEqual(dispatched.map((e) => [e.type, e.detail]), [['dsh:panel-layout', { id: 'dsh-mindmap', width: 0 }]],
+      'mounting while closed announces width 0')
+    assert.equal(timers.pending().length, 0, 'mounting never pulses the animation class')
+    dispatched.length = 0
+
+    render(true)
+    assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 504 }], 'open announces the pixel width')
+    assert.equal(dispatched[0].cssAtDispatch, '504px', 'the variable is already written when the event fires')
+    assert.equal(dispatched[0].animating, true, 'opening pulses the animation class')
+    assert.equal(timers.pending().length, 1)
+    assert.equal(timers.pending()[0].ms, 320)
+    timers.fireAll()
+    assert.equal(classes.contains('dsh-layout-animating'), false, 'the class is removed after the pulse')
+
+    dispatched.length = 0
+    render(false)
+    assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 0 }], 'close announces width 0')
+    assert.equal(dispatched[0].cssAtDispatch, null, 'the variable is already removed when the event fires')
+    assert.equal(dispatched[0].animating, true, 'closing pulses the animation class')
+    timers.fireAll()
+    assert.equal(cssValues.has('--dsh-mindmap-width'), false)
+    assert.equal(classes.contains('dsh-layout-animating'), false)
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('issue #6 L2: dragging the panel edge moves the width and announces it without pulsing the animation class', () => {
+  const { harness, dispatched, timers, render } = layoutPanelHarness()
+  try {
+    const opened = render(true, true)
+    // 挂载即开会播放一次开合动画（issue #6 首挂修正）：先清掉这次挂载脉冲，
+    // 再验证拖动本身不挂类、不起计时器。
+    timers.fireAll()
+    dispatched.length = 0
+    // 面板树：portal → 宿主 div → 面板根（children = [拖拽把手, 工作区]）。
+    const handle = opened.props.children.props.children.props.children[0]
+    handle.props.onMouseDown({ clientX: 800, preventDefault() {} })
+    harness.winListeners.find((l) => l.type === 'mousemove').fn({ clientX: 700 })
+    render(true)
+    assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 604 }], 'the dragged width is announced')
+    assert.equal(dispatched[0].cssAtDispatch, '604px')
+    assert.equal(dispatched[0].animating, false, 'dragging never pulses the animation class')
+    assert.equal(timers.pending().length, 0, 'dragging schedules no pulse timer')
+    harness.winListeners.find((l) => l.type === 'mouseup').fn()
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('issue #6 L2: rapid open/close restarts the 320ms pulse, so only the latest timer clears the class', () => {
+  const { harness, classes, timers, render } = layoutPanelHarness()
+  try {
+    render(false, true)
+    render(true)
+    render(false)
+    const pending = timers.pending()
+    assert.equal(pending.length, 1, 'the earlier pulse timer was cancelled')
+    assert.equal(pending[0].ms, 320)
+    assert.equal(classes.contains('dsh-layout-animating'), true)
+    timers.fireAll()
+    assert.equal(classes.contains('dsh-layout-animating'), false)
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('issue #6 L5: unmounting clears the animation class and pending timer, announces width 0, and leaves no panel listeners', () => {
+  const { harness, cssValues, classes, dispatched, timers, render } = layoutPanelHarness()
+  render(false, true)
+  render(true)
+  assert.equal(classes.contains('dsh-layout-animating'), true)
+  assert.equal(timers.pending().length, 1)
+  dispatched.length = 0
+  harness.driver.unmount()
+  assert.equal(classes.contains('dsh-layout-animating'), false, 'unmount removes the class')
+  assert.equal(timers.pending().length, 0, 'unmount cancels the pending pulse')
+  assert.equal(cssValues.has('--dsh-mindmap-width'), false, 'unmount removes our own width variable')
+  assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 0 }], 'unmount announces width 0')
+  const leftovers = harness.winListeners.filter((l) => ['resize', 'mousemove', 'mouseup'].includes(l.type))
+  assert.deepEqual(leftovers, [], 'the panel leaves no window listeners behind')
+})
+
+// issue #6 首挂修正：面板随 Better Sidebar 退出 sidebar 模式重新挂载时，MindmapSlot 的
+// open 状态仍为 true。挂载即开应与手动打开一样播放一次开合动画，之后的关闭仍是普通切换。
+test('issue #6 follow-up: mounting already open plays the open pulse once, and the next close still pulses', () => {
+  const { harness, cssValues, classes, dispatched, timers, render } = layoutPanelHarness()
+  try {
+    render(true, true)
+    assert.equal(classes.contains('dsh-layout-animating'), true, 'mounting open pulses the animation class')
+    assert.equal(timers.pending().length, 1, 'exactly one pulse timer is scheduled')
+    assert.equal(timers.pending()[0].ms, 320)
+    assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 504 }], 'the open width is still announced')
+    assert.equal(dispatched[0].cssAtDispatch, '504px', 'the variable is written before the event, as on a manual open')
+    assert.equal(dispatched[0].animating, true, 'the class is already present when the event fires')
+    timers.fireAll()
+    assert.equal(classes.contains('dsh-layout-animating'), false, 'the class is removed when the pulse ends')
+    assert.equal(cssValues.get('--dsh-mindmap-width'), '504px', 'the open width stays applied after the pulse')
+
+    dispatched.length = 0
+    render(false)
+    assert.equal(classes.contains('dsh-layout-animating'), true, 'closing after a mount-open is still a toggle')
+    assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 0 }], 'close announces width 0')
+    timers.fireAll()
+    assert.equal(cssValues.has('--dsh-mindmap-width'), false)
+  } finally {
+    harness.driver.unmount()
+  }
+})
+
+test('issue #6 follow-up: mounting closed never pulses the animation class', () => {
+  const { harness, classes, dispatched, timers, render } = layoutPanelHarness()
+  try {
+    render(false, true)
+    assert.equal(classes.contains('dsh-layout-animating'), false, 'a closed mount adds no class')
+    assert.equal(timers.pending().length, 0, 'a closed mount schedules no pulse timer')
+    assert.deepEqual(dispatched.map((e) => e.detail), [{ id: 'dsh-mindmap', width: 0 }], 'a closed mount still announces width 0')
   } finally {
     harness.driver.unmount()
   }
